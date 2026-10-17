@@ -1,1 +1,1 @@
-{"mcpServers":{"relay":{"command":"npx","args":["-y","@wezzard/mcp-relay@0.12.0"],"lifecycle":"lazy-keep-alive","requestTimeoutMs":3900000,"directTools":true,"toolPrefix":"none"}}}
+{"mcpServers":{"relay":{"command":"npx","args":["-y","@wezzard/mcp-relay@0.13.0"],"lifecycle":"lazy-keep-alive","requestTimeoutMs":3900000,"directTools":true,"toolPrefix":"none"}}}
