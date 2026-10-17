@@ -67,7 +67,7 @@
     "@wezzard/relay-driver-host-sdk": "^0.2.1",
     "@wezzard/relay-driver-remote-runtime": "^0.2.1",
     "esbuild": "^0.25.0",
-    "tsx": "^4.20.0",
+    "tsx": "^4.23.15",
     "typebox": "1.3.30",
     "typescript": "^5.9.0"
   },
