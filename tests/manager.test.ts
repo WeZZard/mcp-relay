@@ -780,6 +780,80 @@ test('staging traversal is rejected and corrected support path stages the retain
   await f.manager.release(); await f.assertClean();
 });
 
+/**
+ * DC-15: relay_stage's files[].local and workspace, and relay_script's
+ * localPath, lie in the project folder, relative or absolute. A path outside
+ * it, one that climbs out with `../`, or one through a symlink is refused
+ * before anything reaches the guest.
+ */
+async function hostPathLayout(root: string, t: TestContext) {
+  const outside = await realpath(await mkdtemp(join(tmpdir(), 'relay-outside-')));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, 'secret.txt'), 'outside bytes'); await mkdir(join(outside, 'tree')); await writeFile(join(outside, 'tree', 'secret.txt'), 'outside tree');
+  await writeFile(join(outside, 'script.js'), "console.log('outside script')");
+  await writeFile(join(root, 'support.txt'), 'support bytes'); await writeFile(join(root, 'absolute.txt'), 'absolute bytes');
+  await mkdir(join(root, 'input')); await writeFile(join(root, 'input', 'seed.txt'), 'workspace seed');
+  await writeFile(join(root, 'script.js'), "console.log('relative script')"); await writeFile(join(root, 'absolute.js'), "console.log('absolute script')");
+  await symlink(join(outside, 'secret.txt'), join(root, 'linked.txt')); await symlink(join(outside, 'tree'), join(root, 'linked-tree'));
+  await symlink(join(outside, 'script.js'), join(root, 'linked.js'));
+  const parent = `../${outside.split('/').at(-1)}`;
+  return { outside, parent };
+}
+const pushes = (f: { service: FixtureService }) => f.service.requests.filter(r => r.path.endsWith('/push')).length;
+
+test('relay_stage reads files[].local and workspace only in the project folder (DC-15)', { timeout: 30000 }, async t => {
+  const f = await fixture(t); const { outside, parent } = await hostPathLayout(f.root, t);
+  const acquired = await f.manager.acquire(acquireInput());
+  const refused: Array<[string, Parameters<RelayManager['stage']>[0]]> = [
+    ['files[].local absolute outside', { files: [{ local: join(outside, 'secret.txt'), path: 'a.txt' }] }],
+    ['files[].local ../', { files: [{ local: `${parent}/secret.txt`, path: 'a.txt' }] }],
+    ['files[].local symlink', { files: [{ local: 'linked.txt', path: 'a.txt' }] }],
+    ['files[].local absolute symlink', { files: [{ local: join(f.root, 'linked.txt'), path: 'a.txt' }] }],
+    ['workspace absolute outside', { workspace: join(outside, 'tree') }],
+    ['workspace ../', { workspace: `${parent}/tree` }],
+    ['workspace symlink', { workspace: 'linked-tree' }],
+    ['workspace absolute symlink', { workspace: join(f.root, 'linked-tree') }],
+  ];
+  for (const [name, input] of refused) {
+    const before = pushes(f);
+    await assert.rejects(f.manager.stage({ ...input, cuaDriver: f.driver, nodePath: process.execPath }), /must lie in the project folder/, name);
+    assert.equal(pushes(f), before, `${name}: nothing was pushed`);
+    assert.equal(f.manager.status().staged, false, name);
+  }
+  await f.assertRetained();
+  // Relative and absolute paths inside the folder stage.
+  await f.manager.stage({ workspace: 'input', files: [{ local: 'support.txt', path: 'relative.txt' }, { local: join(f.root, 'absolute.txt'), path: 'absolute.txt' }], cuaDriver: f.driver, nodePath: process.execPath });
+  assert.equal(await readFile(join(acquired.guestRoot, 'support/relative.txt'), 'utf8'), 'support bytes');
+  assert.equal(await readFile(join(acquired.guestRoot, 'support/absolute.txt'), 'utf8'), 'absolute bytes');
+  assert.equal(await readFile(join(acquired.workspace, 'seed.txt'), 'utf8'), 'workspace seed');
+  await f.manager.release(); await f.assertClean();
+  // An absolute workspace inside the folder stages too.
+  const g = await fixture(t); await mkdir(join(g.root, 'input')); await writeFile(join(g.root, 'input', 'seed.txt'), 'absolute workspace');
+  const second = await g.manager.acquire(acquireInput());
+  await g.manager.stage({ workspace: join(g.root, 'input'), cuaDriver: g.driver, nodePath: process.execPath });
+  assert.equal(await readFile(join(second.workspace, 'seed.txt'), 'utf8'), 'absolute workspace');
+  await g.manager.release(); await g.assertClean();
+});
+
+test('relay_script reads localPath only in the project folder (DC-15)', { timeout: 30000 }, async t => {
+  const f = await fixture(t); const { outside, parent } = await hostPathLayout(f.root, t);
+  await f.manager.acquire(acquireInput()); await f.stage();
+  const script = (id: string, localPath: string) => operation(id, { kind: 'script', language: 'javascript', localPath });
+  const relative = await f.manager.run(script('relative', 'script.js'));
+  assert.deepEqual(relative.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
+  assert.match(relative.stdout, /relative script/);
+  const absolute = await f.manager.run(script('absolute', join(f.root, 'absolute.js')));
+  assert.match(absolute.stdout, /absolute script/);
+  for (const [name, localPath] of [['absolute outside', join(outside, 'script.js')], ['../', `${parent}/script.js`], ['symlink', 'linked.js'], ['absolute symlink', join(f.root, 'linked.js')]]) {
+    const calls = f.service.receiverCalls, before = pushes(f);
+    await assert.rejects(f.manager.run(script(`refused-${name.replace(/[^a-z]+/g, '-')}`, localPath)), /localPath .* must lie in the project folder/, name);
+    assert.equal(f.service.receiverCalls, calls, `${name}: nothing ran in the guest`);
+    assert.equal(pushes(f), before, `${name}: nothing was pushed`);
+  }
+  await f.assertRetained();
+  await f.manager.release(); await f.assertClean();
+});
+
 test('lost acquire response reconciles by pre-recorded purpose without allocating twice', async t => {
   const f = await fixture(t); f.service.loseAcquireResponse = true;
   f.service.acquireHook = async () => {

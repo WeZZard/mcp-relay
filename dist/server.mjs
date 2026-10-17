@@ -30410,6 +30410,20 @@ var RelayManager = class {
       throw new Error(`Console ${operation} outcome unknown; ownership retained. Resolve or cancel attempt ${input.attempt_id}; never automatically replay opening.`);
     }
   }
+  /**
+   * A host path the relay reads: relative to the project folder, or absolute
+   * and already in it; no symlink at or below the folder (DC-15).
+   */
+  async projectPath(path, label) {
+    if (typeof path !== "string" || !path) throw new Error(`${label} must name a host path in the project folder`);
+    const project = resolve9(this.options.project), target2 = resolve9(project, path);
+    try {
+      await assertHostPath(project, target2);
+    } catch (error2) {
+      throw new Error(`${label} ${path} must lie in the project folder ${project}, without symlinks: ${error2 instanceof Error ? error2.message : String(error2)}`, { cause: error2 });
+    }
+    return target2;
+  }
   reason(because) {
     if (typeof because !== "string" || !because.trim() || because.length > 4e3) throw new Error("reason must be nonblank and at most 4000 characters");
   }
@@ -30595,6 +30609,10 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       if (e.delivered) throw new Error("Evidence already sealed; release this VM explicitly");
       if (input.resetRecording || e.pendingReset) await this.resetRecording();
       if (e.staged && (input.workspace || input.files?.length)) throw new Error("Runtime already staged; use diagnostic exec for repairs or stage with only corrected executable paths");
+      const project = resolve9(this.options.project);
+      const files = [];
+      for (const file of input.files ?? []) files.push({ local: await this.projectPath(file.local, "files[].local"), path: file.path });
+      const workspace = input.workspace === void 0 ? void 0 : await this.projectPath(input.workspace, "workspace");
       const bundle = this.options.runtimeBundle ?? fileURLToPath(new URL("../dist/receiver.mjs", import.meta.url));
       await access(bundle);
       const node2 = input.nodePath ?? e.node ?? "node";
@@ -30613,8 +30631,8 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       }
       await transfer.checked(["/bin/mkdir", "-p", join14(e.guestRoot, "workspace"), join14(e.guestRoot, "state")]);
       const staged = [await transfer.pushFile(bundle, join14(e.guestRoot, "receiver.mjs"))];
-      for (const file of input.files ?? []) staged.push(await transfer.pushFile(resolve9(this.options.project, file.local), within(join14(e.guestRoot, "support"), file.path), file.local.startsWith("/") ? dirname10(resolve9(file.local)) : resolve9(this.options.project)));
-      if (input.workspace) staged.push(...await transfer.pushTree(resolve9(this.options.project, input.workspace), join14(e.guestRoot, "workspace"), input.workspace.startsWith("/") ? resolve9(input.workspace) : resolve9(this.options.project)));
+      for (const file of files) staged.push(await transfer.pushFile(file.local, within(join14(e.guestRoot, "support"), file.path), project));
+      if (workspace) staged.push(...await transfer.pushTree(workspace, join14(e.guestRoot, "workspace"), project));
       await this.log("stage", void 0, { files: staged, extractions: e.extractions });
       const relay = Relay.open(join14(e.hostRoot, "host", "submissions"));
       this.transport = new VmTransport(transfer, e.guestRoot, join14(e.hostRoot, "host"), e.cuaDriver);
@@ -30666,8 +30684,8 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           result2 = await this.session.exec(argv2, options2);
         } else if (input.kind === "script") {
           if (!input.localPath || !input.language) throw new Error("script requires localPath and language");
-          await assertHostPath(input.localPath.startsWith("/") ? dirname10(input.localPath) : resolve9(this.options.project), resolve9(this.options.project, input.localPath));
-          result2 = await this.session.runScript(resolve9(this.options.project, input.localPath), join14(e.guestRoot, "scripts", `${randomUUID7()}.${input.language === "python" ? "py" : input.language === "typescript" ? "ts" : "js"}`), input.language, options2);
+          const local = await this.projectPath(input.localPath, "localPath");
+          result2 = await this.session.runScript(local, join14(e.guestRoot, "scripts", `${randomUUID7()}.${input.language === "python" ? "py" : input.language === "typescript" ? "ts" : "js"}`), input.language, options2);
         } else if (input.kind === "code") {
           if (typeof input.code !== "string" || !input.language) throw new Error("code requires code and language");
           result2 = await this.session.runCode(input.code, input.language, options2);
@@ -31503,14 +31521,14 @@ var relayContract = typebox_exports.Union([
   typebox_exports.Object({
     action: typebox_exports.Literal("stage"),
     resetRecording: typebox_exports.Optional(typebox_exports.Boolean({ description: "Explicitly archive the current recording and start a new session on the same VM. Retains prior evidence; refuses while the receiver lock exists. Use after diagnosing recording damage." })),
-    workspace: typebox_exports.Optional(typebox_exports.String({ description: "Host directory copied to the guest workspace, opt-in." })),
-    files: typebox_exports.Optional(typebox_exports.Array(typebox_exports.Object({ local: typebox_exports.String(), path: typebox_exports.String({ description: "Relative destination under guest support/." }) }, closed2))),
+    workspace: typebox_exports.Optional(typebox_exports.String({ description: "Host directory copied to the guest workspace, opt-in. It lies in the project folder: relative to it, or absolute inside it; no symlinks." })),
+    files: typebox_exports.Optional(typebox_exports.Array(typebox_exports.Object({ local: typebox_exports.String({ description: "Host file in the project folder: relative to it, or absolute inside it; no symlinks." }), path: typebox_exports.String({ description: "Relative destination under guest support/." }) }, closed2))),
     nodePath: typebox_exports.Optional(typebox_exports.String({ description: "Guest Node executable, default node; use image nvm path if needed." })),
     cuaDriver: typebox_exports.Optional(typebox_exports.String({ description: "Guest CUA executable; OS default when omitted." })),
     browserExecutable: typebox_exports.Optional(typebox_exports.String({ description: "Guest browser executable for the playwright and chrome-devtools targets; default is installed Google Chrome." }))
   }, closed2),
   typebox_exports.Object({ ...runBase, kind: typebox_exports.Literal("exec"), argv, diagnostic: typebox_exports.Optional(typebox_exports.Boolean({ description: "Explicit command diagnosis or repair without screenshot evidence, including before staging. Commands and outcomes remain recorded. Never claim visual verification." })) }, closed2),
-  typebox_exports.Object({ ...runBase, kind: typebox_exports.Literal("script"), localPath: typebox_exports.String({ minLength: 1 }), language }, closed2),
+  typebox_exports.Object({ ...runBase, kind: typebox_exports.Literal("script"), localPath: typebox_exports.String({ minLength: 1, description: "Host script file in the project folder: relative to it, or absolute inside it; no symlinks." }), language }, closed2),
   typebox_exports.Object({ ...runBase, kind: typebox_exports.Literal("code"), code: typebox_exports.String({ maxLength: 1048576 }), language }, closed2),
   typebox_exports.Object({
     action: typebox_exports.Literal("run"),
@@ -31606,7 +31624,7 @@ var relayTools = [
     action: "stage",
     title: "Stage the guest runtime",
     annotations: acts(false),
-    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. The guest Node and CuaDriver executables must already exist (`nodePath`, `cuaDriver`); Linux guests need native X11 and `cua-driver serve --no-overlay`. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
+    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. The guest Node and CuaDriver executables must already exist (`nodePath`, `cuaDriver`); Linux guests need native X11 and `cua-driver serve --no-overlay`. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
   },
   {
     name: "relay_exec",
@@ -31622,7 +31640,7 @@ var relayTools = [
     kind: "script",
     title: "Run a guest script",
     annotations: acts(true),
-    description: `Run one guest script file as this call's single recorded operation. ${runShared} Requires \`localPath\` (a host file path) and \`language\` (\`javascript\`, \`typescript\` or \`python\`); it runs under the staged workspace.`
+    description: `Run one guest script file as this call's single recorded operation. ${runShared} Requires \`localPath\` (a host file in the project folder, relative to it or absolute inside it, with no symlinks) and \`language\` (\`javascript\`, \`typescript\` or \`python\`); it runs under the staged workspace.`
   },
   {
     name: "relay_code",

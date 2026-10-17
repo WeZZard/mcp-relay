@@ -130,9 +130,9 @@ Evidence is automatic for all four: see "relay_run" below.
 | `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and owned state. `scope: "guest"` checks the Node and CuaDriver executables and each `relay_run` target's availability on the owned guest without installing, starting or claiming capture readiness. |
 | `relay_acquisition_capabilities` | Read acquisition capabilities | `acquisition-capabilities` | Read versioned acquisition options (VNC backends) without allocation or ownership recovery. |
 | `relay_acquire` | Acquire a VM | `acquire` | Register the task, acquire a fresh VM and start its heartbeat; declare outputs before work. Optional `vnc` prepares sharing without opening a viewer. |
-| `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace; `browserExecutable` names the guest browser for the browser targets. Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
+| `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace, all from the project folder; `browserExecutable` names the guest browser for the browser targets. Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
 | `relay_exec` | Run a guest command | `run`, `exec` | One recorded guest command. `diagnostic: true` records command diagnosis or repair without screenshot evidence, including before staging. |
-| `relay_script` | Run a guest script | `run`, `script` | One recorded guest script file (`localPath`, `language`). |
+| `relay_script` | Run a guest script | `run`, `script` | One recorded guest script file (`localPath`, in the project folder, and `language`). |
 | `relay_code` | Run guest code | `run`, `code` | One recorded inline guest code snippet (`code`, `language`). |
 | `relay_run` | Run an MCP tool call in the VM | `run`, `mcp` | One recorded tool call (`target`: `cua`, `playwright` or `chrome-devtools`; that server's own `tool` and `args`), forwarded unchanged to the server inside the VM. Replaces `relay_cua` and `relay_browser`. |
 | `relay_tools` | List a target's tools | `tools` | The target's real `tools/list` from its in-guest server: names, descriptions and input schemas; `tool` narrows to one. |
@@ -341,7 +341,7 @@ keeps the VM for a retry after space is freed.
 
 ## Configuration
 
-- `MCP_VM_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there.
+- `MCP_VM_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_VM_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the enclosure of the same identity.
 - `MCP_VM_RELAY_URL`: the loopback vm-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
 - `MCP_VM_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-vm-relay` or `~/.local/state/mcp-vm-relay`, one subdirectory per session.

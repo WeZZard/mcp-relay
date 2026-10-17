@@ -366,6 +366,17 @@ export class RelayManager {
       throw new Error(`Console ${operation} outcome unknown; ownership retained. Resolve or cancel attempt ${input.attempt_id}; never automatically replay opening.`);
     }
   }
+  /**
+   * A host path the relay reads: relative to the project folder, or absolute
+   * and already in it; no symlink at or below the folder (DC-15).
+   */
+  private async projectPath(path: string, label: string) {
+    if (typeof path !== 'string' || !path) throw new Error(`${label} must name a host path in the project folder`);
+    const project = resolve(this.options.project), target = resolve(project, path);
+    try { await assertHostPath(project, target); }
+    catch (error) { throw new Error(`${label} ${path} must lie in the project folder ${project}, without symlinks: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+    return target;
+  }
   private reason(because: string) { if (typeof because !== 'string' || !because.trim() || because.length > 4000) throw new Error('reason must be nonblank and at most 4000 characters'); }
   private current() { this.assertBinding(); if (!this.enclosure?.lease || this.enclosure.released) throw new Error('No active lease; use relay action=acquire'); return this.enclosure; }
   private transfer() { const e = this.current(); if (!e.node) throw new Error('Stage runtime first'); return new Transfer(this.channel, e.lease!.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join(this.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) }); }
@@ -497,6 +508,11 @@ export class RelayManager {
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.resetRecording || e.pendingReset) await this.resetRecording();
     if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use diagnostic exec for repairs or stage with only corrected executable paths');
+    // Every host path is checked before anything reaches the guest (DC-15).
+    const project = resolve(this.options.project);
+    const files = [];
+    for (const file of input.files ?? []) files.push({ local: await this.projectPath(file.local, 'files[].local'), path: file.path });
+    const workspace = input.workspace === undefined ? undefined : await this.projectPath(input.workspace, 'workspace');
     const bundle = this.options.runtimeBundle ?? fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
     await access(bundle);
     const node = input.nodePath ?? e.node ?? 'node';
@@ -513,8 +529,8 @@ export class RelayManager {
     if (e.staged) { await this.session?.close(); await this.attach(); return { staged: true, workspace: join(e.guestRoot, 'workspace'), owned: this.status(), files: [], extractions: e.extractions }; }
     await transfer.checked(['/bin/mkdir', '-p', join(e.guestRoot, 'workspace'), join(e.guestRoot, 'state')]);
     const staged = [await transfer.pushFile(bundle, join(e.guestRoot, 'receiver.mjs'))];
-    for (const file of input.files ?? []) staged.push(await transfer.pushFile(resolve(this.options.project, file.local), within(join(e.guestRoot, 'support'), file.path), file.local.startsWith('/') ? dirname(resolve(file.local)) : resolve(this.options.project)));
-    if (input.workspace) staged.push(...await transfer.pushTree(resolve(this.options.project, input.workspace), join(e.guestRoot, 'workspace'), input.workspace.startsWith('/') ? resolve(input.workspace) : resolve(this.options.project)));
+    for (const file of files) staged.push(await transfer.pushFile(file.local, within(join(e.guestRoot, 'support'), file.path), project));
+    if (workspace) staged.push(...await transfer.pushTree(workspace, join(e.guestRoot, 'workspace'), project));
     await this.log('stage', undefined, { files: staged, extractions: e.extractions });
     const relay = Relay.open(join(e.hostRoot, 'host', 'submissions'));
     this.transport = new VmTransport(transfer, e.guestRoot, join(e.hostRoot, 'host'), e.cuaDriver);
@@ -567,8 +583,8 @@ export class RelayManager {
       result = await this.session.exec(argv, options);
     } else if (input.kind === 'script') {
       if (!input.localPath || !input.language) throw new Error('script requires localPath and language');
-      await assertHostPath(input.localPath.startsWith('/') ? dirname(input.localPath) : resolve(this.options.project), resolve(this.options.project, input.localPath));
-      result = await this.session.runScript(resolve(this.options.project, input.localPath), join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
+      const local = await this.projectPath(input.localPath, 'localPath');
+      result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
     } else if (input.kind === 'code') {
       if (typeof input.code !== 'string' || !input.language) throw new Error('code requires code and language');
       result = await this.session.runCode(input.code, input.language, options);

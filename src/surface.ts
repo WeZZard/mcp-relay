@@ -42,7 +42,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_stage', action: 'stage', title: 'Stage the guest runtime', annotations: acts(false),
-    description: 'Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. The guest Node and CuaDriver executables must already exist (`nodePath`, `cuaDriver`); Linux guests need native X11 and `cua-driver serve --no-overlay`. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording\'s evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held.',
+    description: 'Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. The guest Node and CuaDriver executables must already exist (`nodePath`, `cuaDriver`); Linux guests need native X11 and `cua-driver serve --no-overlay`. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording\'s evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held.',
   },
   {
     name: 'relay_exec', action: 'run', kind: 'exec', title: 'Run a guest command', annotations: acts(true),
@@ -50,7 +50,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_script', action: 'run', kind: 'script', title: 'Run a guest script', annotations: acts(true),
-    description: `Run one guest script file as this call's single recorded operation. ${runShared} Requires \`localPath\` (a host file path) and \`language\` (\`javascript\`, \`typescript\` or \`python\`); it runs under the staged workspace.`,
+    description: `Run one guest script file as this call's single recorded operation. ${runShared} Requires \`localPath\` (a host file in the project folder, relative to it or absolute inside it, with no symlinks) and \`language\` (\`javascript\`, \`typescript\` or \`python\`); it runs under the staged workspace.`,
   },
   {
     name: 'relay_code', action: 'run', kind: 'code', title: 'Run guest code', annotations: acts(true),
