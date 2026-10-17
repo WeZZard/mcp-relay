@@ -1,6 +1,6 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-22 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-23 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
