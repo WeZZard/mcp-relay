@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { RecordStore } from "@wezzard/relay-driver-remote-runtime";
-import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, receive, validateImageEvidence, type DispatchResult, type GuestRequest, type ReceiveOptions } from "../src/guest/receiver.js";
+import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, interpreterArgv, receive, validateImageEvidence, type DispatchResult, type GuestRequest, type ReceiveOptions } from "../src/guest/receiver.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO/8AAAAASUVORK5CYII=", "base64");
 const success: DispatchResult = { exitStatus: { code: 0, signal: null }, stdout: "done" };
@@ -567,4 +567,33 @@ test("a run on an image without capture software takes no snapshots, owes none a
   // Saved image evidence that claims a snapshot for such a run is invalid.
   assert.throws(() => validateImageEvidence({ status: "available", snapshots: [] }, request("x", { capture: false })), /invalid image evidence/);
   assert.equal((await receive(request("bad-capture", { capture: "no" as never, argv: ["program"] }), options)).outcome.kind, "refused");
+});
+
+test("a script runs with its language's runtime, TypeScript with tsx or else Node.js type stripping, and a missing runtime is refused (DC-25)", async () => {
+  const has = (...names: string[]) => async (name: string) => names.includes(name);
+  const node = (version: string, strips = false) => ({ execPath: "/guest/node", version, strips });
+  assert.deepEqual(await interpreterArgv("javascript", "s.js", has(), node("22.23.2")), ["/guest/node", "s.js"]);
+  assert.deepEqual(await interpreterArgv("python", "s.py", has("python3"), node("22.23.2")), ["python3", "s.py"]);
+  await assert.rejects(interpreterArgv("python", "s.py", has(), node("22.23.2")), /python3 is not on the guest's PATH/);
+  assert.deepEqual(await interpreterArgv("typescript", "s.ts", has("tsx"), node("22.23.2")), ["tsx", "s.ts"]);
+  assert.deepEqual(await interpreterArgv("typescript", "s.ts", has(), node("22.23.2")), ["/guest/node", "--experimental-strip-types", "--disable-warning=ExperimentalWarning", "s.ts"]);
+  assert.deepEqual(await interpreterArgv("typescript", "s.ts", has(), node("24.1.0", true)), ["/guest/node", "--disable-warning=ExperimentalWarning", "s.ts"]);
+  await assert.rejects(interpreterArgv("typescript", "s.ts", has(), node("22.5.1")), /no tsx on its PATH, and its Node\.js 22\.5\.1 predates type stripping/);
+});
+
+test("without tsx, a TypeScript script runs with this Node.js's type stripping and completes (DC-25)", async () => {
+  const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
+  if (major < 22 || (major === 22 && minor < 6)) return;
+  const dir = await mkdtemp(join(tmpdir(), "relay-ts-"));
+  try {
+    const script = join(dir, "s.ts");
+    await writeFile(script, "const n: number = 42; console.log('typed', n);\n");
+    const argv = await interpreterArgv("typescript", script, async () => false);
+    const out = await new Promise<string>((done, fail) => {
+      const child = spawn(argv[0]!, argv.slice(1)); let text = "";
+      child.stdout.on("data", chunk => { text += chunk; });
+      child.on("error", fail); child.on("close", code => code === 0 ? done(text) : fail(new Error(`exit ${code}`)));
+    });
+    assert.equal(out.trim(), "typed 42");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -93,6 +93,10 @@ export interface ManagerOptions {
   capacityWaitMs?: number;
   /** How often a waiting acquisition is asked again; default CAPACITY_RETRY_MS (DC-22). */
   capacityRetryMs?: number;
+  /** How long relay_stage waits for the guest's cua-driver to take a screenshot, in ms; default CAPTURE_READY_WAIT_MS (DC-24). */
+  captureReadyWaitMs?: number;
+  /** How often relay_stage asks the guest's cua-driver again; default CAPTURE_READY_RETRY_MS (DC-24). */
+  captureReadyRetryMs?: number;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -123,6 +127,9 @@ export const DOWNLOAD_BOUND = 64;
 export const DOWNLOAD_RETRY_DELAYS_MS = [1000, 3000] as const;
 /** How often an acquisition waiting for capacity is asked again (DC-22). */
 export const CAPACITY_RETRY_MS = 15000;
+/** An image starts cua-driver's daemon at login, which can follow the guest's readiness by tens of seconds (DC-24). */
+export const CAPTURE_READY_WAIT_MS = 120000;
+export const CAPTURE_READY_RETRY_MS = 2000;
 /** A task slug, as relay_acquire takes it. */
 const TASK = /^[a-z0-9][a-z0-9-]{0,35}$/;
 /** A guest name: the task and a counter, such as `login-test-2`; it names the guest's folder in the state directory (DC-20). */
@@ -622,6 +629,9 @@ class Guest {
       try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, language, required, ...r, ready: r.code === 0 }); }
       catch (error) { checks.push({ name, language, required, ready: false, diagnostic: String(error) }); }
     }
+    // Without tsx, TypeScript runs with the guest Node.js's own type stripping, 22.6 or later (DC-25).
+    const tsx = checks[1] as { ready: boolean; runsWith?: string }, nodeVersion = /^v(\d+)\.(\d+)/.exec(String((checks[0] as { stdout?: string }).stdout ?? ''));
+    if (!tsx.ready && nodeVersion && (Number(nodeVersion[1]) > 22 || (Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) >= 6))) Object.assign(tsx, { ready: true, runsWith: 'Node.js type stripping' });
     let software: { image: string; applications?: unknown[]; diagnostic?: string };
     try {
       const catalog: unknown = await this.m.vm.applications({ timeoutMs: 10000 }); validateCatalog(catalog);
@@ -886,8 +896,9 @@ class Guest {
     // Node.js is the only software staging assumes: it runs the relay's own guest code (DC-13).
     try { await transfer.checked([node, '--version']); }
     catch (error) { throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node} --version\` failed: ${error instanceof Error ? error.message : String(error)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error }); }
-    e.node = node;
-    e.cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver');
+    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver');
+    if (e.capture !== false) await this.awaitCapture(transfer, e, node, cuaDriver, signal);
+    e.node = node; e.cuaDriver = cuaDriver;
     await this.save();
     if (e.staged) { await this.session?.close(); await this.attach(); return { staged: true, workspace: join(e.guestRoot, 'workspace'), owned: this.status(), files: [], extractions: e.extractions, snapshots: this.snapshotFacts(e) }; }
     await transfer.checked(['/bin/mkdir', '-p', join(e.guestRoot, 'workspace'), join(e.guestRoot, 'state')]);
@@ -915,6 +926,34 @@ class Guest {
     const capture = catalog.images.some(image => image.image === e.image && image.applications.some(app => CAPTURE_SOFTWARE.includes(app.id)));
     await this.log('capture-software', undefined, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
     return capture;
+  }
+  /**
+   * Waits until the guest's cua-driver takes a screenshot, as each run's
+   * snapshots do (DC-24). The image starts its daemon at login, which can
+   * follow the guest's readiness, so the first runs would otherwise be refused.
+   */
+  private async awaitCapture(transfer: Transfer, e: Enclosure, node: string, cuaDriver: string, signal?: AbortSignal) {
+    const probe = join(e.guestRoot, 'state', '.stage-capture-probe.png');
+    const waitMs = this.m.options.captureReadyWaitMs ?? CAPTURE_READY_WAIT_MS, retryMs = this.m.options.captureReadyRetryMs ?? CAPTURE_READY_RETRY_MS;
+    const since = Date.now();
+    await transfer.checked(['/bin/mkdir', '-p', join(e.guestRoot, 'state')], undefined, signal);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await transfer.checked([cuaDriver, 'call', 'get_desktop_state', '--json', JSON.stringify({ screenshot_out_file: probe })], 60000, signal);
+        await transfer.checked([node, '-e', 'require("node:fs").rmSync(process.argv[1], { force: true })', probe], undefined, signal);
+        if (attempt > 1) await this.log('capture-ready', undefined, { waitedMs: Date.now() - since, attempts: attempt });
+        return;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        const waited = Date.now() - since;
+        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1000)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error)}. Diagnose or start it with relay_command and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error });
+        await new Promise<void>(done => {
+          const timer = setTimeout(done, retryMs);
+          signal?.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
+        });
+        if (signal?.aborted) throw error;
+      }
+    }
   }
   /** What a lease's runs record: snapshots when its image lists cua-driver, none otherwise. */
   private snapshotFacts(e: Enclosure) {

@@ -3,7 +3,7 @@ import { createRequire as __createRequire } from 'node:module'; const require = 
 // src/guest/receiver.ts
 import { spawn, execFile } from "node:child_process";
 import { createHash as createHash2, randomUUID } from "node:crypto";
-import { mkdir as mkdir3, open, readFile as readFile2, rename as rename3, rm as rm2, stat as stat2, realpath } from "node:fs/promises";
+import { access, constants, mkdir as mkdir3, open, readFile as readFile2, rename as rename3, rm as rm2, stat as stat2, realpath } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -1025,6 +1025,29 @@ async function runArgv(argv, options, onSpawn) {
     });
   });
 }
+async function onPath(name) {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    try {
+      await access(join3(dir, name), constants.X_OK);
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}
+async function interpreterArgv(language, path, find = onPath, node = { execPath: process.execPath, version: process.versions.node, strips: Boolean(process.features.typescript) }) {
+  if (language === "python") {
+    if (!await find("python3")) throw new Error("python3 is not on the guest's PATH, so a Python script cannot run; relay_probe scope=guest reports which runtimes the guest has");
+    return ["python3", path];
+  }
+  if (language !== "typescript") return [node.execPath, path];
+  if (await find("tsx")) return ["tsx", path];
+  if (node.strips) return [node.execPath, "--disable-warning=ExperimentalWarning", path];
+  const [major = 0, minor = 0] = node.version.split(".").map(Number);
+  if (major > 22 || major === 22 && minor >= 6) return [node.execPath, "--experimental-strip-types", "--disable-warning=ExperimentalWarning", path];
+  throw new Error(`the guest has no tsx on its PATH, and its Node.js ${node.version} predates type stripping (22.6), so a TypeScript script cannot run; write it in JavaScript instead`);
+}
 async function captureWithDriver(outFile, driver, dispatch = runArgv) {
   const result = await dispatch([driver, "call", "get_desktop_state", "--json", JSON.stringify({ screenshot_out_file: outFile })], { env: process.env, timeoutMs: 6e4 });
   if (result.exitStatus.code !== 0 || result.timedOut || result.outputTruncated || result.spawnError || result.terminationConfirmed !== true) throw new Error(`display capture unavailable: ${JSON.stringify({ exitStatus: result.exitStatus, timedOut: result.timedOut, outputTruncated: result.outputTruncated, spawnError: result.spawnError, terminationConfirmed: result.terminationConfirmed, terminationDiagnostic: result.terminationDiagnostic, stdout: result.stdout?.slice(0, 1500), stderr: result.stderr?.slice(0, 1500) })}`);
@@ -1204,7 +1227,7 @@ async function receive(input, options = {}) {
         if (hash(await readFile2(request.remotePath)) !== request.scriptSha256) throw new Error("script hash mismatch");
         const expected = request.language === "python" ? "python3" : request.language === "typescript" ? "tsx" : "node";
         if (argv.length !== 2 || argv[0].split("/").at(-1) !== expected || argv[1] !== request.remotePath) throw new Error("script argv must be [interpreter, verified remotePath]");
-        if (request.language === "javascript") argv = [process.execPath, request.remotePath];
+        argv = await interpreterArgv(request.language, request.remotePath);
       } else if (request.kind === "code") {
         if (hash(request.code) !== request.codeSha256) throw new Error("streamed code hash mismatch");
         const extension = request.language === "python" ? "py" : request.language === "typescript" ? "ts" : "js";
@@ -1218,7 +1241,7 @@ async function receive(input, options = {}) {
           await file.close();
         }
         if (hash(await readFile2(path)) !== request.codeSha256) throw new Error("materialized streamed code hash mismatch");
-        argv = [request.language === "python" ? "python3" : request.language === "typescript" ? "tsx" : process.execPath, path];
+        argv = await interpreterArgv(request.language, path);
       }
     } catch (error) {
       return await refuse(message(error));
@@ -1336,6 +1359,7 @@ export {
   afterRequested,
   confirmProcessGroupExit,
   groupAbsentFromProcessTable,
+  interpreterArgv,
   receive,
   validateImageEvidence
 };

@@ -31,6 +31,8 @@ flowchart LR
   - When the image lists no capture software, the run's record has no snapshots. The missing pair does not make the run `uncertain`.
   - When the image lists capture software, snapshots are taken and checked as today.
   - The host decides once per lease, at the first `relay_stage`, from the image's applications in the catalog, and tells the receiver with each run. A catalog that cannot be read refuses the stage, so a run never loses its snapshots by mistake.
+  - When the image lists capture software, `relay_stage` waits until cua-driver takes a screenshot before it returns, asking every 2 s for up to 120 s (DC-24). The image starts cua-driver's daemon at login, which can follow the guest's readiness by tens of seconds.
+  - A daemon that never answers refuses the stage with its error. The guest is kept, so the agent can start the daemon with a diagnostic `relay_command` and stage again.
 
 ## 4. Where the relay is used (DC-14)
 
@@ -91,10 +93,12 @@ flowchart LR
   - `inline: true` takes the script itself, `code`, up to 1 MiB. This is what `relay_code` did.
   - `inline: false` takes `localPath`, a file in the project folder (DC-15). This is what `relay_script` did.
   - A call gives exactly the one of `code` and `localPath` that `inline` names. Any other call is refused before it reaches the guest.
-  - The guest runs JavaScript with the Node.js that runs the receiver, TypeScript with `tsx`, and Python with `python3`, each from the guest's `PATH`.
+  - The guest runs JavaScript with the Node.js that runs the receiver, and Python with `python3` from the guest's `PATH`.
+  - The guest runs TypeScript with `tsx` from its `PATH`. When it has none, the receiver's Node.js runs the script with its own type stripping, which needs Node.js 22.6 or later (DC-25).
+  - A run whose runtime is missing is refused before anything starts, so it never ends `uncertain`.
 - A script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines.
 - Removed: `relay_exec` and `relay_code`, under their old names; `relay_run`, `relay_gate` and `relay_tools`; `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them; `relay_stage`'s `browserExecutable`, which only those servers used; and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
-- `relay_probe` with `scope: "guest"` reports, as facts, whether each language's runtime runs in the guest, and the software the image lists in the catalog.
+- `relay_probe` with `scope: "guest"` reports, as facts, whether each language's runtime runs in the guest, and the software the image lists in the catalog. TypeScript is ready when `tsx` runs or the guest's Node.js strips types.
 - The tools that manage a guest stay: `relay_search`, `relay_probe`, `relay_acquisition_capabilities`, `relay_acquire`, `relay_stage`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release`, `relay_status` and the console tools.
 
 ## 11. Verification
@@ -103,4 +107,6 @@ flowchart LR
 - Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
 - Lifecycle tests cover DC-21 with the shipped server and a fake vm-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.
 - Unit tests cover DC-22 with the fake vm-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.
+- Unit tests cover DC-24 with the fake vm-service: a cua-driver that fails three times and then answers is waited for, and the first run completes; one that never answers refuses the stage, keeps the guest, and a later stage succeeds; an image that lists no capture software asks for no screenshot.
+- Unit tests cover DC-25: the receiver picks `tsx`, then Node.js type stripping, for TypeScript, and refuses a script whose runtime is missing; a TypeScript script runs without `tsx` and completes.
 - Unit tests cover DC-23: `tools/list` serves `relay_command` and `relay_script` and none of `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools`; `relay_script` runs inline code and a project file in each language, and refuses a call whose `code` or `localPath` does not match `inline`; `relay_command` runs a command, and a diagnostic command runs before and after `relay_stage` without snapshots.

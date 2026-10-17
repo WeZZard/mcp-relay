@@ -225,11 +225,11 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-relay-manager-')));
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const service = new FixtureService(root), vm = await service.start();
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), captureReadyWaitMs: 1000, captureReadyRetryMs: 50, ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { service.releaseFailures = 0; service.failHeartbeat = false; service.failGet = false; service.hideLeases = false; await manager.release(); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const driver = join(root, 'fake-cua');
-  await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){console.log('fixture-cua 1.0');process.exit(0);}if(process.argv[2]!=='call'||process.argv[3]!=='get_desktop_state'||process.argv[4]!=='--json')process.exit(99);const a=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(a)+'\\n');fs.writeFileSync(a.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:a.screenshot_out_file}));`);
+  await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){console.log('fixture-cua 1.0');process.exit(0);}if(process.argv[2]!=='call'||process.argv[3]!=='get_desktop_state'||process.argv[4]!=='--json')process.exit(99);const down=()=>{console.error('Cua Driver daemon is not running');process.exit(1);};if(fs.existsSync(${JSON.stringify(join(root, 'capture-fails'))}))down();const n=${JSON.stringify(join(root, 'capture-fails-count'))};if(fs.existsSync(n)){const left=Number(fs.readFileSync(n,'utf8'));if(left>0){fs.writeFileSync(n,String(left-1));down();}}const a=JSON.parse(process.argv[5]);fs.appendFileSync(a.screenshot_out_file.includes('.stage-capture-probe')?${JSON.stringify(join(root, 'probes.jsonl'))}:${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(a)+'\\n');fs.writeFileSync(a.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:a.screenshot_out_file}));`);
   await chmod(driver, 0o700);
   const stage = () => manager.stage({ cuaDriver: driver, nodePath: process.execPath });
   const assertClean = async () => {
@@ -931,7 +931,7 @@ test('an image that lists no capture software stages, runs relay_script and fini
   const staged = await f.manager.stage({ nodePath: process.execPath }) as any;
   assert.equal(staged.snapshots.taken, false); assert.match(staged.snapshots.reason, /lists no capture software \(cua-driver\)/);
   const probe = await f.manager.probe('guest') as any;
-  assert.deepEqual(probe.checks.map((check: any) => [check.name, check.language, check.required, check.ready]), [['node', 'javascript', true, true], ['tsx', 'typescript', false, false], ['python3', 'python', false, true]], 'the runtimes are facts; only Node.js is required');
+  assert.deepEqual(probe.checks.map((check: any) => [check.name, check.language, check.required, check.ready]), [['node', 'javascript', true, true], ['tsx', 'typescript', false, true], ['python3', 'python', false, true]], 'the runtimes are facts; only Node.js is required, and TypeScript runs with Node.js type stripping (DC-25)');
   assert.deepEqual(probe.software, { image: 'ubuntu2404', applications: nodeOnly.images[0]!.applications }, 'the listed software is the catalog\'s');
   assert.equal(probe.snapshots.taken, false);
   const run = await f.manager.run(operation('code', { kind: 'script', inline: true, language: 'javascript', code: "require('node:fs').writeFileSync('out.txt','no capture');console.log('ran')" }));
@@ -979,7 +979,8 @@ test('on an image that lists cua-driver, a run whose snapshot cannot be taken is
   // The image lists cua-driver, but the driver cannot capture: as before, the run is refused before any input.
   const f = await fixture(t);
   await f.manager.acquire(acquireInput());
-  await f.manager.stage({ nodePath: process.execPath, cuaDriver: join(f.root, 'no-such-driver') });
+  await f.stage();
+  await writeFile(join(f.root, 'capture-fails'), '');
   const run = await f.manager.run(operation('uncaptured-but-owed'));
   assert.equal(run.outcome.kind, 'refused', JSON.stringify(run.outcome));
   await f.manager.release(); await f.assertClean();
@@ -1223,7 +1224,8 @@ test('guest probe reports each language runtime and the listed software read-onl
   const initial = await f.manager.probe('guest') as any;
   assert.equal(initial.scope, 'guest'); assert.equal(initial.owned.vm, acquired.vm);
   assert.equal(initial.captureVerified, false); assert.equal(initial.browserVerified, false);
-  assert.deepEqual(initial.checks.map((c: any) => [c.name, c.language, c.ready]), [['node', 'javascript', true], ['tsx', 'typescript', false], ['python3', 'python', true]]);
+  assert.deepEqual(initial.checks.map((c: any) => [c.name, c.language, c.ready]), [['node', 'javascript', true], ['tsx', 'typescript', true], ['python3', 'python', true]]);
+  assert.equal(initial.checks[1].code, 127, 'tsx itself is missing'); assert.equal(initial.checks[1].runsWith, 'Node.js type stripping', 'TypeScript runs with the guest Node.js (DC-25)');
   assert.deepEqual(initial.software.applications.map((app: any) => app.id), ['dpkg:cua-driver', 'dpkg:nodejs']);
   assert.equal('targets' in initial, false, 'relay_run targets are gone');
   let commands = f.service.requests.slice(before).filter(r => r.path.endsWith('/exec'));
@@ -1282,12 +1284,15 @@ test('relay_script runs inline code and a project file in each language, in the 
 
 test('staged executable path correction reattaches without replay or workspace replacement', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
-  await f.manager.stage({ nodePath: process.execPath, cuaDriver: join(f.root, 'missing-driver') });
+  // The driver answers at stage and then breaks, so the corrected stage reattaches to a staged guest (DC-24).
+  await f.stage();
+  await writeFile(join(f.root, 'capture-fails'), '');
   const failed = await f.manager.run(operation('bad-driver'));
   assert.notEqual(failed.outcome.kind, 'completed'); await f.assertRetained(acquired.vm);
   const sessionId = (await json(leaseFile(f.manager))).sessionId;
   await writeFile(join(acquired.workspace, 'keep.txt'), 'keep');
   const calls = f.service.receiverCalls;
+  await rm(join(f.root, 'capture-fails'));
   await f.stage(); assert.equal(f.service.receiverCalls, calls, 'path correction cannot replay failed input');
   assert.equal((await json(leaseFile(f.manager))).sessionId, sessionId);
   assert.equal(await readFile(join(acquired.workspace, 'keep.txt'), 'utf8'), 'keep');
@@ -1954,4 +1959,40 @@ test('a 409 that is not a capacity refusal, or a wait of 0, is not retried (DC-2
   none.service.acquireRefusal = capacityRefused;
   await assert.rejects(none.manager.acquire(acquireInput()), error => !/waited/.test(String(error)) && /macOS VM limit reached/.test(String(error)));
   assert.equal(acquisitions(none), 1, 'MCP_RELAY_CAPACITY_WAIT=0 does not wait');
+});
+
+test('relay_stage waits for the guest\'s cua-driver to take a screenshot before it returns (DC-24)', async t => {
+  const f = await fixture(t);
+  await f.manager.acquire(acquireInput());
+  await writeFile(join(f.root, 'capture-fails-count'), '3');
+  const staged = await f.stage() as any;
+  assert.equal(staged.snapshots.taken, true);
+  assert.equal(await readFile(join(f.root, 'capture-fails-count'), 'utf8'), '0', 'the stage asked until the daemon answered');
+  assert.equal((await readFile(join(f.root, 'probes.jsonl'), 'utf8')).trim().split('\n').length, 1);
+  const run = await f.manager.run(operation('first-run'));
+  assert.equal(run.outcome.kind, 'completed', JSON.stringify(run.outcome));
+  await f.manager.release(); await f.assertClean();
+});
+
+test('relay_stage refuses when the guest\'s cua-driver never takes a screenshot, and a later stage succeeds (DC-24)', async t => {
+  const f = await fixture(t, { captureReadyWaitMs: 300 });
+  const acquired = await f.manager.acquire(acquireInput());
+  await writeFile(join(f.root, 'capture-fails'), '');
+  await assert.rejects(f.stage(), /relay_stage waited \d+ s for ubuntu2404's cua-driver to take a screenshot.*Cua Driver daemon is not running.*diagnostic: true/s);
+  assert.equal(f.manager.guestStatus().staged, false); assert.equal(f.service.receiverCalls, 0);
+  await f.assertRetained(acquired.vm);
+  await rm(join(f.root, 'capture-fails'));
+  await f.stage(); assert.equal(f.manager.guestStatus().staged, true);
+  await f.manager.release(); await f.assertClean();
+});
+
+test('relay_stage asks for no screenshot when the image lists no capture software (DC-24)', async t => {
+  const f = await fixture(t);
+  f.service.catalog = { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'dpkg:nodejs', name: 'Node.js', aliases: ['node'], version: '22.0.0' }] }] };
+  await f.manager.acquire(acquireInput());
+  await writeFile(join(f.root, 'capture-fails'), '');
+  const staged = await f.stage() as any;
+  assert.equal(staged.snapshots.taken, false);
+  assert.equal(await exists(join(f.root, 'probes.jsonl')), false);
+  await f.manager.release(); await f.assertClean();
 });

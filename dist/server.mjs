@@ -28743,6 +28743,8 @@ var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
 var CAPACITY_RETRY_MS = 15e3;
+var CAPTURE_READY_WAIT_MS = 12e4;
+var CAPTURE_READY_RETRY_MS = 2e3;
 var TASK = /^[a-z0-9][a-z0-9-]{0,35}$/;
 var GUEST_NAME = /^[a-z0-9][a-z0-9-]{0,47}$/;
 var downloadKey = (target) => `${target.sessionId}/${target.executionId}`;
@@ -29354,6 +29356,8 @@ var Guest = class {
         checks.push({ name, language: language2, required: required2, ready: false, diagnostic: String(error2) });
       }
     }
+    const tsx = checks[1], nodeVersion = /^v(\d+)\.(\d+)/.exec(String(checks[0].stdout ?? ""));
+    if (!tsx.ready && nodeVersion && (Number(nodeVersion[1]) > 22 || Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) >= 6)) Object.assign(tsx, { ready: true, runsWith: "Node.js type stripping" });
     let software;
     try {
       const catalog = await this.m.vm.applications({ timeoutMs: 1e4 });
@@ -29697,8 +29701,10 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     } catch (error2) {
       throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node2} --version\` failed: ${error2 instanceof Error ? error2.message : String(error2)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error2 });
     }
+    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease.image_kind === "macos" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver");
+    if (e.capture !== false) await this.awaitCapture(transfer, e, node2, cuaDriver, signal);
     e.node = node2;
-    e.cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease.image_kind === "macos" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver");
+    e.cuaDriver = cuaDriver;
     await this.save();
     if (e.staged) {
       await this.session?.close();
@@ -29736,6 +29742,37 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const capture = catalog.images.some((image) => image.image === e.image && image.applications.some((app) => CAPTURE_SOFTWARE.includes(app.id)));
     await this.log("capture-software", void 0, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
     return capture;
+  }
+  /**
+   * Waits until the guest's cua-driver takes a screenshot, as each run's
+   * snapshots do (DC-24). The image starts its daemon at login, which can
+   * follow the guest's readiness, so the first runs would otherwise be refused.
+   */
+  async awaitCapture(transfer, e, node2, cuaDriver, signal) {
+    const probe = join13(e.guestRoot, "state", ".stage-capture-probe.png");
+    const waitMs = this.m.options.captureReadyWaitMs ?? CAPTURE_READY_WAIT_MS, retryMs = this.m.options.captureReadyRetryMs ?? CAPTURE_READY_RETRY_MS;
+    const since = Date.now();
+    await transfer.checked(["/bin/mkdir", "-p", join13(e.guestRoot, "state")], void 0, signal);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await transfer.checked([cuaDriver, "call", "get_desktop_state", "--json", JSON.stringify({ screenshot_out_file: probe })], 6e4, signal);
+        await transfer.checked([node2, "-e", 'require("node:fs").rmSync(process.argv[1], { force: true })', probe], void 0, signal);
+        if (attempt > 1) await this.log("capture-ready", void 0, { waitedMs: Date.now() - since, attempts: attempt });
+        return;
+      } catch (error2) {
+        if (signal?.aborted) throw error2;
+        const waited = Date.now() - since;
+        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1e3)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error2)}. Diagnose or start it with relay_command and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error2 });
+        await new Promise((done) => {
+          const timer = setTimeout(done, retryMs);
+          signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            done();
+          }, { once: true });
+        });
+        if (signal?.aborted) throw error2;
+      }
+    }
   }
   /** What a lease's runs record: snapshots when its image lists cua-driver, none otherwise. */
   snapshotFacts(e) {
@@ -30443,7 +30480,7 @@ var relayTools = [
     action: "stage",
     title: "Stage the guest runtime",
     annotations: acts(false),
-    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto the acquired guest that `guest` names. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result's `snapshots` says which. `cuaDriver` names the guest cua-driver the snapshots use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
+    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto the acquired guest that `guest` names. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result's `snapshots` says which. When the image lists cua-driver, staging waits up to 120 s for it to take a screenshot, since the image starts its daemon at login, and refuses if it never does. `cuaDriver` names the guest cua-driver the snapshots use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
   },
   {
     name: "relay_command",
@@ -30459,7 +30496,7 @@ var relayTools = [
     kind: "script",
     title: "Run a guest script",
     annotations: acts(true),
-    description: `Run one guest script as this call's single recorded operation; the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. ${runShared} Requires \`language\` (\`javascript\`, \`typescript\` or \`python\`) and \`inline\`: with \`inline: true\` give the script itself as \`code\` (up to 1 MiB); with \`inline: false\` give \`localPath\`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one \`inline\` names; any other call is refused. It runs in the staged workspace: JavaScript with the guest's Node.js, TypeScript with \`tsx\` and Python with \`python3\` from the guest's PATH (relay_probe scope=guest reports which run).`
+    description: `Run one guest script as this call's single recorded operation; the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. ${runShared} Requires \`language\` (\`javascript\`, \`typescript\` or \`python\`) and \`inline\`: with \`inline: true\` give the script itself as \`code\` (up to 1 MiB); with \`inline: false\` give \`localPath\`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one \`inline\` names; any other call is refused. It runs in the staged workspace: JavaScript with the guest's Node.js, TypeScript with \`tsx\` from the guest's PATH or else the guest Node.js's own type stripping (22.6 or later), and Python with \`python3\` from the guest's PATH (relay_probe scope=guest reports which run); a missing runtime refuses the run before it starts.`
   },
   {
     name: "relay_image",

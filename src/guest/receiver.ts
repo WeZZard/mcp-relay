@@ -1,6 +1,6 @@
 import { spawn, execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm, stat, realpath } from "node:fs/promises";
+import { access, constants, mkdir, open, readFile, rename, rm, stat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FramedRequest, FramedResponse } from "@wezzard/relay-driver-host-sdk";
@@ -190,6 +190,34 @@ async function runArgv(argv: readonly string[], options: { cwd?: string; env: No
   });
 }
 
+/** Whether an executable named `name` lies on the guest's PATH. */
+async function onPath(name: string): Promise<boolean> {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    try { await access(join(dir, name), constants.X_OK); return true; } catch { /* not in this directory */ }
+  }
+  return false;
+}
+
+/**
+ * The argv that runs a script file in its language (DC-25): JavaScript with
+ * this Node.js, Python with `python3` from PATH, and TypeScript with `tsx`
+ * from PATH or else this Node.js's own type stripping (22.6 or later). A
+ * missing runtime refuses the run before anything starts.
+ */
+export async function interpreterArgv(language: string | undefined, path: string, find: (name: string) => Promise<boolean> = onPath, node: { execPath: string; version: string; strips: boolean } = { execPath: process.execPath, version: process.versions.node, strips: Boolean((process.features as { typescript?: unknown }).typescript) }): Promise<string[]> {
+  if (language === "python") {
+    if (!(await find("python3"))) throw new Error("python3 is not on the guest's PATH, so a Python script cannot run; relay_probe scope=guest reports which runtimes the guest has");
+    return ["python3", path];
+  }
+  if (language !== "typescript") return [node.execPath, path];
+  if (await find("tsx")) return ["tsx", path];
+  if (node.strips) return [node.execPath, "--disable-warning=ExperimentalWarning", path];
+  const [major = 0, minor = 0] = node.version.split(".").map(Number);
+  if (major > 22 || (major === 22 && minor >= 6)) return [node.execPath, "--experimental-strip-types", "--disable-warning=ExperimentalWarning", path];
+  throw new Error(`the guest has no tsx on its PATH, and its Node.js ${node.version} predates type stripping (22.6), so a TypeScript script cannot run; write it in JavaScript instead`);
+}
+
 async function captureWithDriver(outFile: string, driver: string, dispatch: typeof runArgv = runArgv): Promise<void> {
   const result = await dispatch([driver, "call", "get_desktop_state", "--json", JSON.stringify({ screenshot_out_file: outFile })], { env: process.env, timeoutMs: 60_000 });
   if (result.exitStatus.code !== 0 || result.timedOut || result.outputTruncated || result.spawnError || result.terminationConfirmed !== true) throw new Error(`display capture unavailable: ${JSON.stringify({ exitStatus: result.exitStatus, timedOut: result.timedOut, outputTruncated: result.outputTruncated, spawnError: result.spawnError, terminationConfirmed: result.terminationConfirmed, terminationDiagnostic: result.terminationDiagnostic, stdout: result.stdout?.slice(0, 1500), stderr: result.stderr?.slice(0, 1500) })}`);
@@ -350,7 +378,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
         // eval/module/preload options can execute unrelated bytes instead.
         const expected = request.language === "python" ? "python3" : request.language === "typescript" ? "tsx" : "node";
         if (argv.length !== 2 || argv[0]!.split("/").at(-1) !== expected || argv[1] !== request.remotePath) throw new Error("script argv must be [interpreter, verified remotePath]");
-        if (request.language === "javascript") argv = [process.execPath, request.remotePath!];
+        argv = await interpreterArgv(request.language, request.remotePath!);
       } else if (request.kind === "code") {
         if (hash(request.code!) !== request.codeSha256) throw new Error("streamed code hash mismatch");
         const extension = request.language === "python" ? "py" : request.language === "typescript" ? "ts" : "js";
@@ -359,7 +387,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
         const file = await open(path, "wx", 0o600);
         try { await file.writeFile(request.code!); await file.sync(); } finally { await file.close(); }
         if (hash(await readFile(path)) !== request.codeSha256) throw new Error("materialized streamed code hash mismatch");
-        argv = [request.language === "python" ? "python3" : request.language === "typescript" ? "tsx" : process.execPath, path];
+        argv = await interpreterArgv(request.language, path);
       }
     } catch (error) { return await refuse(message(error)); }
     await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...(uncaptured ? { capture: false } : {}), scriptIdentity: request.kind === "exec" ? undefined : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
