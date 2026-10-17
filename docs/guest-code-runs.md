@@ -1,6 +1,6 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15 and DC-17 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15, DC-17 and DC-20 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
@@ -52,6 +52,16 @@ flowchart LR
 - `relay_acquire` takes no network from the agent, so an agent cannot widen what its guest reaches.
 - A vm-service that cannot give `internet` refuses the acquisition with its reason. The relay never falls back to `nat`.
 
-## 7. Verification
+## 7. Several guests in one session (DC-20)
+
+- One relay session may hold several guests at once. An agent acquires one guest for each machine its work needs, and its subagents, which share its relay, may each work on their own guest at the same time.
+- `relay_acquire` answers the guest's name, `guest`, which is unique in the session. Every tool that acts on a guest takes `guest`: `relay_stage`, the run tools, `relay_gate`, `relay_tools`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release` and the console tools.
+- `relay_status` and `relay_probe` list every guest the session holds, with its state.
+- Each guest keeps its own lease and heartbeat, its own evidence folder under `relay-evidence/`, its own background downloads, and its own finish or release. Finishing or releasing one guest leaves the others running.
+- Calls on different guests run at the same time. Calls on one guest keep their order, as today.
+- A session holds at most `MCP_RELAY_MAX_GUESTS` guests, 4 by default. An acquisition beyond it is refused with a reason that names the guests held. The backend's own limits, such as two macOS VMs per host, still hold, and its refusals pass through.
+- When the session ends, each guest's lease renewal pauses, as for one guest today.
+
+## 8. Verification
 
 - Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
