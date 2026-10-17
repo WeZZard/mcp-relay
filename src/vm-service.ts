@@ -76,10 +76,25 @@ export interface VmServiceOptions {
 export type VmBackend = Pick<VmService, 'baseUrl' | 'health' | 'list' | 'images' | 'applications' | 'get' | 'acquire' | 'exec' | 'push' | 'pull' | 'heartbeat' | 'release'> & Partial<Pick<VmService, 'acquisitionCapabilities' | 'consoleResolve' | 'consoleOpen' | 'consoleCancel'>>;
 
 export class VmServiceError extends Error {
+  /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
+  capacity = false;
   constructor(message: string, readonly status?: number, readonly responseBody?: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "VmServiceError";
   }
+}
+/**
+ * vm-service's refusal of an acquisition because the host is at capacity:
+ * HTTP 409 whose error is its macOS VM limit, refused before any lease was
+ * reserved. Any other 409, or one whose outcome is uncertain, is not (DC-22).
+ */
+export function capacityRefusal(error: unknown): boolean {
+  if (!(error instanceof VmServiceError) || error.status !== 409 || !error.responseBody) return false;
+  let body: unknown;
+  try { body = JSON.parse(error.responseBody); } catch { return false; }
+  if (!body || typeof body !== "object") return false;
+  const { error: reason, outcome } = body as { error?: unknown; outcome?: unknown };
+  return typeof reason === "string" && reason.startsWith("macOS VM limit reached") && outcome !== "uncertain";
 }
 /** No acquire retry is safe: the daemon has no idempotency key/cancel endpoint. */
 export class AcquireIndeterminateError extends VmServiceError {
@@ -169,6 +184,8 @@ export class VmService {
     } catch (error) {
       // VNC provisioning errors must not reflect adapter diagnostics or secrets.
       const safeError = body.vnc ? new VmServiceError(`VNC acquisition refused or outcome unknown${error instanceof VmServiceError && error.status ? ` (HTTP ${error.status})` : ''}; inspect capabilities and reconcile ownership`, error instanceof VmServiceError ? error.status : undefined) : error;
+      // A capacity refusal stays recognisable even when the VNC message hides the daemon's text (DC-22).
+      if (safeError instanceof VmServiceError) safeError.capacity = capacityRefusal(error);
       // A 4xx is an explicit daemon refusal; all other outcomes require reconciliation.
       if (error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) throw safeError;
       throw new AcquireIndeterminateError(body.purpose, safeError);

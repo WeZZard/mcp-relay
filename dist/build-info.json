@@ -999,9 +999,9 @@
     "node_modules/zod/v4/mini/parse.js": "b87374f4e821d583f699d83e4b74ac59e4a5a782c510959187a0ba209145d76b",
     "node_modules/zod/v4/mini/schemas.js": "5614339bbec6b9be13ed1809e1215fe44d78e99f5f0eee848c0bb3b25dc1c9b6",
     "src/archive.ts": "469ca411558db5696c8790d8a7132108d6705d4316c5a31a149f7472ddbef0ec",
-    "src/config.ts": "cfe0e183ce39c64d66b29118c3b668be87d4a51b172a6908043443afd0cd2bfa",
+    "src/config.ts": "3fbc475596ec0a1b6122ea963bf2769420a8a2a0e62fda55e66018fb3a6d53b3",
     "src/console.ts": "d8258173a24449c2a394289b14983b9575c5ce753ab267d4e13213f3abfcb72d",
-    "src/core.ts": "8a051b3dfae6d828698419590301be3166a69a648505e1d9f7a1306730efdf32",
+    "src/core.ts": "ba1593ba65b3340d1ab4b386222b44dd2ec454cfc4df510a23ab49339544ea36",
     "src/doctor.ts": "44dd14594acc8f0e7262bbf5f71f8d125722b832d1d3a92c6292372594b130d4",
     "src/downloads.ts": "4f37b5bb4fac96f9260a3a87c83bacf715b9add5ae9926d3fe0994000c70a8dd",
     "src/environment.ts": "04bc2a82eb56c1b0d77dabc9db4b0af9331f18c14398e7370e31a0081914f019",
@@ -1012,7 +1012,7 @@
     "src/image-presentation.ts": "64ca29a3444a04606cb783c81ac2d0f3136f9a9ac730ae9074156f0a63256c76",
     "src/images.ts": "734a30ba34cd80ef0b5c3791232f13b170b06d6d74c4b843d39566d2e09136d0",
     "src/json-schema.ts": "551068bb2fcbcf48a06bdb05b61c347eee66bd1193b628836fa94a21cccfd2c5",
-    "src/manager.ts": "dbd2a9020f60f2d1a7a36f0cf16901e941daebe46f0fdcef6f5be7ef7795ca6e",
+    "src/manager.ts": "b3e50ef8966bee3de43e3be30b7a574d021c75c18470d97eed57d0576ba61eda",
     "src/owner-lock.ts": "a99cbaba67b4aff0e646dc5d5967db4497ba6dbda83fb1838c55f0bf0f6e0367",
     "src/package.ts": "a52ed791813922e3ace9144706ddde8313a67d8580a3acd54a0799de3ebe44d2",
     "src/probe.ts": "40a123f725aad7c22fe63707dd2de99646cb1f307d7d660927e8ca2b973e9ce0",
@@ -1021,13 +1021,13 @@
     "src/schema.ts": "a2a37cb8c56950335ebf6ca87bdb4d0fec3652313dcb9c7aa1f1281ff5bb951d",
     "src/search-diagnostics.ts": "cea037618c56f075d51155101ad1cc0314bfa67b174bdb070191e0ea5ea04679",
     "src/search.ts": "8aaf544fcb27e7e018bd976e1ba7d3c70c047aeda3182b3dce91873a901a245e",
-    "src/server.ts": "946ffd56d7b88f31b007bba13ede11602db90e5117f25538a1b38776f8733088",
-    "src/surface.ts": "a3b9d09b7fead4d24c82a2db83f01ad11869008684f2e6527e7a6953c6851fbc",
+    "src/server.ts": "8dab96f566512815550588b36a505d1336389ce2668b185c756c382985ce88f0",
+    "src/surface.ts": "b252cb1874a6abae1c4a8b0d870ec1a4e15aae317a34bc44af5f254db0736b00",
     "src/targets.ts": "7dde238cb27f11ab781bed1452a1c432f02cee4b2c04771bd3188c4c86ca6b7a",
     "src/transfer.ts": "009dfb72ebd41a5642ec02a48ab7b678bed75e5db8859acc15a45e7f0bd43462",
     "src/transport.ts": "e4afc035e2d5f42ada2288a12fd0edbde3a152e7f3575ae9fc17022e8c63a047",
     "src/typebox.ts": "7f071fbc67548c7d3701272dabe88a217812e12e41dfad76974ff08169fa1a7e",
     "src/util.ts": "88993ec29376fbaf5c19fd23153b19c35fef99be1a906c59428cf48554c3b8da",
-    "src/vm-service.ts": "86e669e451805cf07f813489b213976a66cd9b9c48c3695981c8f26fe044347d"
+    "src/vm-service.ts": "f2a6bfa910484f42aa264dbe02012379c82b093a71645b33e8a8ccd968f4634d"
   }
 }

@@ -1,6 +1,6 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15, DC-17, DC-20 and DC-21 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-22 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
@@ -74,8 +74,18 @@ flowchart LR
 - A guest whose release fails keeps its ownership record and registry row, so a later session with the same `MCP_RELAY_SESSION` can release it. Its renewal stops without the final renewal `pause` makes, so its lease ends within its last renewal window, 15 minutes, plus the backend's grace period.
 - An application that owns its tasks' machines, such as The Desk, sets `release`.
 
-## 9. Verification
+## 9. Waiting for capacity (DC-22)
+
+- vm-service refuses an acquisition with HTTP 409 when the host is at capacity, such as when it already runs its two macOS VMs. It refuses before it reserves anything, so the same acquisition can be asked again. Its `wait: true` waits for a VM to boot, never for capacity.
+- `relay_acquire` then waits instead of failing. It asks again every 15 s for up to `MCP_RELAY_CAPACITY_WAIT` seconds, 1800 by default; 0 turns waiting off. Any value but a nonnegative integer stops the relay at startup.
+- Only the capacity refusal waits: a 409 whose error is vm-service's macOS VM limit and whose outcome is not uncertain. Every other refusal passes through at once, as before.
+- A waiting guest keeps its name and its registry row, and counts against `MCP_RELAY_MAX_GUESTS`. `relay_status` shows it as `waitingForCapacity`, with since when, how many refusals and vm-service's reason, and the limit's refusal names it as waiting for capacity.
+- A cancelled call or the end of the session stops the wait at once. Nothing was acquired, so the guest leaves the session as after any refusal, and a session that ends with `MCP_RELAY_ON_EXIT=release` still exits promptly.
+- When the wait runs out, `relay_acquire` refuses with vm-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
+
+## 10. Verification
 
 - Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
 - Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
 - Lifecycle tests cover DC-21 with the shipped server and a fake vm-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.
+- Unit tests cover DC-22 with the fake vm-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.

@@ -33,6 +33,16 @@ test('the server refuses to start on a guest network other than nat or internet 
   });
 });
 
+test('the server refuses to start on a capacity wait that is not whole seconds (DC-22)', async () => {
+  for (const value of ['', '-1', '1.5', '30m']) {
+    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_CAPACITY_WAIT: value } }), (error: any) => {
+      assert.equal(error.code, 1, value);
+      assert.match(error.stderr, /MCP_RELAY_CAPACITY_WAIT must be a nonnegative integer of seconds/, value);
+      return true;
+    });
+  }
+});
+
 test('the server refuses to start on an exit behaviour other than pause or release (DC-21)', async () => {
   for (const value of ['', 'destroy', 'Release']) {
     await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_ON_EXIT: value } }), (error: any) => {

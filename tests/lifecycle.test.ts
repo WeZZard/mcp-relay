@@ -30,6 +30,8 @@ class FakeService {
   releaseCalls = 0;
   execHook?: (argv: string[]) => Promise<{ rc: number; output: string }>;
   releaseHook?: () => Promise<void>;
+  /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
+  acquireRefusal?: { status: number; body: unknown };
   readonly seen = new Map<string, ReturnType<typeof gate>>();
   readonly http = createServer((req, res) => { void this.handle(req, res).catch(error => this.respond(res, 500, { error: String(error) })); });
   url = '';
@@ -50,6 +52,7 @@ class FakeService {
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true } }, capacity: { macos_running: 0, macos_limit: 2 } });
     if (path === '/vms') return this.respond(res, 200, { vms: Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: '/nonexistent', port: 0 });
     if (path === '/acquire') {
+      if (this.acquireRefusal) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
       const vm = `fixture-${randomUUID()}`;
       const lease = { vm, purpose: body.purpose, image: body.image, image_kind: 'linux', env: body.env, state: 'running', created_at: Date.now() / 1000, ttl_expires_at: Date.now() / 1000 + body.ttl_hours * 3600, grace_until: null, warned: false, ip: null, cpu: null, memory_mb: null, disk_gb: null };
       this.leases.set(vm, lease);
@@ -367,4 +370,24 @@ test('DC-21: with MCP_RELAY_ON_EXIT=release, a guest operation that never answer
   const exit = await exitWithin(relay, 20000);
   assert.ok(exit, 'the release is bounded'); assert.equal(exit.code, 0, relay.stderr());
   await assertReleased(f, relay, owned);
+});
+
+test('DC-22: with MCP_RELAY_ON_EXIT=release, a session that ends while relay_acquire waits for capacity exits at once with nothing acquired', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release', MCP_RELAY_CAPACITY_WAIT: '600' });
+  const owned = await twoGuests(f, relay);
+  f.fake.acquireRefusal = { status: 409, body: { error: 'macOS VM limit reached (2 active); release one first' } };
+  const waiting = relay.call('relay_acquire', acquireArgs);
+  await f.fake.arrived('/acquire');
+  const deadline = Date.now() + 5000;
+  while (!JSON.parse((await relay.call('relay_status')).content[0].text).guests.some((guest: any) => guest.waitingForCapacity) && Date.now() < deadline) await sleep(50);
+  const started = Date.now();
+  relay.child.stdin.end();
+  const exit = await exitWithin(relay, 10000);
+  assert.ok(exit, 'the server exits without waiting out the capacity wait'); assert.equal(exit.code, 0, relay.stderr());
+  assert.ok(Date.now() - started < 8000, `exit took ${Date.now() - started} ms`);
+  void waiting;
+  await assertReleased(f, relay, owned);
+  assert.equal(f.fake.requests.filter(r => r.path === '/acquire').length, 3, 'the waiting acquisition was asked once and never granted');
+  assert.equal(await readFile(f.leaseFile(relay, 'lifecycle-3'), 'utf8'), 'null\n', 'the waiting guest holds no record');
 });

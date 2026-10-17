@@ -60,6 +60,21 @@ export function maxGuests(env: NodeJS.ProcessEnv = process.env): number {
   return count;
 }
 
+/** How long relay_acquire waits for capacity when MCP_RELAY_CAPACITY_WAIT is unset, in seconds (DC-22). */
+export const DEFAULT_CAPACITY_WAIT_S = 1800;
+/**
+ * How long relay_acquire waits for a host at capacity, from
+ * MCP_RELAY_CAPACITY_WAIT in whole seconds: 1800 when it is unset, 0 for not
+ * at all. Anything but a nonnegative integer is refused (DC-22).
+ */
+export function capacityWait(env: NodeJS.ProcessEnv = process.env): number {
+  const value = env.MCP_RELAY_CAPACITY_WAIT;
+  if (value === undefined) return DEFAULT_CAPACITY_WAIT_S;
+  const seconds = /^(0|[1-9][0-9]*)$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(seconds)) throw new TypeError(`MCP_RELAY_CAPACITY_WAIT must be a nonnegative integer of seconds, not ${JSON.stringify(value)}; the relay does not start until it names one`);
+  return seconds;
+}
+
 /** What the end of a session does to its guests (DC-21). */
 export const ON_EXIT = ['pause', 'release'] as const;
 export type OnExit = typeof ON_EXIT[number];

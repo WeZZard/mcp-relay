@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import { RelayManager, type AcquireInput, type ManagerOptions, type RunInput } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
-import { VmService, type VmLease } from '../src/vm-service.js';
+import { VmService, VmServiceError, capacityRefusal, type VmLease } from '../src/vm-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
 import { targetLaunches, type Target } from '../src/targets.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -121,6 +121,8 @@ class FixtureService {
   noNode = false;
   /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
   acquireRefusal?: { status: number; body: unknown };
+  /** How many acquisitions acquireRefusal refuses before the next is granted; every one when undefined. */
+  acquireRefusals?: number;
   receiverHook?: () => Promise<void>;
   /** Runs before any pull; a test can hold one open. */
   pullHook?: (remote: string) => Promise<void>;
@@ -146,7 +148,7 @@ class FixtureService {
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true }, missing: { base_available: false } }, capacity: { macos_running: 0, macos_limit: 2 } });
     if (path === '/vms') return this.respond(res, 200, { vms: this.hideLeases ? {} : Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: this.root, port: 0 });
     if (path === '/acquire') {
-      if (this.acquireRefusal) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
+      if (this.acquireRefusal && (this.acquireRefusals === undefined || this.acquireRefusals-- > 0)) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
       const vm = `fixture-${randomUUID()}`;
       const lease: VmLease = { vm, purpose: body.purpose, image: body.image, image_kind: 'linux', env: body.env, state: 'running', created_at: Date.now() / 1000, ttl_expires_at: Date.now() / 1000 + body.ttl_hours * 3600, grace_until: null, warned: false, ip: null, cpu: null, memory_mb: null, disk_gb: null };
       this.leases.set(vm, lease); await this.acquireHook?.();
@@ -1996,4 +1998,98 @@ test('a session state written before DC-20 is restored as one named guest (DC-20
     await recovered.release(G);
   } finally { await recovered.cleanup('migrated teardown'); await f.manager.initialize(); }
   await f.assertClean();
+});
+
+// DC-22: an acquisition waits for a host at capacity.
+const capacityRefused = { status: 409, body: { error: 'macOS VM limit reached (2 active); release one first; host-wide Virtualization.framework guests: 2 (0 not ours)' } };
+const acquisitions = (f: { service: FixtureService }) => f.service.requests.filter(r => r.path === '/acquire').length;
+const events = async (output: string) => Promise.all((await readdir(join(output, 'host/events'))).map(name => json(join(output, 'host/events', name))));
+
+test('only vm-service\'s macOS VM limit refusal is a capacity refusal (DC-22)', () => {
+  const error = (status: number, body: unknown) => new VmServiceError(`vm-service /acquire: HTTP ${status}`, status, JSON.stringify(body));
+  assert.equal(capacityRefusal(error(409, capacityRefused.body)), true);
+  assert.equal(capacityRefusal(error(409, { ...capacityRefused.body, outcome: 'uncertain' })), false, 'an uncertain outcome may have reserved a lease');
+  assert.equal(capacityRefusal(error(409, { error: "purpose 'relay-x' already leased on image macos26: vm-1" })), false);
+  assert.equal(capacityRefusal(error(400, capacityRefused.body)), false);
+  assert.equal(capacityRefusal(new Error('macOS VM limit reached')), false);
+});
+
+test('a host at capacity twice, then free: relay_acquire waits, is granted and says how long it waited (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { capacityWaitMs: 10000, capacityRetryMs: 100 });
+  f.service.acquireRefusal = capacityRefused; f.service.acquireRefusals = 2;
+  const acquired = await f.manager.acquire(acquireInput());
+  assert.equal(acquisitions(f), 3, 'refused twice, granted the third time');
+  assert.ok(acquired.waitedForCapacityMs >= 200 && acquired.waitedForCapacityMs < 5000, String(acquired.waitedForCapacityMs));
+  assert.equal(acquired.guest, G); assert.equal(f.service.leases.size, 1); assert.equal(acquired.waitingForCapacity, undefined);
+  const kinds = (await events(acquired.output!)).map(event => event.kind);
+  assert.ok(kinds.includes('capacity-wait') && kinds.includes('capacity-granted'), kinds.join());
+  assert.equal(f.manager.guestStatus().active, true);
+  await f.manager.release(); await f.assertClean();
+});
+
+test('a guest waiting for capacity holds its name and says so in status and in the limit refusal (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { maxGuests: 1, capacityWaitMs: 10000, capacityRetryMs: 50 });
+  f.service.acquireRefusal = capacityRefused; f.service.acquireRefusals = 1000;
+  const waiting = f.manager.acquire(acquireInput());
+  const deadline = Date.now() + 5000;
+  while (!f.manager.status().guests[0]?.waitingForCapacity && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
+  const status = f.manager.status().guests[0]!;
+  assert.equal(status.guest, G); assert.match(status.waitingForCapacity!.reason, /macOS VM limit reached/); assert.equal(status.active, false);
+  await assert.rejects(f.manager.acquire(acquireInput()), /the most MCP_RELAY_MAX_GUESTS allows \(1\): manager-test-1 \(waiting for capacity\)/);
+  f.service.acquireRefusals = 0;
+  const acquired = await waiting;
+  assert.ok(acquired.waitedForCapacityMs > 0);
+  await f.manager.release(); await f.assertClean();
+});
+
+test('a host still at capacity when the wait runs out refuses with vm-service\'s reason and the time waited (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { capacityWaitMs: 300, capacityRetryMs: 100 });
+  f.service.acquireRefusal = capacityRefused;
+  await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 409: .*macOS VM limit reached \(2 active\).*; waited 0\.[3-9] s for capacity, the most MCP_RELAY_CAPACITY_WAIT allows \(0\.3 s\), so nothing was acquired/s);
+  assert.ok(acquisitions(f) >= 3, String(acquisitions(f)));
+  assert.equal(f.service.leases.size, 0);
+  assert.deepEqual(f.manager.status().guests, [], 'nothing was acquired, so no guest stays');
+  assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+});
+
+test('a session that ends while an acquisition waits for capacity ends at once, with nothing acquired (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { capacityWaitMs: 600000, capacityRetryMs: 60000 });
+  f.service.acquireRefusal = capacityRefused;
+  const waiting = f.manager.acquire(acquireInput());
+  const failed = waiting.then(() => assert.fail('nothing should be acquired'), error => error);
+  const deadline = Date.now() + 5000;
+  while (!f.manager.status().guests[0]?.waitingForCapacity && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
+  const started = Date.now();
+  await f.manager.cleanup('session ended during the wait');
+  assert.ok(Date.now() - started < 5000, `cleanup took ${Date.now() - started} ms`);
+  assert.match(String(await failed), /The relay session ended while the acquisition waited .* s for capacity .*nothing was acquired/);
+  assert.equal(acquisitions(f), 1); assert.equal(f.service.leases.size, 0);
+  assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+});
+
+test('a cancelled acquisition stops waiting for capacity, with nothing acquired (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { capacityWaitMs: 600000, capacityRetryMs: 60000 });
+  f.service.acquireRefusal = capacityRefused;
+  const controller = new AbortController();
+  const waiting = f.manager.acquire(acquireInput(), controller.signal).then(() => assert.fail('nothing should be acquired'), error => error);
+  const deadline = Date.now() + 5000;
+  while (!f.manager.status().guests[0]?.waitingForCapacity && Date.now() < deadline) await new Promise(done => setTimeout(done, 20));
+  controller.abort(new Error('Cancelled by the client'));
+  assert.match(String(await waiting), /Cancelled by the client while the acquisition waited/);
+  assert.equal(acquisitions(f), 1); assert.deepEqual(f.manager.status().guests, []);
+  assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+});
+
+test('a 409 that is not a capacity refusal, or a wait of 0, is not retried (DC-22)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { capacityWaitMs: 10000, capacityRetryMs: 50 });
+  f.service.acquireRefusal = { status: 409, body: { error: "purpose 'relay-x' already leased on image ubuntu2404: vm-1" } };
+  await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 409: .*already leased/);
+  assert.equal(acquisitions(f), 1, 'asked once');
+  f.service.acquireRefusal = { status: 409, body: { ...capacityRefused.body, outcome: 'uncertain' } };
+  await assert.rejects(f.manager.acquire(acquireInput()), /macOS VM limit reached/);
+  assert.equal(acquisitions(f), 2, 'an uncertain refusal is not asked again');
+  const none = await fixture(t, { capacityWaitMs: 0, capacityRetryMs: 50 });
+  none.service.acquireRefusal = capacityRefused;
+  await assert.rejects(none.manager.acquire(acquireInput()), error => !/waited/.test(String(error)) && /macOS VM limit reached/.test(String(error)));
+  assert.equal(acquisitions(none), 1, 'MCP_RELAY_CAPACITY_WAIT=0 does not wait');
 });

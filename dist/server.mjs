@@ -18633,6 +18633,14 @@ function maxGuests(env = process.env) {
   if (!Number.isSafeInteger(count)) throw new TypeError(`MCP_RELAY_MAX_GUESTS must be a positive integer, not ${JSON.stringify(value)}; no guest is acquired until it names one`);
   return count;
 }
+var DEFAULT_CAPACITY_WAIT_S = 1800;
+function capacityWait(env = process.env) {
+  const value = env.MCP_RELAY_CAPACITY_WAIT;
+  if (value === void 0) return DEFAULT_CAPACITY_WAIT_S;
+  const seconds = /^(0|[1-9][0-9]*)$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(seconds)) throw new TypeError(`MCP_RELAY_CAPACITY_WAIT must be a nonnegative integer of seconds, not ${JSON.stringify(value)}; the relay does not start until it names one`);
+  return seconds;
+}
 var ON_EXIT = ["pause", "release"];
 function onExit(env = process.env) {
   const value = env.MCP_RELAY_ON_EXIT;
@@ -19019,7 +19027,21 @@ var VmServiceError = class extends Error {
     this.responseBody = responseBody;
     this.name = "VmServiceError";
   }
+  /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
+  capacity = false;
 };
+function capacityRefusal(error2) {
+  if (!(error2 instanceof VmServiceError) || error2.status !== 409 || !error2.responseBody) return false;
+  let body;
+  try {
+    body = JSON.parse(error2.responseBody);
+  } catch {
+    return false;
+  }
+  if (!body || typeof body !== "object") return false;
+  const { error: reason2, outcome } = body;
+  return typeof reason2 === "string" && reason2.startsWith("macOS VM limit reached") && outcome !== "uncertain";
+}
 var AcquireIndeterminateError = class extends VmServiceError {
   constructor(purpose, cause) {
     super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /vms before retrying or ending the enclosure`, void 0, void 0, { cause });
@@ -19110,6 +19132,7 @@ var VmService = class {
       return lease;
     } catch (error2) {
       const safeError = body.vnc ? new VmServiceError(`VNC acquisition refused or outcome unknown${error2 instanceof VmServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; inspect capabilities and reconcile ownership`, error2 instanceof VmServiceError ? error2.status : void 0) : error2;
+      if (safeError instanceof VmServiceError) safeError.capacity = capacityRefusal(error2);
       if (error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) throw safeError;
       throw new AcquireIndeterminateError(body.purpose, safeError);
     }
@@ -30129,6 +30152,7 @@ var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
 var MAX_TOOL_IMAGES = 4;
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
+var CAPACITY_RETRY_MS = 15e3;
 var TASK = /^[a-z0-9][a-z0-9-]{0,35}$/;
 var GUEST_NAME = /^[a-z0-9][a-z0-9-]{0,47}$/;
 var downloadKey = (target2) => `${target2.sessionId}/${target2.executionId}`;
@@ -30149,6 +30173,9 @@ var RelayManager = class {
     if (this.environment && (options2.stateRoot && canonicalPath(options2.stateRoot) !== this.environment.profile.relayStateDir || options2.tartHome && canonicalPath(options2.tartHome) !== this.tartHome || options2.tartPath && canonicalPath(options2.tartPath) !== this.tartPath)) throw new Error("Injected paths conflict with the selected environment");
     this.maxGuests = options2.maxGuests ?? maxGuests();
     if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error("maxGuests must be a positive integer");
+    this.capacityWaitMs = options2.capacityWaitMs ?? capacityWait() * 1e3;
+    this.capacityRetryMs = options2.capacityRetryMs ?? CAPACITY_RETRY_MS;
+    if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error("capacityWaitMs must be nonnegative and capacityRetryMs positive");
     this.vm = options2.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options2.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join14(this.environment?.profile.relayStateDir ?? options2.stateRoot ?? relayStateRoot(), hash(options2.sessionId).slice(0, 32));
@@ -30170,6 +30197,11 @@ var RelayManager = class {
   channel;
   /** The most guests this session holds at once (DC-20). */
   maxGuests;
+  /** How long an acquisition waits for a host at capacity, and how often it is asked again (DC-22). */
+  capacityWaitMs;
+  capacityRetryMs;
+  /** Aborted when the session starts to end, so a wait for capacity stops at once (DC-22). */
+  ending = new AbortController();
   /** The guests the session holds, by name, in the order they were acquired. */
   guests = /* @__PURE__ */ new Map();
   queue = Promise.resolve();
@@ -30261,7 +30293,7 @@ var RelayManager = class {
     }
   }
   held() {
-    return this.guests.size ? [...this.guests.keys()].join(", ") : "none";
+    return this.guests.size ? [...this.guests.values()].map((guest2) => guest2.enclosure?.capacityWait ? `${guest2.name} (waiting for capacity)` : guest2.name).join(", ") : "none";
   }
   /** The guest a call names; without a name, the session's only guest. */
   named(guest2) {
@@ -30519,6 +30551,7 @@ var RelayManager = class {
    */
   async pauseNow(reason2) {
     this.shuttingDown = true;
+    this.ending.abort();
     const guests = [...this.guests.values()];
     try {
       await settleEach(guests.map(async (guest2) => {
@@ -30536,6 +30569,7 @@ var RelayManager = class {
    * completes first. The VMs are retained for an explicit finish or release.
    */
   async cleanup(reason2) {
+    this.ending.abort();
     return this.serialized(async () => {
       const guests = [...this.guests.values()];
       try {
@@ -30561,6 +30595,7 @@ var RelayManager = class {
    * without a final renewal, so its lease ends within its last window.
    */
   async releaseAll(reason2) {
+    this.ending.abort();
     return this.serialized(async () => {
       this.shuttingDown = true;
       await this.load();
@@ -30579,6 +30614,7 @@ var RelayManager = class {
    */
   async releaseNow(reason2) {
     this.shuttingDown = true;
+    this.ending.abort();
     const guests = [...this.guests.values()];
     try {
       await settleEach(guests.map((guest2) => guest2.releaseDirect(`${reason2}; an in-flight operation did not settle and was abandoned`)));
@@ -30682,7 +30718,7 @@ var Guest = class {
   }
   status() {
     const e = this.enclosure;
-    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? "unknown", previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts() } : { guest: this.name, active: false };
+    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? "unknown", previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...e.capacityWait ? { waitingForCapacity: e.capacityWait } : {} } : { guest: this.name, active: false };
   }
   async reconcile() {
     const e = this.enclosure;
@@ -30881,18 +30917,32 @@ var Guest = class {
       } catch (error2) {
         if (error2.code !== "ENOENT") throw error2;
       }
-      e.acquisitionInFlight = true;
-      await this.save();
-      try {
-        e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? "none", ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
-        e.acquisitionInFlight = false;
-      } catch (error2) {
-        if (signal?.aborted && error2 === signal.reason) e.acquisitionInFlight = false;
-        else if (error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
+      let firstRefusal, granted = 0;
+      for (; ; ) {
+        e.acquisitionInFlight = true;
+        await this.save();
+        const asked = Date.now();
+        try {
+          e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? "none", ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
           e.acquisitionInFlight = false;
-          refused = true;
+          granted = asked;
+          break;
+        } catch (error2) {
+          if (signal?.aborted && error2 === signal.reason) e.acquisitionInFlight = false;
+          else if (error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
+            e.acquisitionInFlight = false;
+            refused = true;
+          }
+          if (!refused || !(error2 instanceof VmServiceError && error2.capacity) || this.m.capacityWaitMs <= 0) throw error2;
+          firstRefusal ??= asked;
+          await this.waitForCapacity(e, error2, firstRefusal, signal);
+          refused = false;
         }
-        throw error2;
+      }
+      const waitedForCapacityMs = firstRefusal === void 0 ? 0 : granted - firstRefusal;
+      if (e.capacityWait) {
+        delete e.capacityWait;
+        await this.log("capacity-granted", void 0, { waitedForCapacityMs });
       }
       if (e.lease?.console) {
         e.lease.console = consoleStatus(e.lease.console);
@@ -30905,7 +30955,7 @@ var Guest = class {
       this.startHeartbeat();
       await this.save();
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join14(e.guestRoot, "workspace"), declarations: input.extractions, network };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join14(e.guestRoot, "workspace"), declarations: input.extractions, network, waitedForCapacityMs };
     } catch (error2) {
       if (refused && await this.withdraw(error2)) throw error2;
       await this.fail(error2);
@@ -30913,6 +30963,34 @@ var Guest = class {
       throw new Error(`${message(error2)}
 Guest ${this.name} keeps this acquisition's ownership record: name it to reconcile, stage or release it.`, { cause: error2 });
     }
+  }
+  /**
+   * The host is at capacity: wait one retry interval, or what is left of
+   * MCP_RELAY_CAPACITY_WAIT, before the acquisition is asked again. Refuses
+   * with vm-service's reason and the time waited once the wait has run out,
+   * or when the call is cancelled or the session ends (DC-22).
+   */
+  async waitForCapacity(e, refusal, since, signal) {
+    const waited = Date.now() - since, remaining = this.m.capacityWaitMs - waited;
+    const seconds = (ms) => Math.round(ms / 100) / 10;
+    if (remaining <= 0) throw new Error(`${refusal.message}; waited ${seconds(waited)} s for capacity, the most MCP_RELAY_CAPACITY_WAIT allows (${seconds(this.m.capacityWaitMs)} s), so nothing was acquired`, { cause: refusal });
+    const attempts = (e.capacityWait?.attempts ?? 0) + 1;
+    if (!e.capacityWait) await this.log("capacity-wait", void 0, { reason: refusal.message, waitMs: this.m.capacityWaitMs, retryMs: this.m.capacityRetryMs });
+    e.capacityWait = { since: new Date(since).toISOString(), attempts, reason: refusal.message };
+    await this.save();
+    const stop = AbortSignal.any([...signal ? [signal] : [], this.m.ending.signal]);
+    await new Promise((done) => {
+      const timer = setTimeout(done, Math.min(this.m.capacityRetryMs, remaining));
+      stop.addEventListener("abort", () => {
+        clearTimeout(timer);
+        done();
+      }, { once: true });
+      if (stop.aborted) {
+        clearTimeout(timer);
+        done();
+      }
+    });
+    if (stop.aborted) throw new Error(`${signal?.aborted ? String(signal.reason) : "The relay session ended"} while the acquisition waited ${seconds(Date.now() - since)} s for capacity (${refusal.message}), so nothing was acquired`, { cause: refusal });
   }
   /**
    * A refused acquisition acquired nothing: once vm-service lists no VM for
@@ -32032,7 +32110,7 @@ var relayTools = [
     action: "acquire",
     title: "Acquire a VM",
     annotations: acts(false),
-    description: "Acquire one fresh VM, a guest, and start its ownership heartbeat. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held, and the backend's own refusals, such as its limit on macOS VMs, pass through. Continue with relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
+    description: "Acquire one fresh VM, a guest, and start its ownership heartbeat. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
   },
   {
     name: "relay_stage",
@@ -32333,6 +32411,7 @@ async function main(args) {
   guestNetwork();
   maxGuests();
   onExit();
+  capacityWait();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { GUEST_NETWORKS, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
+import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
 import { VmService, VmServiceError, type VmLease, type VmBackend } from './vm-service.js';
@@ -69,6 +69,8 @@ interface Enclosure {
   consoleObservation?: ConsoleStatus;
   consoleAttempt?: { console_id: string; attempt_id: string; status: string };
   consoleAttemptIds?: string[];
+  /** The host was at capacity and the acquisition waits to be asked again (DC-22). */
+  capacityWait?: { since: string; attempts: number; reason: string };
 }
 /** What relay_status, relay_probe and every guest result report about one guest. */
 export interface GuestStatus {
@@ -78,6 +80,8 @@ export interface GuestStatus {
   purpose?: string; staged?: boolean; lastError?: string; released?: boolean; active: boolean; guestState?: string;
   previousEvidence?: Array<{ path: string; sessionId: string; guestState?: string }>; recordingResetPending?: boolean; expiresAt?: number; output?: string;
   downloads?: ReturnType<DownloadQueue['counts']>;
+  /** The acquisition waits for a host at capacity: since when, how many refusals, and vm-service's reason (DC-22). */
+  waitingForCapacity?: { since: string; attempts: number; reason: string };
 }
 /** A run's result: its execution identity and outcome, the after-snapshot delivery, and kind-specific facts. */
 export interface RunResult {
@@ -101,6 +105,10 @@ export interface ManagerOptions {
   guestNetwork?: GuestNetwork;
   /** The most guests the session holds at once; default MCP_RELAY_MAX_GUESTS (DC-20). */
   maxGuests?: number;
+  /** How long an acquisition waits for a host at capacity, in ms; default MCP_RELAY_CAPACITY_WAIT seconds, 0 for not at all (DC-22). */
+  capacityWaitMs?: number;
+  /** How often a waiting acquisition is asked again; default CAPACITY_RETRY_MS (DC-22). */
+  capacityRetryMs?: number;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -141,6 +149,8 @@ export const MAX_TOOL_IMAGES = 4;
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
 export const DOWNLOAD_RETRY_DELAYS_MS = [1000, 3000] as const;
+/** How often an acquisition waiting for capacity is asked again (DC-22). */
+export const CAPACITY_RETRY_MS = 15000;
 /** A task slug, as relay_acquire takes it. */
 const TASK = /^[a-z0-9][a-z0-9-]{0,35}$/;
 /** A guest name: the task and a counter, such as `login-test-2`; it names the guest's folder in the state directory (DC-20). */
@@ -185,6 +195,11 @@ export class RelayManager {
   readonly channel: VmChannel;
   /** The most guests this session holds at once (DC-20). */
   readonly maxGuests: number;
+  /** How long an acquisition waits for a host at capacity, and how often it is asked again (DC-22). */
+  readonly capacityWaitMs: number;
+  readonly capacityRetryMs: number;
+  /** Aborted when the session starts to end, so a wait for capacity stops at once (DC-22). */
+  readonly ending = new AbortController();
   /** The guests the session holds, by name, in the order they were acquired. */
   private guests = new Map<string, Guest>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -200,6 +215,9 @@ export class RelayManager {
     if (this.environment && ((options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir) || (options.tartHome && canonicalPath(options.tartHome) !== this.tartHome) || (options.tartPath && canonicalPath(options.tartPath) !== this.tartPath))) throw new Error('Injected paths conflict with the selected environment');
     this.maxGuests = options.maxGuests ?? maxGuests();
     if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error('maxGuests must be a positive integer');
+    this.capacityWaitMs = options.capacityWaitMs ?? capacityWait() * 1000;
+    this.capacityRetryMs = options.capacityRetryMs ?? CAPACITY_RETRY_MS;
+    if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error('capacityWaitMs must be nonnegative and capacityRetryMs positive');
     this.vm = options.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
@@ -274,7 +292,7 @@ export class RelayManager {
       return name;
     }
   }
-  private held() { return this.guests.size ? [...this.guests.keys()].join(', ') : 'none'; }
+  private held() { return this.guests.size ? [...this.guests.values()].map(guest => guest.enclosure?.capacityWait ? `${guest.name} (waiting for capacity)` : guest.name).join(', ') : 'none'; }
   /** The guest a call names; without a name, the session's only guest. */
   private named(guest?: string): Guest {
     if (guest === undefined) {
@@ -482,7 +500,7 @@ export class RelayManager {
    * save again.
    */
   async pauseNow(reason: string) {
-    this.shuttingDown = true;
+    this.shuttingDown = true; this.ending.abort();
     const guests = [...this.guests.values()];
     try {
       await settleEach(guests.map(async guest => {
@@ -496,7 +514,7 @@ export class RelayManager {
    * queue already holds, so a finish or release the client already sent
    * completes first. The VMs are retained for an explicit finish or release.
    */
-  async cleanup(reason: string) { return this.serialized(async () => {
+  async cleanup(reason: string) { this.ending.abort(); return this.serialized(async () => {
     const guests = [...this.guests.values()];
     try {
       await settleEach(guests.map(guest => guest.serialized(async () => {
@@ -513,7 +531,7 @@ export class RelayManager {
    * holds. A guest whose release fails keeps its record; its renewal stops
    * without a final renewal, so its lease ends within its last window.
    */
-  async releaseAll(reason: string) { return this.serialized(async () => {
+  async releaseAll(reason: string) { this.ending.abort(); return this.serialized(async () => {
     this.shuttingDown = true;
     await this.load();
     const guests = [...this.guests.values()];
@@ -526,7 +544,7 @@ export class RelayManager {
    * evidence, in one bounded attempt. The process exits right after.
    */
   async releaseNow(reason: string) {
-    this.shuttingDown = true;
+    this.shuttingDown = true; this.ending.abort();
     const guests = [...this.guests.values()];
     try { await settleEach(guests.map(guest => guest.releaseDirect(`${reason}; an in-flight operation did not settle and was abandoned`))); }
     finally { await this.unload(guests); }
@@ -604,7 +622,7 @@ class Guest {
   }
   status(): GuestStatus {
     const e = this.enclosure;
-    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts() } : { guest: this.name, active: false };
+    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...(e.capacityWait ? { waitingForCapacity: e.capacityWait } : {}) } : { guest: this.name, active: false };
   }
   private async reconcile() {
     const e = this.enclosure; if (!e) return;
@@ -763,16 +781,26 @@ class Guest {
       await this.log('acquire-intent', undefined, { ...input, guest: this.name, network });
       try { await cp(join(this.m.root, 'probes'), join(hostRoot, 'host', 'probes'), { recursive: true, errorOnExist: true, force: false, filter: source => !source.endsWith('.tmp') }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      e.acquisitionInFlight = true; await this.save();
-      try {
-        e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
-        e.acquisitionInFlight = false;
-      } catch (error) {
-        if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
-        // vm-service refused it: nothing was acquired, and the refusal passes through (DC-20).
-        else if (error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) { e.acquisitionInFlight = false; refused = true; }
-        throw error;
+      // A host at capacity refuses before it reserves anything, so the same acquisition is asked again until the wait runs out (DC-22).
+      let firstRefusal: number | undefined, granted = 0;
+      for (;;) {
+        e.acquisitionInFlight = true; await this.save();
+        const asked = Date.now();
+        try {
+          e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+          e.acquisitionInFlight = false; granted = asked; break;
+        } catch (error) {
+          if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
+          // vm-service refused it: nothing was acquired, and the refusal passes through (DC-20).
+          else if (error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) { e.acquisitionInFlight = false; refused = true; }
+          if (!refused || !(error instanceof VmServiceError && error.capacity) || this.m.capacityWaitMs <= 0) throw error;
+          firstRefusal ??= asked;
+          await this.waitForCapacity(e, error, firstRefusal, signal);
+          refused = false;
+        }
       }
+      const waitedForCapacityMs = firstRefusal === undefined ? 0 : granted - firstRefusal;
+      if (e.capacityWait) { delete e.capacityWait; await this.log('capacity-granted', undefined, { waitedForCapacityMs }); }
       if (e.lease?.console) {
         e.lease.console = consoleStatus(e.lease.console);
         e.consoleObservation = e.lease.console;
@@ -786,13 +814,34 @@ class Guest {
       // that arrived after the caller cancelled stays owned and renewed, and
       // the error says so, so the agent can continue, finish or release it.
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease!.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, network };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, network, waitedForCapacityMs };
     } catch (error) {
       if (refused && await this.withdraw(error)) throw error;
       await this.fail(error);
       if (!this.enclosure || message(error).includes(`guest ${this.name}`)) throw error;
       throw new Error(`${message(error)}\nGuest ${this.name} keeps this acquisition's ownership record: name it to reconcile, stage or release it.`, { cause: error });
     }
+  }
+  /**
+   * The host is at capacity: wait one retry interval, or what is left of
+   * MCP_RELAY_CAPACITY_WAIT, before the acquisition is asked again. Refuses
+   * with vm-service's reason and the time waited once the wait has run out,
+   * or when the call is cancelled or the session ends (DC-22).
+   */
+  private async waitForCapacity(e: Enclosure, refusal: VmServiceError, since: number, signal?: AbortSignal) {
+    const waited = Date.now() - since, remaining = this.m.capacityWaitMs - waited;
+    const seconds = (ms: number) => Math.round(ms / 100) / 10;
+    if (remaining <= 0) throw new Error(`${refusal.message}; waited ${seconds(waited)} s for capacity, the most MCP_RELAY_CAPACITY_WAIT allows (${seconds(this.m.capacityWaitMs)} s), so nothing was acquired`, { cause: refusal });
+    const attempts = (e.capacityWait?.attempts ?? 0) + 1;
+    if (!e.capacityWait) await this.log('capacity-wait', undefined, { reason: refusal.message, waitMs: this.m.capacityWaitMs, retryMs: this.m.capacityRetryMs });
+    e.capacityWait = { since: new Date(since).toISOString(), attempts, reason: refusal.message }; await this.save();
+    const stop = AbortSignal.any([...(signal ? [signal] : []), this.m.ending.signal]);
+    await new Promise<void>(done => {
+      const timer = setTimeout(done, Math.min(this.m.capacityRetryMs, remaining));
+      stop.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
+      if (stop.aborted) { clearTimeout(timer); done(); }
+    });
+    if (stop.aborted) throw new Error(`${signal?.aborted ? String(signal.reason) : 'The relay session ended'} while the acquisition waited ${seconds(Date.now() - since)} s for capacity (${refusal.message}), so nothing was acquired`, { cause: refusal });
   }
   /**
    * A refused acquisition acquired nothing: once vm-service lists no VM for

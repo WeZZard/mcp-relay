@@ -54,7 +54,21 @@ var VmServiceError = class extends Error {
     this.responseBody = responseBody;
     this.name = "VmServiceError";
   }
+  /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
+  capacity = false;
 };
+function capacityRefusal(error) {
+  if (!(error instanceof VmServiceError) || error.status !== 409 || !error.responseBody) return false;
+  let body;
+  try {
+    body = JSON.parse(error.responseBody);
+  } catch {
+    return false;
+  }
+  if (!body || typeof body !== "object") return false;
+  const { error: reason, outcome } = body;
+  return typeof reason === "string" && reason.startsWith("macOS VM limit reached") && outcome !== "uncertain";
+}
 var AcquireIndeterminateError = class extends VmServiceError {
   constructor(purpose, cause) {
     super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /vms before retrying or ending the enclosure`, void 0, void 0, { cause });
@@ -145,6 +159,7 @@ var VmService = class {
       return lease;
     } catch (error) {
       const safeError = body.vnc ? new VmServiceError(`VNC acquisition refused or outcome unknown${error instanceof VmServiceError && error.status ? ` (HTTP ${error.status})` : ""}; inspect capabilities and reconcile ownership`, error instanceof VmServiceError ? error.status : void 0) : error;
+      if (safeError instanceof VmServiceError) safeError.capacity = capacityRefusal(error);
       if (error instanceof VmServiceError && error.status !== void 0 && error.status >= 400 && error.status < 500) throw safeError;
       throw new AcquireIndeterminateError(body.purpose, safeError);
     }

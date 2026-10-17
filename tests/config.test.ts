@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { guestNetwork, maxGuests, onExit, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
+import { capacityWait, guestNetwork, maxGuests, onExit, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
 import { acquireOwnerLock } from "../src/owner-lock.js";
 
 const home = join(tmpdir(), "relay-config-home");
@@ -86,4 +86,11 @@ test("the session end pauses by default; MCP_RELAY_ON_EXIT=release releases, and
   assert.equal(onExit({ MCP_RELAY_ON_EXIT: "pause" }), "pause");
   assert.equal(onExit({ MCP_RELAY_ON_EXIT: "release" }), "release");
   for (const value of ["", "RELEASE", "destroy", " release"]) assert.throws(() => onExit({ MCP_RELAY_ON_EXIT: value }), /MCP_RELAY_ON_EXIT must be pause or release/, value);
+});
+
+test("relay_acquire waits MCP_RELAY_CAPACITY_WAIT seconds for capacity, 1800 when unset and 0 for not at all; anything else is refused (DC-22)", () => {
+  assert.equal(capacityWait({}), 1800);
+  assert.equal(capacityWait({ MCP_RELAY_CAPACITY_WAIT: "0" }), 0);
+  assert.equal(capacityWait({ MCP_RELAY_CAPACITY_WAIT: "90" }), 90);
+  for (const value of ["", "-1", "1.5", "01", "30m", " 5"]) assert.throws(() => capacityWait({ MCP_RELAY_CAPACITY_WAIT: value }), /MCP_RELAY_CAPACITY_WAIT must be a nonnegative integer of seconds/, value);
 });
