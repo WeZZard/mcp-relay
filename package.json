@@ -2,7 +2,7 @@
   "name": "@wezzard/mcp-relay",
   "version": "0.13.0",
   "type": "module",
-  "description": "MCP server and Claude Code plugin for the VM relay: recorded, snapshot-evidenced computer-use and browser-use in a fresh disposable VM",
+  "description": "MCP server and Claude Code plugin. Runs an agent's code on fresh, isolated VMs, several at once, each run recorded with evidence",
   "license": "MIT",
   "repository": {
     "type": "git",

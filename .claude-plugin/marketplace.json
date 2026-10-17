@@ -8,7 +8,7 @@
     {
       "name": "mcp-relay",
       "source": "./",
-      "description": "Recorded, snapshot-evidenced computer-use and browser-use in a fresh disposable VM, through the relay_* MCP tools"
+      "description": "The mcp-relay MCP server: runs an agent's code on fresh, isolated VMs, several at once, each run recorded with evidence"
     }
   ]
 }
