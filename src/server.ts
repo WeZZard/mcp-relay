@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { RelayManager, Registry, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
+import { RelayManager, Registry, guestNetwork, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
 
 export const SERVER_NAME = 'relay';
 /** The build injects this from package.json (esbuild define); under tsx it falls back to reading the file directly. */
@@ -120,6 +120,8 @@ async function main(args: string[]): Promise<void> {
   if (args.includes('--instructions')) { process.stdout.write(`${instructions}\n`); return; }
   if (args.includes('--schema')) { process.stdout.write(`${JSON.stringify(allToolDefinitions(), null, 2)}\n`); return; }
   if (args.length) throw new Error('Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout');
+  // A guest network the relay cannot honour refuses the server at startup (DC-17).
+  guestNetwork();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_VM_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_VM_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');

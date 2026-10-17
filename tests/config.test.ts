@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
+import { guestNetwork, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
 import { acquireOwnerLock } from "../src/owner-lock.js";
 
 const home = join(tmpdir(), "relay-config-home");
@@ -58,4 +58,11 @@ test("owner lock honors environment Python override without touching global stat
     child.stderr.on("data", chunk => { stderr += chunk; });
     assert.equal((await once(child, "close"))[0], 0, stderr);
   }
+});
+
+test("the guest network is nat unless MCP_RELAY_GUEST_NETWORK names internet; anything else is refused (DC-17)", () => {
+  assert.equal(guestNetwork({}), "nat");
+  assert.equal(guestNetwork({ MCP_RELAY_GUEST_NETWORK: "nat" }), "nat");
+  assert.equal(guestNetwork({ MCP_RELAY_GUEST_NETWORK: "internet" }), "internet");
+  for (const value of ["", "host", "Internet", "nat,internet", "bridged"]) assert.throws(() => guestNetwork({ MCP_RELAY_GUEST_NETWORK: value }), /MCP_RELAY_GUEST_NETWORK must be nat or internet/, value);
 });

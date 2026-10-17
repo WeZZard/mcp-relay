@@ -29,6 +29,22 @@ export function relayStateRoot(options: ConfigOptions = {}): string {
   return join(absolute(options.home ?? env.HOME ?? homedir(), "home"), ".local", "state", "mcp-vm-relay");
 }
 
+/** The networks a guest may be acquired on (DC-17). */
+export const GUEST_NETWORKS = ['nat', 'internet'] as const;
+export type GuestNetwork = typeof GUEST_NETWORKS[number];
+/**
+ * The network every guest is acquired on, from MCP_RELAY_GUEST_NETWORK:
+ * `nat` when it is unset, `internet` for a guest that reaches the internet
+ * and neither the host nor a private network. Any other value is refused,
+ * never read as `nat` (DC-17).
+ */
+export function guestNetwork(env: NodeJS.ProcessEnv = process.env): GuestNetwork {
+  const value = env.MCP_RELAY_GUEST_NETWORK;
+  if (value === undefined) return 'nat';
+  if (!(GUEST_NETWORKS as readonly string[]).includes(value)) throw new TypeError(`MCP_RELAY_GUEST_NETWORK must be nat or internet, not ${JSON.stringify(value)}; no guest is acquired until it names one of them`);
+  return value as GuestNetwork;
+}
+
 /** Resolve a Python executable name through PATH unless explicitly overridden. */
 export function pythonExecutable(env: NodeJS.ProcessEnv = process.env): string {
   return nonblank(env.MCP_VM_RELAY_PYTHON ?? "python3", "MCP_VM_RELAY_PYTHON");

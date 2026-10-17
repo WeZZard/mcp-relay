@@ -54,6 +54,8 @@ export interface AcquireRequest {
   disk_gb?: number;
   wait?: boolean;
   vnc?: boolean;
+  /** The guest's network (vm-service DC-13): `nat`, or `internet` for a guest that reaches neither the host nor a private network. */
+  network?: 'nat' | 'internet';
 }
 export type ExecRequest = ({ argv: string[]; script?: never } | { script: string; argv?: never }) & { timeout?: number };
 export interface TransferRequest { local_path: string; remote_path: string }

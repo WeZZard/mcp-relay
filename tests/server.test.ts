@@ -23,6 +23,14 @@ test('the project directory comes from the plugin, unless the placeholder was ne
   assert.equal(projectDirectory({}, '/elsewhere'), '/elsewhere');
 });
 
+test('the server refuses to start on a guest network other than nat or internet (DC-17)', async () => {
+  await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_GUEST_NETWORK: 'host' } }), (error: any) => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /MCP_RELAY_GUEST_NETWORK must be nat or internet, not "host"/);
+    return true;
+  });
+});
+
 test('the CLI prints the instructions text and the full table of tool schemas', async () => {
   const { stdout } = await run(process.execPath, [server, '--instructions']);
   assert.equal(stdout, `${instructions}\n`);
@@ -101,7 +109,8 @@ test('each run tool maps to its own kind in the derived schema, without a kind f
 
 test('invalid input is refused by the strict contract before any manager exists; status stays inactive', async t => {
   const { client, root, project } = await fixture(t);
-  for (const [name, args] of [['relay_probe', { reason: 'no' }], ['relay_exec', {}], ['relay_acquire', {}], ['relay_run', { target: 'firefox', tool: 'x' }], ['relay_tools', {}]] as const) {
+  // relay_acquire takes no network from the agent (DC-17).
+  for (const [name, args] of [['relay_probe', { reason: 'no' }], ['relay_exec', {}], ['relay_acquire', {}], ['relay_acquire', { task: 'net', image: 'ubuntu2404', extractions: [], network: 'internet' }], ['relay_run', { target: 'firefox', tool: 'x' }], ['relay_tools', {}]] as const) {
     const result: any = await client.callTool({ name, arguments: args });
     assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`);
     assert.match(result.content[0].text, /Invalid relay input/);

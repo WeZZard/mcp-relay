@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, cp, access, writeFile, statfs } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { relayStateRoot } from './config.js';
+import { GUEST_NETWORKS, guestNetwork, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
 import { VmService, VmServiceError, type VmLease, type VmBackend } from './vm-service.js';
@@ -79,6 +79,8 @@ export interface ManagerOptions {
   packageCache?: string;
   /** How far each renewal extends the lease at vm-service; default RENEWAL_WINDOW_MS. */
   renewalWindowMs?: number;
+  /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
+  guestNetwork?: GuestNetwork;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -389,6 +391,9 @@ export class RelayManager {
     await this.init(); signal?.throwIfAborted(); await this.assertBackend();
     if (this.shuttingDown) throw new Error('Relay manager is shutting down');
     if (this.enclosure) throw new Error('This enclosure already owns a lease; finish or release it first');
+    // The host names the guest's network; the agent cannot (DC-17).
+    const network = this.options.guestNetwork ?? guestNetwork();
+    if (!(GUEST_NETWORKS as readonly string[]).includes(network)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network)}`);
     if (!/^[a-z0-9][a-z0-9-]{0,35}$/.test(input.task)) throw new Error('task must be a lowercase slug (1–36 chars)');
     if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error('Declare up to 100 extractions before work');
     const names = new Set<string>();
@@ -417,12 +422,12 @@ export class RelayManager {
     await this.save();
     try {
       await this.registry.add(row);
-      await this.log('acquire-intent', undefined, input);
+      await this.log('acquire-intent', undefined, { ...input, network });
       try { await cp(join(this.root, 'probes'), join(hostRoot, 'host', 'probes'), { recursive: true, errorOnExist: true, force: false }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       this.enclosure.acquisitionInFlight = true; await this.save();
       try {
-        this.enclosure.lease = await this.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+        this.enclosure.lease = await this.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
         this.enclosure.acquisitionInFlight = false;
       } catch (error) {
         if (signal?.aborted && error === signal.reason || error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) this.enclosure.acquisitionInFlight = false;
@@ -441,7 +446,7 @@ export class RelayManager {
       // that arrived after the caller cancelled stays owned and renewed, and
       // the error says so, so the agent can continue, finish or release it.
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${this.enclosure.lease!.vm} is owned by this session, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: this.enclosure.guestRoot, workspace: join(this.enclosure.guestRoot, 'workspace'), declarations: input.extractions };
+      return { ...this.status(), guestRoot: this.enclosure.guestRoot, workspace: join(this.enclosure.guestRoot, 'workspace'), declarations: input.extractions, network };
     } catch (error) { await this.fail(error); throw error; }
   }); }
   private renewalWindowMs() {

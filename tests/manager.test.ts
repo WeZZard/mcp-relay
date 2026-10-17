@@ -107,6 +107,8 @@ class FixtureService {
   /** Fails the next archive pulls, as a lost session link would (AD-4). */
   archivePullFailures = 0;
   acquireHook?: () => Promise<void>;
+  /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
+  acquireRefusal?: { status: number; body: unknown };
   receiverHook?: () => Promise<void>;
   /** Runs before any pull; a test can hold one open. */
   pullHook?: (remote: string) => Promise<void>;
@@ -131,6 +133,7 @@ class FixtureService {
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true }, missing: { base_available: false } }, capacity: { macos_running: 0, macos_limit: 2 } });
     if (path === '/vms') return this.respond(res, 200, { vms: this.hideLeases ? {} : Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: this.root, port: 0 });
     if (path === '/acquire') {
+      if (this.acquireRefusal) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
       const vm = `fixture-${randomUUID()}`;
       const lease: VmLease = { vm, purpose: body.purpose, image: body.image, image_kind: 'linux', env: body.env, state: 'running', created_at: Date.now() / 1000, ttl_expires_at: Date.now() / 1000 + body.ttl_hours * 3600, grace_until: null, warned: false, ip: null, cpu: null, memory_mb: null, disk_gb: null };
       this.leases.set(vm, lease); await this.acquireHook?.();
@@ -852,6 +855,51 @@ test('relay_script reads localPath only in the project folder (DC-15)', { timeou
   }
   await f.assertRetained();
   await f.manager.release(); await f.assertClean();
+});
+
+test('relay_acquire asks vm-service for the network MCP_RELAY_GUEST_NETWORK names, nat by default (DC-17)', async t => {
+  const previous = process.env.MCP_RELAY_GUEST_NETWORK;
+  t.after(() => { if (previous === undefined) delete process.env.MCP_RELAY_GUEST_NETWORK; else process.env.MCP_RELAY_GUEST_NETWORK = previous; });
+  const acquisitions = (f: { service: FixtureService }) => f.service.requests.filter(r => r.path === '/acquire').map(r => r.body);
+  delete process.env.MCP_RELAY_GUEST_NETWORK;
+  const nat = await fixture(t);
+  assert.equal((await nat.manager.acquire(acquireInput())).network, 'nat');
+  assert.deepEqual(acquisitions(nat).map(body => body.network), ['nat']);
+  await nat.manager.release(); await nat.assertClean();
+  process.env.MCP_RELAY_GUEST_NETWORK = 'internet';
+  const internet = await fixture(t);
+  assert.equal((await internet.manager.acquire(acquireInput())).network, 'internet');
+  assert.deepEqual(acquisitions(internet).map(body => body.network), ['internet']);
+  await internet.manager.release(); await internet.assertClean();
+  // The option a host application sets wins over the environment.
+  const option = await fixture(t, { guestNetwork: 'nat' });
+  await option.manager.acquire(acquireInput());
+  assert.deepEqual(acquisitions(option).map(body => body.network), ['nat']);
+  await option.manager.release(); await option.assertClean();
+});
+
+test('a guest network other than nat or internet is refused before vm-service is asked (DC-17)', async t => {
+  const previous = process.env.MCP_RELAY_GUEST_NETWORK;
+  t.after(() => { if (previous === undefined) delete process.env.MCP_RELAY_GUEST_NETWORK; else process.env.MCP_RELAY_GUEST_NETWORK = previous; });
+  for (const value of ['host', 'NAT', '', 'internet ']) {
+    process.env.MCP_RELAY_GUEST_NETWORK = value;
+    const f = await fixture(t);
+    await assert.rejects(f.manager.acquire(acquireInput()), /MCP_RELAY_GUEST_NETWORK must be nat or internet/, JSON.stringify(value));
+    assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 0);
+    assert.deepEqual(f.manager.status(), { active: false }); assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+  }
+  delete process.env.MCP_RELAY_GUEST_NETWORK;
+  const f = await fixture(t, { guestNetwork: 'bridged' as never });
+  await assert.rejects(f.manager.acquire(acquireInput()), /guestNetwork must be nat or internet/);
+  assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 0);
+});
+
+test('vm-service refusing internet passes through, and the relay never falls back to nat (DC-17)', async t => {
+  const f = await fixture(t, { guestNetwork: 'internet' });
+  f.service.acquireRefusal = { status: 400, body: { error: 'network internet unavailable: Softnet is not usable on this host' } };
+  await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 400: .*Softnet is not usable on this host/);
+  assert.deepEqual(f.service.requests.filter(r => r.path === '/acquire').map(r => r.body.network), ['internet'], 'one acquisition, never retried on nat');
+  assert.equal(f.service.leases.size, 0);
 });
 
 test('lost acquire response reconciles by pre-recorded purpose without allocating twice', async t => {

@@ -18618,6 +18618,13 @@ function relayStateRoot(options2 = {}) {
   if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-vm-relay");
   return join2(absolute(options2.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-vm-relay");
 }
+var GUEST_NETWORKS = ["nat", "internet"];
+function guestNetwork(env = process.env) {
+  const value = env.MCP_RELAY_GUEST_NETWORK;
+  if (value === void 0) return "nat";
+  if (!GUEST_NETWORKS.includes(value)) throw new TypeError(`MCP_RELAY_GUEST_NETWORK must be nat or internet, not ${JSON.stringify(value)}; no guest is acquired until it names one of them`);
+  return value;
+}
 function pythonExecutable(env = process.env) {
   return nonblank(env.MCP_VM_RELAY_PYTHON ?? "python3", "MCP_VM_RELAY_PYTHON");
 }
@@ -30449,6 +30456,8 @@ var RelayManager = class {
       await this.assertBackend();
       if (this.shuttingDown) throw new Error("Relay manager is shutting down");
       if (this.enclosure) throw new Error("This enclosure already owns a lease; finish or release it first");
+      const network = this.options.guestNetwork ?? guestNetwork();
+      if (!GUEST_NETWORKS.includes(network)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network)}`);
       if (!/^[a-z0-9][a-z0-9-]{0,35}$/.test(input.task)) throw new Error("task must be a lowercase slug (1\u201336 chars)");
       if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error("Declare up to 100 extractions before work");
       const names = /* @__PURE__ */ new Set();
@@ -30477,7 +30486,7 @@ var RelayManager = class {
       await this.save();
       try {
         await this.registry.add(row);
-        await this.log("acquire-intent", void 0, input);
+        await this.log("acquire-intent", void 0, { ...input, network });
         try {
           await cp(join14(this.root, "probes"), join14(hostRoot, "host", "probes"), { recursive: true, errorOnExist: true, force: false });
         } catch (error2) {
@@ -30486,7 +30495,7 @@ var RelayManager = class {
         this.enclosure.acquisitionInFlight = true;
         await this.save();
         try {
-          this.enclosure.lease = await this.vm.acquire({ purpose, image: input.image, env: input.env ?? "none", ttl_hours: Math.min(this.renewalWindowMs(), ttlHours * 36e5) / 36e5, wait: true, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
+          this.enclosure.lease = await this.vm.acquire({ purpose, image: input.image, env: input.env ?? "none", ttl_hours: Math.min(this.renewalWindowMs(), ttlHours * 36e5) / 36e5, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
           this.enclosure.acquisitionInFlight = false;
         } catch (error2) {
           if (signal?.aborted && error2 === signal.reason || error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) this.enclosure.acquisitionInFlight = false;
@@ -30503,7 +30512,7 @@ var RelayManager = class {
         this.startHeartbeat();
         await this.save();
         if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${this.enclosure.lease.vm} is owned by this session, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release.`, { cause: signal.reason });
-        return { ...this.status(), guestRoot: this.enclosure.guestRoot, workspace: join14(this.enclosure.guestRoot, "workspace"), declarations: input.extractions };
+        return { ...this.status(), guestRoot: this.enclosure.guestRoot, workspace: join14(this.enclosure.guestRoot, "workspace"), declarations: input.extractions, network };
       } catch (error2) {
         await this.fail(error2);
         throw error2;
@@ -31911,6 +31920,7 @@ async function main(args) {
     return;
   }
   if (args.length) throw new Error("Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout");
+  guestNetwork();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_VM_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_VM_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");
