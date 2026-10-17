@@ -62,7 +62,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.5",
     "@wezzard/relay-driver-core": "^0.2.1",
     "@wezzard/relay-driver-host-sdk": "^0.2.1",
     "@wezzard/relay-driver-remote-runtime": "^0.2.1",
