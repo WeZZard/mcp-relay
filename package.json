@@ -1,6 +1,6 @@
 {
   "name": "@wezzard/mcp-relay",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "description": "MCP server and Claude Code plugin for the VM relay: recorded, snapshot-evidenced computer-use and browser-use in a fresh disposable VM",
   "license": "MIT",
