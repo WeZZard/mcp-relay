@@ -29,7 +29,7 @@ test('search does not recover a durable lease, acquire locks or access registry/
   assert.deepEqual(calls, ['applications']);
   assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), original);
   assert.deepEqual((await readdir(manager.root)).sort(), ['lease.json', 'search-diagnostics']);
-  assert.deepEqual(manager.status(), { active: false });
+  assert.deepEqual(manager.guestStatus(), { active: false });
   await writeFile(join(manager.root, 'search-diagnostics', 'foreign'), 'preserve');
   await assert.rejects(manager.search({ name: 'Firefox' }), /Unrecognized/);
   assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), original);
@@ -71,14 +71,17 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   await manager.initialize();
   await manager.acquire({ task: 'search-active', image: 'ubuntu2404', extractions: [], ttlHours: 2 });
   // Public equality alone would miss replacing the active timer or owner lock.
-  const internals = manager as unknown as { initialized: boolean; enclosure: unknown; timer: unknown; ownerLock: unknown; heartbeating: boolean };
+  const session = manager as unknown as { loaded: boolean; ownerLock: unknown; guests: Map<string, { enclosure: unknown; timer: unknown; ownerLock: unknown; heartbeating: boolean }> };
+  const internals = { get initialized() { return session.loaded; }, get ownerLock() { return session.ownerLock; }, guest: session.guests.get('search-active-1')!,
+    get enclosure() { return this.guest.enclosure; }, get timer() { return this.guest.timer; }, get guestLock() { return this.guest.ownerLock; }, get heartbeating() { return this.guest.heartbeating; } };
   assert.equal(internals.initialized, true);
   assert.ok(internals.timer);
-  assert.ok(internals.ownerLock);
-  const identities = { enclosure: internals.enclosure, timer: internals.timer, ownerLock: internals.ownerLock };
-  const status = manager.status();
+  assert.ok(internals.ownerLock); assert.ok(internals.guestLock);
+  const identities = { enclosure: internals.enclosure, timer: internals.timer, ownerLock: internals.ownerLock, guestLock: internals.guestLock };
+  const status = manager.guestStatus();
   assert.equal('vm' in status && status.vm, 'fixture-search');
-  const originalLease = await readFile(join(manager.root, 'lease.json'), 'utf8');
+  const leaseFile = join(manager.root, 'guests', 'search-active-1', 'lease.json');
+  const originalLease = await readFile(leaseFile, 'utf8');
   const originalRegistry = await readFile(registryPath, 'utf8');
   const eventsPath = join(root, 'packages', 'purpose' in status ? status.purpose! : '', 'host', 'events');
   const originalEvents = await readdir(eventsPath);
@@ -87,8 +90,9 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
     assert.equal(internals.enclosure, identities.enclosure);
     assert.equal(internals.timer, identities.timer);
     assert.equal(internals.ownerLock, identities.ownerLock);
-    assert.deepEqual(manager.status(), status);
-    assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), originalLease);
+    assert.equal(internals.guestLock, identities.guestLock);
+    assert.deepEqual(manager.guestStatus(), status);
+    assert.equal(await readFile(leaseFile, 'utf8'), originalLease);
     assert.equal(await readFile(registryPath, 'utf8'), originalRegistry);
     assert.deepEqual(await readdir(eventsPath), originalEvents);
   };

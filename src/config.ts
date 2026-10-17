@@ -45,6 +45,21 @@ export function guestNetwork(env: NodeJS.ProcessEnv = process.env): GuestNetwork
   return value as GuestNetwork;
 }
 
+/** How many guests one session holds at once when MCP_RELAY_MAX_GUESTS is unset (DC-20). */
+export const DEFAULT_MAX_GUESTS = 4;
+/**
+ * The most guests one relay session holds at once, from MCP_RELAY_MAX_GUESTS:
+ * 4 when it is unset. Anything but a positive integer is refused, never read
+ * as the default (DC-20).
+ */
+export function maxGuests(env: NodeJS.ProcessEnv = process.env): number {
+  const value = env.MCP_RELAY_MAX_GUESTS;
+  if (value === undefined) return DEFAULT_MAX_GUESTS;
+  const count = /^[1-9][0-9]*$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(count)) throw new TypeError(`MCP_RELAY_MAX_GUESTS must be a positive integer, not ${JSON.stringify(value)}; no guest is acquired until it names one`);
+  return count;
+}
+
 /** Resolve a Python executable name through PATH unless explicitly overridden. */
 export function pythonExecutable(env: NodeJS.ProcessEnv = process.env): string {
   return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");

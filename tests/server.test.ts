@@ -33,6 +33,16 @@ test('the server refuses to start on a guest network other than nat or internet 
   });
 });
 
+test('the server refuses to start on a guest limit that is not a positive integer (DC-20)', async () => {
+  for (const value of ['0', '-1', '2.5', 'four', '']) {
+    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_MAX_GUESTS: value } }), (error: any) => {
+      assert.equal(error.code, 1, value);
+      assert.match(error.stderr, /MCP_RELAY_MAX_GUESTS must be a positive integer/, value);
+      return true;
+    });
+  }
+});
+
 test('no text tells the agent to relay only interruptive work (DC-14)', async () => {
   const rule = /interrupt|non-disruptive|headless work|stays with local tools|unknown is not idle/i;
   assert.doesNotMatch(instructions, rule);
@@ -110,10 +120,13 @@ test('each run tool maps to its own kind in the derived schema, without a kind f
     assert.ok(!(tool.inputSchema.required ?? []).some(key => ['reason', 'step', 'snapshots'].includes(key)), `${name} requires no evidence field`);
   }
   const relayRun = tools.find(t2 => t2.name === 'relay_run')!;
-  assert.deepEqual(Object.keys(relayRun.inputSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
-  assert.deepEqual(relayRun.inputSchema.required, ['target', 'tool']);
+  assert.deepEqual(Object.keys(relayRun.inputSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'guest', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
+  assert.deepEqual(relayRun.inputSchema.required, ['guest', 'target', 'tool']);
   const relayToolsTool = tools.find(t2 => t2.name === 'relay_tools')!;
-  assert.deepEqual(relayToolsTool.inputSchema.required, ['target']);
+  assert.deepEqual(relayToolsTool.inputSchema.required, ['guest', 'target']);
+  // Every tool that acts on a guest requires its name (DC-20).
+  for (const name of ['relay_stage', 'relay_exec', 'relay_script', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools', 'relay_image', 'relay_extract', 'relay_finish', 'relay_release', 'relay_console_resolve', 'relay_console_open', 'relay_console_cancel']) assert.ok((tools.find(t2 => t2.name === name)!.inputSchema.required ?? []).includes('guest'), name);
+  for (const name of ['relay_search', 'relay_probe', 'relay_acquisition_capabilities', 'relay_acquire']) assert.ok(!(tools.find(t2 => t2.name === name)!.inputSchema.required ?? []).includes('guest'), name);
   assert.ok(!tools.some(t2 => ['relay_cua', 'relay_browser'].includes(t2.name)));
 });
 
@@ -129,7 +142,7 @@ test('invalid input is refused by the strict contract before any manager exists;
   assert.equal(unknown.isError, true);
   assert.match(unknown.content[0].text, /Unknown tool/);
   const status: any = await client.callTool({ name: STATUS_TOOL, arguments: {} });
-  assert.equal(status.isError, false); assert.deepEqual(JSON.parse(status.content[0].text), { active: false, project, service: 'http://127.0.0.1:9' });
+  assert.equal(status.isError, false); assert.deepEqual(JSON.parse(status.content[0].text), { active: false, guests: [], maxGuests: 4, project, service: 'http://127.0.0.1:9' });
   await assert.rejects(stat(join(root, 'state')), { code: 'ENOENT' }); // nothing was created for refused calls
 });
 
@@ -172,7 +185,7 @@ test('cancelling a relay call from the client aborts the server-side signal', as
   const controller = new AbortController();
   const step = { id: 'step', title: 'Fixture', expected: 'Completes', inputMode: 'ordinary' };
   const callPromise = client.callTool(
-    { name: 'relay_exec', arguments: { reason: 'Exercise client-initiated cancellation', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } } },
+    { name: 'relay_exec', arguments: { guest: 'cancel-1', reason: 'Exercise client-initiated cancellation', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } } },
     undefined,
     { signal: controller.signal },
   );
@@ -181,6 +194,30 @@ test('cancelling a relay call from the client aborts the server-side signal', as
   controller.abort();
   await assert.rejects(callPromise);
   assert.equal(capturedSignal?.aborted, true);
+});
+
+test('the server dispatches calls on different guests at the same time (DC-20)', async t => {
+  // Each run waits until both are running: only concurrent dispatch lets either finish.
+  const running: string[] = []; let both!: () => void;
+  const together = new Promise<void>(resolve => { both = resolve; });
+  const fakeManager = {
+    run: async (input: { guest: string }) => {
+      running.push(input.guest); if (running.length === 2) both();
+      await together;
+      return { executionId: input.guest, outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
+    },
+  } as unknown as RelayManager;
+  const relay = createRelayServer({ project: '/tmp', manager: () => fakeManager });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await relay.server.connect(serverTransport);
+  t.after(() => relay.server.close());
+  const client = new Client({ name: 'mcp-relay-concurrency-test', version: '0' });
+  await client.connect(clientTransport);
+  t.after(() => client.close());
+  const call = (guest: string) => client.callTool({ name: 'relay_exec', arguments: { guest, argv: ['true'] } }) as Promise<any>;
+  const results = await Promise.race([Promise.all([call('first-1'), call('second-1')]), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the two calls were not dispatched together')), 5000).unref())]);
+  assert.deepEqual(running.sort(), ['first-1', 'second-1']);
+  for (const result of results) assert.equal(result.isError, false, result.content[0].text);
 });
 
 test('the plugin files name the server the tests spoke to and ship the built bundles', async () => {

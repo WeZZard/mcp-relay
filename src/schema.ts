@@ -8,6 +8,8 @@ const reason = Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', desc
 const optionalReason = Type.Optional(Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', description: 'Optional intent, retained as evidence. Default: derived from the call.' }));
 const interval = Type.Number({ minimum: 0, maximum: 300000, description: 'Wait in milliseconds from the end of the call to the after-snapshot. Optional; the relay has a default.' });
 const id = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$' });
+/** The guest a call acts on: the name relay_acquire answered (DC-20). */
+const guest = Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,47}$', description: 'The guest this call acts on: the name relay_acquire answered.' });
 const snapshots = Type.Object({
   afterIntervalMs: Type.Optional(interval),
   group: Type.Optional(Type.Object({ groupId: id, phase: StringEnum(['first', 'member', 'last'] as const), afterIntervalMs: Type.Optional(interval) }, closed)),
@@ -25,7 +27,7 @@ const hold = Type.Object({
 const argv = Type.Array(Type.String(), { minItems: 1, maxItems: 256 });
 const language = StringEnum(['javascript', 'typescript', 'python'] as const);
 const timeoutMs = Type.Optional(Type.Integer({ minimum: 1, maximum: 3600000, description: 'Execution timeout in milliseconds, default 120000, maximum 3600000. Independent of snapshot delay and lease TTL.' }));
-const runBase = { action: Type.Literal('run'), reason: optionalReason, step: Type.Optional(step), snapshots: Type.Optional(snapshots), timeoutMs };
+const runBase = { action: Type.Literal('run'), guest, reason: optionalReason, step: Type.Optional(step), snapshots: Type.Optional(snapshots), timeoutMs };
 /** The MCP servers relay_run forwards to, defined once in src/targets.ts. */
 export const runTargets = TARGETS;
 const target = StringEnum(TARGETS, { description: 'cua (cua-driver), playwright (Playwright MCP) or chrome-devtools (Chrome DevTools MCP).' });
@@ -34,10 +36,10 @@ const target = StringEnum(TARGETS, { description: 'cua (cua-driver), playwright 
 export const relayContract = Type.Union([
   Type.Object({ action: Type.Literal('search'), name: Type.String({ minLength: 1, maxLength: 256, pattern: '\\S' }), os: Type.Optional(StringEnum(['linux', 'macos'] as const)) }, closed),
   Type.Object({ action: Type.Literal('acquisition-capabilities') }, closed),
-  Type.Object({ action: Type.Literal('console-resolve') }, closed),
-  Type.Object({ action: Type.Literal('console-open'), console_id: id, attempt_id: id, userRequested: Type.Literal(true), reason, expected: Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S' }) }, closed),
-  Type.Object({ action: Type.Literal('console-cancel'), console_id: id, attempt_id: id }, closed),
-  Type.Object({ action: Type.Literal('probe'), scope: Type.Optional(StringEnum(['host', 'guest'] as const)) }, closed),
+  Type.Object({ action: Type.Literal('console-resolve'), guest }, closed),
+  Type.Object({ action: Type.Literal('console-open'), guest, console_id: id, attempt_id: id, userRequested: Type.Literal(true), reason, expected: Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S' }) }, closed),
+  Type.Object({ action: Type.Literal('console-cancel'), guest, console_id: id, attempt_id: id }, closed),
+  Type.Object({ action: Type.Literal('probe'), scope: Type.Optional(StringEnum(['host', 'guest'] as const)), guest: Type.Optional(guest) }, closed),
   Type.Object({ action: Type.Literal('acquire'),
     task: Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,35}$' }),
     image: Type.String({ description: 'Image key from relay action=probe, e.g. ubuntu2404 or macos26.' }),
@@ -47,7 +49,7 @@ export const relayContract = Type.Union([
     env: Type.Optional(Type.String({ description: 'Credential pack, default none; never baked into images.' })),
     fullWorkspace: Type.Optional(Type.Boolean({ description: 'Explicit opt-in to deliver the entire workspace.' })),
   }, closed),
-  Type.Object({ action: Type.Literal('stage'),
+  Type.Object({ action: Type.Literal('stage'), guest,
     resetRecording: Type.Optional(Type.Boolean({ description: 'Explicitly archive the current recording and start a new session on the same VM. Retains prior evidence; refuses while the receiver lock exists. Use after diagnosing recording damage.' })),
     workspace: Type.Optional(Type.String({ description: 'Host directory copied to the guest workspace, opt-in. It lies in the project folder: relative to it, or absolute inside it; no symlinks.' })),
     files: Type.Optional(Type.Array(Type.Object({ local: Type.String({ description: 'Host file in the project folder: relative to it, or absolute inside it; no symlinks.' }), path: Type.String({ description: 'Relative destination under guest support/.' }) }, closed))),
@@ -58,7 +60,7 @@ export const relayContract = Type.Union([
   Type.Object({ ...runBase, kind: Type.Literal('exec'), argv, diagnostic: Type.Optional(Type.Boolean({ description: 'Explicit command diagnosis or repair without screenshot evidence, including before staging. Commands and outcomes remain recorded. Never claim visual verification.' })) }, closed),
   Type.Object({ ...runBase, kind: Type.Literal('script'), localPath: Type.String({ minLength: 1, description: 'Host script file in the project folder: relative to it, or absolute inside it; no symlinks.' }), language }, closed),
   Type.Object({ ...runBase, kind: Type.Literal('code'), code: Type.String({ maxLength: 1048576 }), language }, closed),
-  Type.Object({ action: Type.Literal('run'), kind: Type.Literal('mcp'), target,
+  Type.Object({ action: Type.Literal('run'), kind: Type.Literal('mcp'), guest, target,
     tool: Type.String({ minLength: 1, maxLength: 200, description: 'The target server\'s own tool name.' }),
     args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: 'The tool\'s own arguments, forwarded unchanged.' })),
     reason: optionalReason,
@@ -67,12 +69,12 @@ export const relayContract = Type.Union([
     timeoutMs,
     hold: Type.Optional(hold),
   }, closed),
-  Type.Object({ action: Type.Literal('gate'), hold: id, decision: StringEnum(['go', 'cancel'] as const, { description: 'go sends the held call; cancel refuses it with nothing sent.' }) }, closed),
-  Type.Object({ action: Type.Literal('tools'), target, tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: 'Optional: return only this tool.' })) }, closed),
-  Type.Object({ action: Type.Literal('image'), target: imageTarget }, closed),
-  Type.Object({ action: Type.Literal('extract'), names: Type.Array(Type.String()) }, closed),
-  Type.Object({ action: Type.Literal('finish') }, closed),
-  Type.Object({ action: Type.Literal('release') }, closed),
+  Type.Object({ action: Type.Literal('gate'), guest, hold: id, decision: StringEnum(['go', 'cancel'] as const, { description: 'go sends the held call; cancel refuses it with nothing sent.' }) }, closed),
+  Type.Object({ action: Type.Literal('tools'), guest, target, tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: 'Optional: return only this tool.' })) }, closed),
+  Type.Object({ action: Type.Literal('image'), guest, target: imageTarget }, closed),
+  Type.Object({ action: Type.Literal('extract'), guest, names: Type.Array(Type.String()) }, closed),
+  Type.Object({ action: Type.Literal('finish'), guest }, closed),
+  Type.Object({ action: Type.Literal('release'), guest }, closed),
 ]);
 // Root object projection keeps common provider tool requirements satisfied;
 // anyOf retains the exact closed branches, rather than accepting arbitrary
@@ -124,6 +126,7 @@ export function toolInputSchema(action: RelayAction, kind?: RunKind): Record<str
 }
 
 export function validateRelayInput(value: unknown): asserts value is RelayInput {
-  if (!Check(relayContract, value)) throw new Error('Invalid relay input: action is required; console-open requires nonblank reason. Supply only the fields for the selected action and run kind.');
+  if (!Check(relayContract, value)) throw new Error('Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action and run kind.');
+  if (value.action === 'probe' && value.scope === 'guest' && value.guest === undefined) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === 'run' && value.kind === 'exec' && value.diagnostic && value.snapshots?.group) throw new Error('Diagnostic commands cannot join snapshot groups.');
 }

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { validateRelayInput } from '../src/schema.js';
 import { probeLocal } from '../src/probe.js';
 
-const run = { action: 'run', kind: 'exec', reason: 'Inspect the owned guest', argv: ['true'], step: { id: 'check', title: 'Check', expected: 'Exit zero', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } };
+const run = { action: 'run', kind: 'exec', guest: 'check-1', reason: 'Inspect the owned guest', argv: ['true'], step: { id: 'check', title: 'Check', expected: 'Exit zero', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } };
 
 test('execution timeout is bounded independently from screenshot timing and TTL', () => {
   for (const timeoutMs of [1, 120000, 3600000]) assert.doesNotThrow(() => validateRelayInput({ ...run, timeoutMs }));
@@ -20,7 +20,11 @@ test('diagnostic execution is explicit, exec-only, and cannot join a screenshot 
 });
 
 test('probe differentiates host facts from guest checks without a new tool or action', () => {
-  for (const scope of ['host', 'guest']) assert.doesNotThrow(() => validateRelayInput({ action: 'probe', scope }));
+  for (const scope of ['host', 'guest']) assert.doesNotThrow(() => validateRelayInput({ action: 'probe', scope, guest: 'check-1' }));
+  assert.doesNotThrow(() => validateRelayInput({ action: 'probe', scope: 'host' }));
+  assert.throws(() => validateRelayInput({ action: 'probe', scope: 'guest' }), /names the guest to probe/, 'a guest probe names its guest (DC-20)');
+  assert.throws(() => validateRelayInput({ ...run, guest: undefined }), /Invalid relay input/, 'a run names its guest (DC-20)');
+  assert.throws(() => validateRelayInput({ ...run, guest: '../escape' }), /Invalid relay input/);
   assert.throws(() => validateRelayInput({ action: 'probe', scope: 'any' }));
 });
 

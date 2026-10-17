@@ -426,8 +426,11 @@ sequenceDiagram
 
 ## 5. Lease lifecycle, persistence and recovery
 
-One dedicated VM per prompt-composed enclosure: acquire a fresh COW clone with
-lease/TTL, stage, work, extract and release. Registry ownership intent is persisted
+One dedicated VM per guest: acquire a fresh COW clone with lease/TTL, stage,
+work, extract and release. One session may hold several guests at once
+([guest-code-runs.md §7](guest-code-runs.md#7-several-guests-in-one-session-dc-20));
+each runs the lifecycle below on its own, and every guarantee in this section
+holds per guest. Registry ownership intent is persisted
 before acquisition; registry exit follows verified destruction. Heartbeats retain
 ownership during long tasks.
 
@@ -498,7 +501,7 @@ Operational configuration is documented in [README](../README.md).
 - Use the existing lifecycle state machine and durable ownership records as the source of truth. Correct its failure and recovery transitions rather than requiring the agent to remember state from conversation history.
 - Context compaction must not reset lifecycle state, release a VM, or require a replacement VM. The agent must be able to inspect current state and continue valid operations after prior messages leave its context.
 - Process restart and context compaction are different events. On restart, reconcile persisted ownership, backend state, and guest execution records before resuming; during compaction, retain the running manager's state.
-- The implementation uses enclosure state, `lease.json`, ownership locks, status reporting, and guest execution receipts. Automated tests cover revised recovery transitions; live image readiness remains separately tracked in the verification report.
+- The implementation uses each guest's ownership record, `guests/<guest>/lease.json` in the session's state directory, the session's and each guest's owner locks, status reporting, and guest execution receipts. A session's record from before DC-20, `lease.json` beside the session's lock, is restored as one guest named from its task. Automated tests cover revised recovery transitions; live image readiness remains separately tracked in the verification report.
 - Do not release the VM from the `run` error path. Do not mark a lease permanently failed merely because an operation returned an error.
 - Keep explicit `finish` and `release`, verified destruction before unregistration, and the backend lease-expiration safeguard.
 - Preserve the VM when the agent completes a turn, the session shuts down, or the session is replaced. Stop automatic renewal when the session is no longer actively using the VM and report the last confirmed expiration time. The MCP server treats end of file on standard input, an error on standard output and a termination signal as the end of the session ([lifecycle fixes](lifecycle-fixes.md), R1 and R2).

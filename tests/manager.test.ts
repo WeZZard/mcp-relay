@@ -68,10 +68,16 @@ const fixtureLaunches = (log: string) => (context: Parameters<typeof targetLaunc
   return { cua: { ...real.cua, env: { FIXTURE_LOG: log } }, playwright: fixture('playwright'), 'chrome-devtools': fixture('chrome-devtools') };
 };
 const reason = 'Exercise isolated protocol fixtures, never the real desktop';
+/** The guest every fixture's first acquisition names: its task and the counter 1 (DC-20). */
+const G = 'manager-test-1';
 const acquireInput = (patch: Partial<AcquireInput> = {}): AcquireInput => ({ image: 'ubuntu2404', task: 'manager-test', extractions: [], ...patch });
 const operation = (id: string, patch: Partial<RunInput> = {}): RunInput => ({ because: reason, kind: 'exec', argv: [process.execPath, '-e', 'console.log("test output")'], step: { id, title: id, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 }, ...patch });
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 async function json(path: string): Promise<any> { return JSON.parse(await readFile(path, 'utf8')); }
+/** A guest's durable ownership record: `guests/<guest>/lease.json` in the session's state directory (DC-20). */
+const leaseFile = (manager: RelayManager, guest = G) => join(manager.root, 'guests', guest, 'lease.json');
+/** The session's first guest, for the tests that reach its renewal internals. */
+const guestOf = (manager: RelayManager): any => [...(manager as any).guests.values()][0];
 /** A run names its after-image as pending; relay_image waits for its background download and shows it (docs/screenshot-delivery.md §10). */
 async function shown(manager: RelayManager, run: { imageDelivery?: { status: string; image?: any } }) {
   assert.equal(run.imageDelivery?.status, 'pending', JSON.stringify(run.imageDelivery));
@@ -232,14 +238,14 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   await chmod(driver, 0o700);
   const stage = () => manager.stage({ cuaDriver: driver, nodePath: process.execPath });
   const assertClean = async () => {
-    assert.deepEqual(manager.status(), { active: false }); assert.equal(service.leases.size, 0);
+    assert.deepEqual(manager.guestStatus(), { active: false }); assert.deepEqual(manager.status().guests, []); assert.equal(service.leases.size, 0);
     assert.equal(await readFile(registryPath, 'utf8'), registryText);
-    assert.equal(await json(join(manager.root, 'lease.json')), null);
+    for (const guest of await readdir(join(manager.root, 'guests')).catch(() => [] as string[])) assert.equal(await json(leaseFile(manager, guest)), null, `guest ${guest} keeps no record`);
   };
-  const assertRetained = async (vm: string | undefined = manager.status().vm) => {
-    assert.equal(manager.status().vm, vm); assert.ok(vm); assert.equal(service.leases.has(vm), true);
+  const assertRetained = async (vm: string | undefined = manager.guestStatus().vm) => {
+    assert.equal(manager.guestStatus().vm, vm); assert.ok(vm); assert.equal(service.leases.has(vm), true);
     assert.equal(service.releaseCalls, 0);
-    assert.equal((await json(join(manager.root, 'lease.json'))).lease.vm, vm);
+    assert.equal((await json(leaseFile(manager))).lease.vm, vm);
     assert.notEqual(await readFile(registryPath, 'utf8'), registryText);
   };
   const mcpCalls = async () => (await readFile(mcpLog, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
@@ -252,9 +258,9 @@ test('real HTTP service, receiver and Registry: acquire → stage → exec/scrip
   await writeFile(join(f.root, 'support.txt'), 'support bytes');
   await writeFile(join(f.root, 'script.js'), "require('node:fs').writeFileSync('artifact.txt', 'script artifact');console.log('script result')");
   const acquired = await f.manager.acquire(acquireInput({ extractions: [{ name: 'artifact', path: 'artifact.txt' }], fullWorkspace: true, ttlHours: 0.5 }));
-  const hostRoot = f.manager.status().output!;
+  const hostRoot = f.manager.guestStatus().output!;
   assert.match(await readFile(f.registryPath, 'utf8'), /vm-service relay-manager-test-/);
-  const lease = await json(join(f.manager.root, 'lease.json'));
+  const lease = await json(leaseFile(f.manager));
   assert.equal(Object.hasOwn(lease, 'because'), false);
   assert.equal(lease.lease.vm, acquired.vm); assert.equal(lease.row.machine, `127.0.0.1 (vm-service ${lease.purpose})`);
   await f.manager.stage({ workspace: 'input', files: [{ local: 'support.txt', path: 'nested/support.txt' }], cuaDriver: f.driver, nodePath: process.execPath });
@@ -315,19 +321,19 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
   const why = (action: string) => `${reason}: single-tool ${action}`;
   const declarations = [{ name: 'artifact', path: 'artifact.txt' }];
   const acquired = await execute({ action: 'acquire', task: 'manager-test', image: 'ubuntu2404', extractions: declarations, ttlHours: 0.5 });
-  const hostRoot = f.manager.status().output!;
+  const hostRoot = f.manager.guestStatus().output!;
   assert.deepEqual(acquired.declarations, declarations);
-  assert.equal(acquired.vm, f.manager.status().vm);
+  assert.equal(acquired.vm, f.manager.guestStatus().vm);
   assert.match(await readFile(f.registryPath, 'utf8'), /vm-service relay-manager-test-/);
-  assert.equal(Object.hasOwn(await json(join(f.manager.root, 'lease.json')), 'because'), false);
+  assert.equal(Object.hasOwn(await json(leaseFile(f.manager)), 'because'), false);
   await writeFile(join(f.root, 'tool-script.js'), "require('node:fs').appendFileSync('artifact.txt', '|script');console.log('script result')");
-  const staged = await execute({ action: 'stage', cuaDriver: f.driver, nodePath: process.execPath });
+  const staged = await execute({ action: 'stage', guest: G, cuaDriver: f.driver, nodePath: process.execPath });
   assert.equal(staged.staged, true); assert.equal(staged.workspace, acquired.workspace);
   f.service.receiverHook = async () => { await f.service.heartbeatDuringExec.promise; };
   const runs: Extract<RelayInput, { action: 'run' }>[] = [
-    { action: 'run', reason: why('exec'), kind: 'exec', argv: [process.execPath, '-e', "require('node:fs').writeFileSync('artifact.txt', 'exec artifact');console.log('exec result')"], step: { ...operation('tool-exec').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
-    { action: 'run', reason: why('script'), kind: 'script', localPath: 'tool-script.js', language: 'javascript', step: { ...operation('tool-script').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
-    { action: 'run', reason: why('code'), kind: 'code', code: "require('node:fs').appendFileSync('artifact.txt', '|code');console.log('code result')", language: 'javascript', step: { ...operation('tool-code').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
+    { action: 'run', guest: G, reason: why('exec'), kind: 'exec', argv: [process.execPath, '-e', "require('node:fs').writeFileSync('artifact.txt', 'exec artifact');console.log('exec result')"], step: { ...operation('tool-exec').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
+    { action: 'run', guest: G, reason: why('script'), kind: 'script', localPath: 'tool-script.js', language: 'javascript', step: { ...operation('tool-script').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
+    { action: 'run', guest: G, reason: why('code'), kind: 'code', code: "require('node:fs').appendFileSync('artifact.txt', '|code');console.log('code result')", language: 'javascript', step: { ...operation('tool-code').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
   ];
   for (const run of runs) {
     const result = await execute(run);
@@ -342,11 +348,11 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
   }
   assert.ok(f.service.heartbeatCount > 0, 'heartbeat remains live during a tool-dispatched receiver operation');
   assert.equal(f.service.receiverCalls, 3); assert.equal(f.service.maxReceiverActive, 1);
-  const extracted = await execute({ action: 'extract', names: ['artifact'] });
+  const extracted = await execute({ action: 'extract', guest: G, names: ['artifact'] });
   assert.equal(extracted.length, 1); assert.equal(extracted[0].facts.length, 1);
   assert.equal(extracted[0].name, 'artifact'); assert.equal(extracted[0].path, 'artifact.txt');
   assert.equal(await readFile(extracted[0].destination, 'utf8'), 'exec artifact|script|code');
-  const delivered = await execute({ action: 'finish' });
+  const delivered = await execute({ action: 'finish', guest: G });
   assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.snapshots, 'complete');
   assert.equal(delivered.execution, 'passed'); assert.equal('humanReview' in delivered, false, 'the relay performs no human review');
   assert.deepEqual(await verifyDeliveredPackage(hostRoot), delivered);
@@ -363,7 +369,7 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
   assert.equal(lifecycle.released, true); assert.deepEqual(lifecycle.delivered, delivered);
   assert.equal(contexts.length, 7); assert.ok(contexts.every(context => context === ctx));
   await f.assertClean(); assert.equal(f.service.releaseCalls, 1);
-  assert.equal((f.manager as any).timer, undefined, 'finish clears the heartbeat timer');
+  assert.equal(guestOf(f.manager)?.timer, undefined, 'finish clears the heartbeat timer');
 });
 
 test('the shipped MCP server stages its shipped receiver and completes a full HTTP lifecycle over stdio', async t => {
@@ -396,16 +402,17 @@ test('the shipped MCP server stages its shipped receiver and completes a full HT
       return relayJson(result.content[0].text);
     };
     const acquired = await invoke({ action: 'acquire', task: 'manager-test', image: 'ubuntu2404', extractions: [{ name: 'artifact', path: 'artifact.txt' }] });
-    await invoke({ action: 'stage', nodePath: process.execPath, cuaDriver: f.driver });
-    const result = await invoke({ action: 'run', reason, kind: 'exec', argv: [process.execPath, '-e', "require('fs').writeFileSync('artifact.txt','compiled package')"], step: { id: 'compiled', title: 'Compiled package', expected: 'Declared artifact written', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } });
+    await invoke({ action: 'stage', guest: G, nodePath: process.execPath, cuaDriver: f.driver });
+    const result = await invoke({ action: 'run', guest: G, reason, kind: 'exec', argv: [process.execPath, '-e', "require('fs').writeFileSync('artifact.txt','compiled package')"], step: { id: 'compiled', title: 'Compiled package', expected: 'Declared artifact written', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } });
     assert.equal(result.outcome.kind, 'completed');
-    const image: any = await client.callTool({ name: 'relay_image', arguments: { target: { source: 'reference', imageId: named!.imageId } } });
+    const image: any = await client.callTool({ name: 'relay_image', arguments: { guest: G, target: { source: 'reference', imageId: named!.imageId } } });
     assert.equal(image.isError, false, image.content[0].text);
     assert.equal(image.content.find((c: any) => c.type === 'image').mimeType, 'image/png', 'relay_image shows the downloaded after-image');
     const status: any = await client.callTool({ name: 'relay_status', arguments: {} });
     const owned = JSON.parse(status.content[0].text);
-    assert.equal(owned.staged, true); assert.equal(owned.active, true); assert.equal(owned.service, f.manager.vm.baseUrl);
-    const delivered = await invoke({ action: 'finish' }); assert.equal(delivered.execution, 'passed'); assert.equal(delivered.deliveryVerified, true);
+    assert.equal(owned.active, true); assert.equal(owned.service, f.manager.vm.baseUrl); assert.equal(owned.maxGuests, 4);
+    assert.deepEqual(owned.guests.map((guest: any) => [guest.guest, guest.staged, guest.active]), [[G, true, true]], 'relay_status lists the guest by name');
+    const delivered = await invoke({ action: 'finish', guest: G }); assert.equal(delivered.execution, 'passed'); assert.equal(delivered.deliveryVerified, true);
     assert.deepEqual(await verifyDeliveredPackage(acquired.output), delivered);
     assert.equal(f.service.receiverCalls, 1); assert.equal(f.service.leases.size, 0);
     assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
@@ -425,9 +432,9 @@ test('production tool boundary: saved source images, bounded recovery and one co
     return details;
   };
   const acquired = (await invoke({ action: 'acquire', task: 'manager-test', image: 'ubuntu2404', extractions: [{ name: 'consumer', path: 'consumer' }] })).details as any;
-  await invoke({ action: 'stage', cuaDriver: f.driver, nodePath: process.execPath });
+  await invoke({ action: 'stage', guest: G, cuaDriver: f.driver, nodePath: process.execPath });
   const run = (id: string, code = 'console.log("fixture input")', snapshots: RunInput['snapshots'] = { afterIntervalMs: 0 }) => invoke({
-    action: 'run', reason, kind: 'exec', argv: [process.execPath, '-e', code], step: operation(id).step, snapshots,
+    action: 'run', guest: G, reason, kind: 'exec', argv: [process.execPath, '-e', code], step: operation(id).step, snapshots,
   } as RelayInput);
   const first = imageDetails(await run('source', `const fs=require('fs');fs.mkdirSync('consumer');fs.writeFileSync('consumer/screenshot.png',Buffer.from('${png}','base64'));fs.writeFileSync('consumer/result.txt','consumer output');`), 'pending');
   assert.equal(first.isError, false); assert.equal(first.result.outcome.kind, 'completed');
@@ -435,7 +442,7 @@ test('production tool boundary: saved source images, bounded recovery and one co
   assert.equal(descriptor.source, 'display'); assert.equal(descriptor.phase, 'after');
   assert.equal(descriptor.executionId, first.result.executionId);
   // relay_image by display selector waits for the background download, then shows the image the run named.
-  const shownFirst = imageDetails(await invoke({ action: 'image', target: { source: 'display', sessionId: descriptor.sessionId, executionId: descriptor.executionId, phase: 'after' } }), 'attached');
+  const shownFirst = imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'display', sessionId: descriptor.sessionId, executionId: descriptor.executionId, phase: 'after' } }), 'attached');
   assert.deepEqual(shownFirst.imageDelivery.image, descriptor);
   assert.deepEqual(await readFile(descriptor.originalPath), Buffer.from(png, 'base64'));
   const counters = async () => ({ receiver: f.service.receiverCalls,
@@ -445,23 +452,23 @@ test('production tool boundary: saved source images, bounded recovery and one co
     requests: f.service.requests.length,
   });
   const before = await counters();
-  const again = imageDetails(await invoke({ action: 'image', target: { source: 'reference', imageId: descriptor.imageId } }), 'attached');
+  const again = imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'reference', imageId: descriptor.imageId } }), 'attached');
   assert.deepEqual(again.imageDelivery.image, descriptor);
   assert.deepEqual(await counters(), before, 'local reference recovery must not perform guest input, capture, acquisition, transfer or export');
-  const application = imageDetails(await invoke({ action: 'image', target: { source: 'application', name: 'consumer', path: 'screenshot.png' } }), 'attached');
+  const application = imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'application', name: 'consumer', path: 'screenshot.png' } }), 'attached');
   assert.equal(application.imageDelivery.image.source, 'application');
   assert.equal(application.imageDelivery.image.name, 'consumer');
   assert.deepEqual(await readFile(application.imageDelivery.image.originalPath), Buffer.from(png, 'base64'));
   assert.equal(f.service.receiverCalls, before.receiver);
   assert.equal((await counters()).captures, before.captures);
   assert.deepEqual((await counters()).exports, []);
-  imageDetails(await invoke({ action: 'image', target: { source: 'display', sessionId: 'foreign-session', executionId: descriptor.executionId, phase: 'after' } }), 'unauthorized-reference');
-  imageDetails(await invoke({ action: 'image', target: { source: 'reference', imageId: `image-${'0'.repeat(64)}` } }), 'unauthorized-reference');
-  imageDetails(await invoke({ action: 'image', target: { source: 'application', name: 'consumer', path: '../escape.png' } }), 'unsafe-path');
+  imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'display', sessionId: 'foreign-session', executionId: descriptor.executionId, phase: 'after' } }), 'unauthorized-reference');
+  imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'reference', imageId: `image-${'0'.repeat(64)}` } }), 'unauthorized-reference');
+  imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'application', name: 'consumer', path: '../escape.png' } }), 'unsafe-path');
   for (const phase of ['first', 'member', 'last'] as const) {
     const grouped = imageDetails(await run(`group-${phase}`, undefined, { group: { groupId: 'text-group', phase }, ...(phase === 'last' ? { afterIntervalMs: 0 } : {}) }), phase === 'last' ? 'pending' : 'not-requested');
     assert.equal(grouped.result.outcome.kind, 'completed');
-    if (phase === 'last') { assert.equal(grouped.imageDelivery.image.groupId, 'text-group'); imageDetails(await invoke({ action: 'image', target: { source: 'reference', imageId: grouped.imageDelivery.image.imageId } }), 'attached'); }
+    if (phase === 'last') { assert.equal(grouped.imageDelivery.image.groupId, 'text-group'); imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'reference', imageId: grouped.imageDelivery.image.imageId } }), 'attached'); }
   }
   // The step download fails its three archive pulls; it is not queued again, and relay_image then makes its own copy.
   f.service.archivePullFailures = 3;
@@ -469,7 +476,7 @@ test('production tool boundary: saved source images, bounded recovery and one co
   const failedTransfer = imageDetails(await run('transfer-failure'), 'pending');
   assert.equal(failedTransfer.result.outcome.kind, 'completed');
   const recoveryBefore = await counters();
-  const recovered = imageDetails(await invoke({ action: 'image', target: { source: 'reference', imageId: failedTransfer.imageDelivery.image.imageId } }), 'attached');
+  const recovered = imageDetails(await invoke({ action: 'image', guest: G, target: { source: 'reference', imageId: failedTransfer.imageDelivery.image.imageId } }), 'attached');
   assert.ok(f.service.archivePullFailures <= 0);
   assert.equal(f.service.requests.filter(r => r.path.endsWith('/pull') && r.body.remote_path.endsWith('.png')).length - pullsBefore, 1, 'the retrieval\'s own copy');
   const record = await json(join(acquired.output, 'host/evidence-downloads', `${failedTransfer.result.executionId}.json`));
@@ -479,7 +486,7 @@ test('production tool boundary: saved source images, bounded recovery and one co
   assert.equal((await counters()).acquire, recoveryBefore.acquire); assert.deepEqual((await counters()).exports, []);
   const failedExecution = imageDetails(await run('failed-execution', 'process.exit(9)'), 'pending');
   assert.equal(failedExecution.isError, true); assert.equal(failedExecution.result.outcome.exitStatus.code, 9);
-  const delivered = (await invoke({ action: 'finish' })).details as any;
+  const delivered = (await invoke({ action: 'finish', guest: G })).details as any;
   assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.execution, 'failed');
   assert.deepEqual(await verifyDeliveredPackage(acquired.output), delivered);
   assert.deepEqual(await readdir(join(acquired.output, 'extractions')), ['consumer']);
@@ -494,16 +501,16 @@ test('single relay tool: acquire → release records structured lifecycle and cl
   const f = await fixture(t), tool = createRelayTool(() => f.manager);
   const ctx = {} as ExtensionContext, signal = new AbortController().signal;
   await tool.execute('acquire-release', { action: 'acquire', task: 'manager-test', image: 'ubuntu2404', extractions: [] }, signal, undefined, ctx);
-  const hostRoot = f.manager.status().output!;
-  const result = await tool.execute('release', { action: 'release' }, signal, undefined, ctx);
-  assert.deepEqual(result.details, { active: false });
-  assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify({ active: false }, null, 2) }]);
+  const hostRoot = f.manager.guestStatus().output!;
+  const result = await tool.execute('release', { action: 'release', guest: G }, signal, undefined, ctx);
+  assert.deepEqual(result.details, { guest: G, active: false, released: true });
+  assert.deepEqual(result.content, [{ type: 'text', text: JSON.stringify({ guest: G, active: false, released: true }, null, 2) }]);
   const events = await Promise.all((await readdir(join(hostRoot, 'host/events'))).map(path => json(join(hostRoot, 'host/events', path))));
   assert.equal(Object.hasOwn(events.find(event => event.kind === 'release'), 'because'), false);
   assert.equal(f.service.requests.find(request => request.path.endsWith('/release'))?.body.reason, 'released');
   assert.equal((await json(`${hostRoot}.lifecycle.json`)).released, true);
   await f.assertClean(); assert.equal(f.service.releaseCalls, 1);
-  assert.equal((f.manager as any).timer, undefined, 'release clears the heartbeat timer');
+  assert.equal(guestOf(f.manager)?.timer, undefined, 'release clears the heartbeat timer');
 });
 
 test('single relay tool: unknown actions and cross-action fields reject before getter or HTTP dispatch', async t => {
@@ -513,11 +520,11 @@ test('single relay tool: unknown actions and cross-action fields reject before g
     { action: 'unknown', reason },
     { action: 'relay_acquire', reason, task: 'manager-test', image: 'ubuntu2404', extractions: [] },
     { action: 'acquire', reason, task: 'manager-test', image: 'ubuntu2404', extractions: [], names: ['artifact'] },
-    { action: 'stage', reason, argv: [process.execPath, '-e', 'process.exit(0)'] },
-    { action: 'run', reason, kind: 'exec', argv: [process.execPath, '-e', 'process.exit(0)'], step: operation('invalid').step, snapshots: { afterIntervalMs: 0 }, code: 'process.exit(0)' },
-    { action: 'extract', reason, names: [], image: 'ubuntu2404' },
-    { action: 'finish', reason, names: [] },
-    { action: 'release', reason, task: 'manager-test' },
+    { action: 'stage', guest: G, reason, argv: [process.execPath, '-e', 'process.exit(0)'] },
+    { action: 'run', guest: G, reason, kind: 'exec', argv: [process.execPath, '-e', 'process.exit(0)'], step: operation('invalid').step, snapshots: { afterIntervalMs: 0 }, code: 'process.exit(0)' },
+    { action: 'extract', guest: G, reason, names: [], image: 'ubuntu2404' },
+    { action: 'finish', guest: G, reason, names: [] },
+    { action: 'release', guest: G, reason, task: 'manager-test' },
     { action: 'acquire', because: reason, task: 'manager-test', image: 'ubuntu2404', extractions: [] },
   ];
   for (const args of invalid) {
@@ -525,7 +532,7 @@ test('single relay tool: unknown actions and cross-action fields reject before g
     assert.equal(getterCalls, 0, 'invalid input must not even obtain a manager');
     assert.deepEqual(f.service.requests, [], 'invalid input must not reach the fixture service');
   }
-  assert.deepEqual(f.manager.status(), { active: false });
+  assert.deepEqual(f.manager.guestStatus(), { active: false });
   assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
 });
 
@@ -534,7 +541,7 @@ test('cancel after acquire dispatch retains returned identity until explicit rel
   f.service.acquireHook = async () => { controller.abort(new Error('cancel during allocation')); };
   await assert.rejects(f.manager.acquire(acquireInput(), controller.signal), /cancel during allocation/);
   await f.assertRetained([...f.service.leases.keys()][0]);
-  assert.match(f.manager.status().lastError!, /cancel during allocation/);
+  assert.match(f.manager.guestStatus().lastError!, /cancel during allocation/);
   await f.stage();
   assert.equal((await f.manager.run(operation('after-cancel'))).outcome.kind, 'completed');
   await f.manager.release(); await f.assertClean();
@@ -545,7 +552,7 @@ test('cancel after acquire dispatch retains returned identity until explicit rel
 test('stage transfer failure retains lease and corrected transfer stages the same VM', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput()); f.service.failPush = true;
   await assert.rejects(f.stage(), /fixture push failed/); await f.assertRetained(acquired.vm);
-  assert.equal(f.manager.status().staged, false);
+  assert.equal(f.manager.guestStatus().staged, false);
   f.service.failPush = false; await f.stage();
   assert.equal((await f.manager.run(operation('after-transfer-repair'))).outcome.kind, 'completed');
   await f.assertRetained(acquired.vm); await f.manager.release(); await f.assertClean();
@@ -555,10 +562,10 @@ for (const [label, run, expected] of [
   ['nonzero', operation('nonzero', { argv: [process.execPath, '-e', 'process.exit(7)'] }), 'completed'],
   ['refused', operation('orphan', { snapshots: { group: { groupId: 'not-started', phase: 'member' } } }), 'refused'],
 ] as const) test(`${label} receiver outcome retains the VM for a new operation without replay`, { timeout: 20000 }, async t => {
-  const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage(); const hostRoot = f.manager.status().output!;
+  const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage(); const hostRoot = f.manager.guestStatus().output!;
   const result = await f.manager.run(run);
   assert.equal(result.outcome.kind, expected, JSON.stringify(result)); assert.equal(f.service.receiverCalls, 1); await f.assertRetained();
-  assert.equal(result.leaseReleased, false); assert.match(f.manager.status().lastError!, /Execution/);
+  assert.equal(result.leaseReleased, false); assert.match(f.manager.guestStatus().lastError!, /Execution/);
   const repaired = await f.manager.run(operation('new-operation'));
   assert.equal(repaired.outcome.kind, 'completed'); assert.notEqual(repaired.executionId, result.executionId);
   assert.equal(f.service.receiverCalls, 2);
@@ -577,12 +584,12 @@ test('heartbeat remains live during a blocked receiver operation', { timeout: 20
 test('heartbeat uncertainty retains ownership and a later successful operation resumes work', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
   f.service.failHeartbeat = true; f.service.failGet = true;
-  await (f.manager as any).heartbeat(); await (f.manager as any).queue;
-  await f.assertRetained(acquired.vm); assert.match(f.manager.status().lastError!, /heartbeat lost/i);
-  assert.equal(f.manager.status().guestState, 'unknown', 'unavailable reconciliation cannot claim guest health');
-  assert.equal(f.manager.status().expiresAt, f.service.leases.get(acquired.vm!)!.ttl_expires_at);
-  f.service.failHeartbeat = false; f.service.failGet = false; await (f.manager as any).heartbeat();
-  assert.equal(f.manager.status().guestState, 'running');
+  await guestOf(f.manager)?.heartbeat(); await guestOf(f.manager)?.queue;
+  await f.assertRetained(acquired.vm); assert.match(f.manager.guestStatus().lastError!, /heartbeat lost/i);
+  assert.equal(f.manager.guestStatus().guestState, 'unknown', 'unavailable reconciliation cannot claim guest health');
+  assert.equal(f.manager.guestStatus().expiresAt, f.service.leases.get(acquired.vm!)!.ttl_expires_at);
+  f.service.failHeartbeat = false; f.service.failGet = false; await guestOf(f.manager)?.heartbeat();
+  assert.equal(f.manager.guestStatus().guestState, 'running');
   await f.stage(); assert.equal((await f.manager.run(operation('after-heartbeat'))).outcome.kind, 'completed');
   await f.manager.release(); await f.assertClean();
 });
@@ -590,22 +597,22 @@ test('heartbeat uncertainty retains ownership and a later successful operation r
 test('unconfirmed release retains durable lease and registry until explicit retry succeeds', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput()); f.service.releaseFailures = 3;
   await assert.rejects(f.manager.release(), /destruction unavailable/);
-  assert.equal(f.service.releaseCalls, 3); assert.equal(f.service.leases.size, 1); assert.equal(f.manager.status().vm, acquired.vm);
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).lease.vm, acquired.vm);
+  assert.equal(f.service.releaseCalls, 3); assert.equal(f.service.leases.size, 1); assert.equal(f.manager.guestStatus().vm, acquired.vm);
+  assert.equal((await json(leaseFile(f.manager))).lease.vm, acquired.vm);
   assert.notEqual(await readFile(f.registryPath, 'utf8'), registryText);
   await f.manager.release(); await f.assertClean(); assert.equal(f.service.releaseCalls, 4);
 });
 
 for (const ending of ['settle', 'cleanup'] as const) test(`${ending} pauses renewal without destroying ownership and is idempotent`, async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
-  assert.equal(f.manager.status().active, true);
+  assert.equal(f.manager.guestStatus().active, true);
   if (ending === 'settle') { await f.manager.settle(); await f.manager.settle(); }
   else { await f.manager.cleanup('shutdown fixture'); await f.manager.cleanup('shutdown fixture'); }
-  await f.assertRetained(acquired.vm); assert.equal(f.manager.status().active, false);
-  assert.equal((f.manager as any).timer, undefined);
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).active, false);
+  await f.assertRetained(acquired.vm); assert.equal(f.manager.guestStatus().active, false);
+  assert.equal(guestOf(f.manager)?.timer, undefined);
+  assert.equal((await json(leaseFile(f.manager))).active, false);
   if (ending === 'cleanup') await assert.rejects(f.manager.acquire(acquireInput()), /shutting down/);
-  else { await f.stage(); assert.equal(f.manager.status().active, true); }
+  else { await f.stage(); assert.equal(f.manager.guestStatus().active, true); }
   await f.manager.release(); await f.assertClean();
 });
 
@@ -613,12 +620,13 @@ test('new manager restores durable ownership without allocation or destruction',
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
   await f.manager.cleanup('simulated shutdown');
   assert.equal(await readFile(join(f.manager.root, 'owner.lock'), 'utf8'), '', 'stable lock inode survives unlock');
-  const recovered = new RelayManager(f.options);
+  const recovered = new RelayManager({ ...f.options, maxGuests: 1 });
   try {
-    await recovered.initialize(); assert.equal(recovered.status().vm, acquired.vm);
-    assert.equal(recovered.status().active, false); assert.equal(recovered.status().guestState, 'running');
+    await recovered.initialize(); assert.equal(recovered.guestStatus().vm, acquired.vm);
+    assert.equal(recovered.guestStatus().active, false); assert.equal(recovered.guestStatus().guestState, 'running');
+    assert.equal(recovered.guestStatus().guest, G, 'the restored guest keeps its name');
     assert.equal(f.service.releaseCalls, 0);
-    await assert.rejects(recovered.acquire(acquireInput()), /already owns a lease/);
+    await assert.rejects(recovered.acquire(acquireInput()), /the most MCP_RELAY_MAX_GUESTS allows \(1\): manager-test-1/);
     await recovered.stage({ cuaDriver: f.driver, nodePath: process.execPath });
     assert.equal((await recovered.run(operation('restored'))).outcome.kind, 'completed');
     assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 1);
@@ -627,7 +635,7 @@ test('new manager restores durable ownership without allocation or destruction',
 
 test('finish destruction failure and later recovery do not modify the sealed package', { timeout: 20000 }, async t => {
   const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage();
-  await f.manager.run(operation('sealed-result')); const hostRoot = f.manager.status().output!;
+  await f.manager.run(operation('sealed-result')); const hostRoot = f.manager.guestStatus().output!;
   f.service.releaseFailures = 3;
   await assert.rejects(f.manager.finish(), /destruction unavailable/);
   const manifest = await readFile(join(hostRoot, 'manifest.json'), 'utf8');
@@ -644,14 +652,14 @@ test('finish destruction failure and later recovery do not modify the sealed pac
 
 test('restart attaches to the staged SDK session without replay and admits a new operation', { timeout: 20000 }, async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  const run = await f.manager.run(operation('before-interruption')); const hostRoot = f.manager.status().output!;
-  const checkpoint = await json(join(f.manager.root, 'lease.json'));
+  const run = await f.manager.run(operation('before-interruption')); const hostRoot = f.manager.guestStatus().output!;
+  const checkpoint = await json(leaseFile(f.manager));
   const receipt = await readFile(join(hostRoot, 'host/receipts', `${run.executionId}.json`), 'utf8');
   await f.manager.cleanup('prepare restart');
   const recovered = new RelayManager(f.options);
   try {
-    await recovered.initialize(); assert.equal(recovered.status().vm, acquired.vm); assert.equal(recovered.status().staged, true);
-    assert.equal((await json(join(recovered.root, 'lease.json'))).sessionId, checkpoint.sessionId);
+    await recovered.initialize(); assert.equal(recovered.guestStatus().vm, acquired.vm); assert.equal(recovered.guestStatus().staged, true);
+    assert.equal((await json(leaseFile(recovered))).sessionId, checkpoint.sessionId);
     assert.equal(f.service.receiverCalls, 1, 'attach never replays input'); assert.equal(f.service.releaseCalls, 0);
     const next = await recovered.run(operation('after-interruption'));
     assert.equal(next.outcome.kind, 'completed'); assert.notEqual(next.executionId, run.executionId);
@@ -670,8 +678,8 @@ for (const previousRecording of [false, true]) test(`cached reference survives o
     f.service.failPush = true;
     await assert.rejects(f.manager.stage({ resetRecording: true }), /fixture push failed/);
     f.service.failPush = false;
-    assert.equal(f.manager.status().staged, false);
-    assert.equal(f.manager.status().previousEvidence?.length, 1);
+    assert.equal(f.manager.guestStatus().staged, false);
+    assert.equal(f.manager.guestStatus().previousEvidence?.length, 1);
   }
   await f.manager.cleanup('offline reload fixture');
   let offline = true;
@@ -695,7 +703,7 @@ for (const previousRecording of [false, true]) test(`cached reference survives o
     assert.deepEqual(calls, [], 'even initialization must be host-only for cached image recovery');
     assert.equal(f.service.requests.length, requestCount); assert.equal(f.service.receiverCalls, receiverCount);
     assert.equal(await readFile(join(f.root, 'captures.jsonl'), 'utf8'), captures);
-    assert.equal(recovered.status().staged, !previousRecording);
+    assert.equal(recovered.guestStatus().staged, !previousRecording);
   } finally {
     offline = false; await recovered.release(); await recovered.cleanup('offline recovery teardown'); await f.manager.initialize();
   }
@@ -733,7 +741,7 @@ test('recording reset snapshot conflict preserves retained original and each inc
     await assert.rejects(f.manager.stage({ resetRecording: true }), /snapshot conflict/);
     assert.deepEqual(await readFile(retained), Buffer.from(png, 'base64'));
     assert.deepEqual(await readFile(image.originalPath!), Buffer.from(png, 'base64'));
-    assert.equal(f.manager.status().output, acquired.output); assert.equal(f.manager.status().recordingResetPending, true);
+    assert.equal(f.manager.guestStatus().output, acquired.output); assert.equal(f.manager.guestStatus().recordingResetPending, true);
     await f.assertRetained(acquired.vm);
   }
   const files = await readdir(f.options.outputRoot!, { recursive: true });
@@ -745,7 +753,7 @@ test('recording reset snapshot conflict preserves retained original and each inc
   assert.equal(f.service.receiverCalls, 1);
   await writeFile(guestSnapshot, Buffer.from(png, 'base64'));
   await f.manager.stage({ resetRecording: true });
-  assert.equal(f.manager.status().previousEvidence?.length, 1); assert.notEqual(f.manager.status().output, acquired.output);
+  assert.equal(f.manager.guestStatus().previousEvidence?.length, 1); assert.notEqual(f.manager.guestStatus().output, acquired.output);
   const cached = await f.manager.image({ source: 'reference', imageId: image.imageId });
   assert.equal(cached.status, 'attached', JSON.stringify(cached));
   assert.deepEqual(await readFile(retained), Buffer.from(png, 'base64'));
@@ -765,13 +773,16 @@ test('sibling stage/run/finish calls serialize through one receiver without dupl
   assert.equal(f.service.maxReceiverActive, 1); assert.equal(f.service.receiverCalls, 2); await f.assertClean();
 });
 
-test('unknown/unavailable images and unsafe extraction declarations do not allocate; sibling acquire cannot own two leases', async t => {
-  const f = await fixture(t);
+test('unknown/unavailable images and unsafe extraction declarations do not allocate; a sibling acquire beyond the guest limit is refused (DC-20)', async t => {
+  const f = await fixture(t, { maxGuests: 1 });
   for (const image of ['unknown', 'missing']) await assert.rejects(f.manager.acquire(acquireInput({ image })), /Image unavailable/);
   for (const extractions of [[{ name: 'escape', path: '../escape' }], [{ name: 'bad/name', path: 'safe' }], [{ name: 'full-workspace', path: 'safe' }], [{ name: 'same', path: 'a' }, { name: 'same', path: 'b' }]]) await assert.rejects(f.manager.acquire(acquireInput({ extractions })));
   assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 0);
+  assert.deepEqual(f.manager.status().guests, [], 'a refused acquisition leaves no guest');
   const results = await Promise.allSettled([f.manager.acquire(acquireInput()), f.manager.acquire(acquireInput())]);
   assert.equal(results[0].status, 'fulfilled'); assert.equal(results[1].status, 'rejected'); assert.equal(f.service.leases.size, 1);
+  assert.equal((results[0] as PromiseFulfilledResult<any>).value.guest, G, 'a refused image never used up a name');
+  assert.match(String((results[1] as PromiseRejectedResult).reason), /already holds 1 guest, the most MCP_RELAY_MAX_GUESTS allows \(1\): manager-test-1/);
   await f.manager.release(); await f.assertClean();
 });
 
@@ -829,7 +840,7 @@ test('relay_stage reads files[].local and workspace only in the project folder (
     const before = pushes(f);
     await assert.rejects(f.manager.stage({ ...input, cuaDriver: f.driver, nodePath: process.execPath }), /must lie in the project folder/, name);
     assert.equal(pushes(f), before, `${name}: nothing was pushed`);
-    assert.equal(f.manager.status().staged, false, name);
+    assert.equal(f.manager.guestStatus().staged, false, name);
   }
   await f.assertRetained();
   // Relative and absolute paths inside the folder stage.
@@ -894,7 +905,7 @@ test('a guest network other than nat or internet is refused before vm-service is
     const f = await fixture(t);
     await assert.rejects(f.manager.acquire(acquireInput()), /MCP_RELAY_GUEST_NETWORK must be nat or internet/, JSON.stringify(value));
     assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 0);
-    assert.deepEqual(f.manager.status(), { active: false }); assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+    assert.deepEqual(f.manager.guestStatus(), { active: false }); assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
   }
   delete process.env.MCP_RELAY_GUEST_NETWORK;
   const f = await fixture(t, { guestNetwork: 'bridged' as never });
@@ -908,6 +919,11 @@ test('vm-service refusing internet passes through, and the relay never falls bac
   await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 400: .*Softnet is not usable on this host/);
   assert.deepEqual(f.service.requests.filter(r => r.path === '/acquire').map(r => r.body.network), ['internet'], 'one acquisition, never retried on nat');
   assert.equal(f.service.leases.size, 0);
+  // The refusal acquired nothing, so the guest leaves the session and its registry row goes (DC-20).
+  assert.deepEqual(f.manager.status().guests, []); assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+  f.service.acquireRefusal = undefined;
+  assert.equal((await f.manager.acquire(acquireInput())).guest, 'manager-test-2', 'the refused guest\'s name is not reused');
+  await f.manager.release();
 });
 
 const nodeOnly = { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'dpkg:nodejs', name: 'Node.js', aliases: ['node'], version: '22.0.0' }, { id: 'dpkg:python3', name: 'Python', aliases: [], version: '3.12' }] }] };
@@ -928,10 +944,10 @@ test('an image that lists no capture software stages, runs relay_code and finish
   assert.deepEqual(run.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
   assert.match(run.stdout, /ran/);
   assert.equal(run.imageDelivery.status, 'not-requested'); assert.match(run.imageDelivery.diagnostic!, /no capture software/);
-  const image = await f.manager.image({ source: 'display', sessionId: (f.manager as any).current().sessionId, executionId: run.executionId!, phase: 'after' });
+  const image = await f.manager.image({ source: 'display', sessionId: guestOf(f.manager)?.current().sessionId, executionId: run.executionId!, phase: 'after' });
   assert.equal(image.status, 'not-requested');
   assert.equal(await exists(join(f.root, 'captures.jsonl')), false, 'nothing was captured');
-  const output = f.manager.status().output!;
+  const output = f.manager.guestStatus().output!;
   const delivered = await f.manager.finish();
   assert.equal(delivered.deliveryVerified, true, JSON.stringify(delivered));
   assert.equal(delivered.execution, 'passed', JSON.stringify(delivered));
@@ -957,7 +973,7 @@ test('an image that lists cua-driver keeps its snapshots (DC-13)', { timeout: 30
   await shown(f.manager, run);
   const captures = (await readFile(join(f.root, 'captures.jsonl'), 'utf8')).trim().split('\n');
   assert.equal(captures.length, 2, 'before and after');
-  const output = f.manager.status().output!;
+  const output = f.manager.guestStatus().output!;
   const request = await json(join(output, 'host', 'requests', `${run.executionId}.json`));
   assert.equal(Object.hasOwn(request, 'capture'), false, 'the request is as before');
   const delivered = await f.manager.finish();
@@ -979,7 +995,7 @@ test('relay_stage refuses an image without Node.js and says so; nothing is pushe
   const f = await fixture(t); f.service.noNode = true;
   await f.manager.acquire(acquireInput());
   await assert.rejects(f.manager.stage({}), /relay_stage needs Node\.js in the guest .*an image without Node\.js cannot be staged/s);
-  assert.equal(pushes(f), 0); assert.equal(f.manager.status().staged, false);
+  assert.equal(pushes(f), 0); assert.equal(f.manager.guestStatus().staged, false);
   await f.assertRetained();
   await f.manager.release(); await f.assertClean();
 });
@@ -998,7 +1014,7 @@ test('relay_stage refuses when the image catalog cannot be read, so no run loses
 test('lost acquire response reconciles by pre-recorded purpose without allocating twice', async t => {
   const f = await fixture(t); f.service.loseAcquireResponse = true;
   f.service.acquireHook = async () => {
-    const intent = await json(join(f.manager.root, 'lease.json'));
+    const intent = await json(leaseFile(f.manager));
     assert.equal(intent.acquisitionInFlight, true);
     assert.ok((await readFile(f.registryPath, 'utf8')).includes(intent.purpose));
   };
@@ -1013,11 +1029,11 @@ test('lost acquire response reconciles by pre-recorded purpose without allocatin
 test('indeterminate invisible acquire stays durably registered until later reconciliation', async t => {
   const f = await fixture(t); f.service.loseAcquireResponse = true; f.service.hideLeases = true;
   await assert.rejects(f.manager.acquire(acquireInput()), /Acquisition outcome unknown/);
-  const retained = await json(join(f.manager.root, 'lease.json'));
+  const retained = await json(leaseFile(f.manager));
   assert.equal(retained.acquisitionInFlight, true); assert.equal(retained.lease, undefined);
   assert.equal(f.service.leases.size, 1); assert.equal(f.service.releaseCalls, 0);
   assert.ok((await readFile(f.registryPath, 'utf8')).includes(retained.purpose));
-  await assert.rejects(f.manager.acquire(acquireInput()), /already owns a lease/);
+  assert.deepEqual(f.manager.status().guests.map(guest => guest.guest), [G], 'the indeterminate acquisition keeps its guest');
   f.service.hideLeases = false;
   await f.manager.release(); await f.assertClean();
   assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 1);
@@ -1025,7 +1041,7 @@ test('indeterminate invisible acquire stays durably registered until later recon
 
 test('uncertain receiver identity retains original receipt and VM without replay', async t => {
   const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage();
-  const hostRoot = f.manager.status().output!; f.service.malformedReceiverResponse = true;
+  const hostRoot = f.manager.guestStatus().output!; f.service.malformedReceiverResponse = true;
   const result = await f.manager.run(operation('identity-mismatch'));
   assert.equal(result.outcome.kind, 'uncertain');
   assert.match(JSON.stringify(result), /identity mismatch/); await f.assertRetained();
@@ -1054,11 +1070,11 @@ test('abort during a dispatched operation retains its receipt and VM without rep
 
 test('invalid run annotation rejects before guarded admission without releasing ownership', async t => {
   const f = await fixture(t); await f.manager.acquire(acquireInput());
-  const before = f.manager.status();
+  const before = f.manager.guestStatus();
   const requests = f.service.requests.length;
   for (const because of ['', '  ', 'x'.repeat(4001), 42]) {
     await assert.rejects(f.manager.run(operation('invalid-reason', { because: because as string })), /reason must be nonblank/);
-    assert.deepEqual(f.manager.status(), before);
+    assert.deepEqual(f.manager.guestStatus(), before);
     assert.equal(f.service.requests.length, requests);
   }
   assert.equal(f.service.receiverCalls, 0); assert.equal(f.service.releaseCalls, 0);
@@ -1069,7 +1085,7 @@ test('a run without reason, step or interval derives its record and uses the def
   const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage();
   const result = await f.manager.run({ kind: 'exec', argv: [process.execPath, '-e', 'console.log("derived")'] });
   assert.equal(result.outcome.kind, 'completed');
-  const request = await json(join(f.manager.status().output!, 'host/requests', `${result.executionId}.json`));
+  const request = await json(join(f.manager.guestStatus().output!, 'host/requests', `${result.executionId}.json`));
   assert.equal(request.step.id, 'exec-1'); assert.match(request.step.title, /^exec node -e /);
   assert.equal(request.step.expected, 'Exits with status 0'); assert.equal(request.step.inputMode, 'ordinary');
   assert.deepEqual(request.snapshots, { afterIntervalMs: 500 });
@@ -1080,12 +1096,12 @@ test('a run without reason, step or interval derives its record and uses the def
   assert.equal(group.outcome.kind, 'completed');
   const last = await f.manager.run(operation('group-last', { snapshots: { group: { groupId: 'g1', phase: 'last' } } }));
   assert.equal(last.outcome.kind, 'completed');
-  assert.deepEqual((await json(join(f.manager.status().output!, 'host/requests', `${last.executionId}.json`))).snapshots, { group: { groupId: 'g1', phase: 'last' }, afterIntervalMs: 500 });
+  assert.deepEqual((await json(join(f.manager.guestStatus().output!, 'host/requests', `${last.executionId}.json`))).snapshots, { group: { groupId: 'g1', phase: 'last' }, afterIntervalMs: 500 });
   await f.manager.release(); await f.assertClean();
 });
 
 test('failure evidence logging error retains ownership until explicit release', async t => {
-  const f = await fixture(t); await f.manager.acquire(acquireInput()); const hostRoot = f.manager.status().output!;
+  const f = await fixture(t); await f.manager.acquire(acquireInput()); const hostRoot = f.manager.guestStatus().output!;
   await rm(join(hostRoot, 'host/events'), { recursive: true }); await writeFile(join(hostRoot, 'host/events'), 'not a directory');
   f.service.failPush = true;
   await assert.rejects(f.stage(), /fixture push failed|EEXIST|ENOTDIR/); await f.assertRetained();
@@ -1111,12 +1127,12 @@ test('relay_run forwards unchanged tool calls through the receiver and the guest
   const body = (text: string) => relayJson(text);
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();
   // relay_tools: the fixture's real tools/list, pulled from the guest.
-  const listed = await call({ action: 'tools', target: 'playwright' });
+  const listed = await call({ action: 'tools', guest: G, target: 'playwright' });
   assert.equal(listed.isError, false);
   assert.deepEqual(JSON.parse(listed.text).tools.map((tool: { name: string }) => tool.name), ['increment', 'echo', 'picture', 'fail', 'escalate', 'crash', 'slow', 'huge']);
-  assert.deepEqual(JSON.parse((await call({ action: 'tools', target: 'playwright', tool: 'echo' })).text).tools[0].inputSchema.required, ['text']);
+  assert.deepEqual(JSON.parse((await call({ action: 'tools', guest: G, target: 'playwright', tool: 'echo' })).text).tools[0].inputSchema.required, ['text']);
   // No reason, step or interval: the record is derived and the evidence is automatic.
-  const first = await call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 } });
+  const first = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 } });
   assert.equal(first.isError, false, first.text);
   assert.equal(first.imageDelivery?.status, 'pending'); assert.equal(first.image, undefined, 'the after-snapshot downloads in the background');
   assert.deepEqual(first.content, [{ type: 'text', text: first.content![0].type === 'text' ? first.content![0].text : '' }]);
@@ -1125,15 +1141,15 @@ test('relay_run forwards unchanged tool calls through the receiver and the guest
   assert.equal(result.relayOutcome, 'completed'); assert.equal(result.toolOutcome, 'completed');
   assert.deepEqual(result.step, { id: 'playwright.increment-1', title: 'playwright.increment', expected: 'playwright.increment returns without a tool error', inputMode: 'ordinary' });
   assert.deepEqual(result.snapshots, { afterIntervalMs: 300 });
-  const request = await json(join(f.manager.status().output!, 'host/requests', `${result.executionId}.json`));
+  const request = await json(join(f.manager.guestStatus().output!, 'host/requests', `${result.executionId}.json`));
   assert.equal(request.because, 'Relay playwright.increment (no reason given)');
   assert.deepEqual(request.argv.slice(2, 7), ['call', join(acquired.guestRoot, 'mcp'), 'playwright', 'increment', '{"by":2}'], 'tool and args forwarded unchanged');
   // The same server process keeps its state: the session persists across calls.
-  const second = await call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 3 }, reason: 'Count again', expected: 'count=5', afterIntervalMs: 0 });
+  const second = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 3 }, reason: 'Count again', expected: 'count=5', afterIntervalMs: 0 });
   assert.match((second.content![0] as { text: string }).text, /^count=5 /);
   assert.equal(body(second.text).step.expected, 'count=5'); assert.deepEqual(body(second.text).snapshots, { afterIntervalMs: 0 });
   // cua launches through the real `<cuaDriver> mcp` command; its image block is delivered inline too.
-  const picture = await call({ action: 'run', kind: 'mcp', target: 'cua', tool: 'picture' });
+  const picture = await call({ action: 'run', guest: G, kind: 'mcp', target: 'cua', tool: 'picture' });
   assert.equal(picture.isError, false, picture.text);
   assert.deepEqual(picture.content!.map(block => block.type), ['text', 'image']);
   const tool = body(picture.text);
@@ -1141,13 +1157,13 @@ test('relay_run forwards unchanged tool calls through the receiver and the guest
   assert.deepEqual(tool.snapshots, { afterIntervalMs: 500 });
   // A mismatch is refused on the host: nothing reaches the receiver, the correct schema comes back.
   const receiverCalls = f.service.receiverCalls;
-  const mismatch = await call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'echo', args: { text: 42 } });
+  const mismatch = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'echo', args: { text: 42 } });
   assert.equal(mismatch.isError, true);
   assert.equal(body(mismatch.text).sent, false); assert.deepEqual(body(mismatch.text).inputSchema.required, ['text']);
-  assert.equal((await call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'nope' })).isError, true);
+  assert.equal((await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'nope' })).isError, true);
   assert.equal(f.service.receiverCalls, receiverCalls, 'refused before sending anything');
   // The target's isError: completed with a tool error; an error result; the VM is kept.
-  const failed = await call({ action: 'run', kind: 'mcp', target: 'chrome-devtools', tool: 'fail' });
+  const failed = await call({ action: 'run', guest: G, kind: 'mcp', target: 'chrome-devtools', tool: 'fail' });
   assert.equal(failed.isError, true);
   assert.equal(body(failed.text).relayOutcome, 'completed-with-tool-error'); assert.equal(body(failed.text).outcome.exitStatus.code, 3);
   assert.equal((failed.content![0] as { text: string }).text, 'fixture tool error');
@@ -1155,7 +1171,7 @@ test('relay_run forwards unchanged tool calls through the receiver and the guest
   await f.assertRetained(acquired.vm);
   assert.deepEqual((await f.mcpCalls()).map(entry => `${entry.server}.${entry.tool}`), ['playwright.increment', 'playwright.increment', 'cua.picture', 'chrome-devtools.fail']);
   // finish stops the host and brings the results home as the relay-run extraction.
-  const output = f.manager.status().output!;
+  const output = f.manager.guestStatus().output!;
   const delivered = await f.manager.finish();
   assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.execution, 'failed');
   const root = join(output, 'extractions', 'relay-run');
@@ -1170,30 +1186,30 @@ test('relay_run with a hold is delivered and waits; relay_gate go sends it, canc
   const call = (raw: unknown) => relayCall(f.manager, raw);
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();
   // Released while it waits in the guest: the call completes and says how it was decided.
-  const held = call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 }, hold: { id: 'h-go', timeoutMs: 20000 } });
+  const held = call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 }, hold: { id: 'h-go', timeoutMs: 20000 } });
   await until(() => f.service.receiverCalls === 1, 'the held run to reach the guest');
   assert.deepEqual(await f.mcpCalls(), [], 'nothing is sent while held');
-  const gate = relayJson((await call({ action: 'gate', hold: 'h-go', decision: 'go' })).text);
+  const gate = relayJson((await call({ action: 'gate', guest: G, hold: 'h-go', decision: 'go' })).text);
   assert.deepEqual(gate, { hold: 'h-go', requested: 'go', decision: 'go', applied: true });
   const released = await held;
   assert.equal(released.isError, false, released.text);
   assert.match((released.content![0] as { text: string }).text, /^count=2 /);
   assert.equal(relayJson(released.text).hold.decision, 'go');
   // Cancelled: refused, with no MCP call, and the VM is not marked failed.
-  const cancelled = call({ action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment', hold: { id: 'h-cancel' } });
+  const cancelled = call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', hold: { id: 'h-cancel' } });
   await until(() => f.service.receiverCalls === 2, 'the second held run to reach the guest');
-  assert.equal(relayJson((await call({ action: 'gate', hold: 'h-cancel', decision: 'cancel' })).text).applied, true);
+  assert.equal(relayJson((await call({ action: 'gate', guest: G, hold: 'h-cancel', decision: 'cancel' })).text).applied, true);
   const refused = await cancelled;
   assert.equal(refused.isError, true);
   const body = relayJson(refused.text);
   assert.equal(body.outcome.kind, 'refused'); assert.match(body.outcome.diagnostic, /not released \(cancel\); nothing was sent/);
   assert.equal(body.hold.decision, 'cancel');
-  assert.equal(f.manager.status().lastError, undefined, 'a withheld call is not a failure of the VM');
+  assert.equal(f.manager.guestStatus().lastError, undefined, 'a withheld call is not a failure of the VM');
   assert.deepEqual((await f.mcpCalls()).map(entry => entry.tool), ['increment']);
   // A decided hold answers from its receipt; a hold is named once; an unknown hold is an error.
-  assert.deepEqual(relayJson((await call({ action: 'gate', hold: 'h-cancel', decision: 'go' })).text), { hold: 'h-cancel', requested: 'go', decision: 'cancel', applied: false });
+  assert.deepEqual(relayJson((await call({ action: 'gate', guest: G, hold: 'h-cancel', decision: 'go' })).text), { hold: 'h-cancel', requested: 'go', decision: 'cancel', applied: false });
   await assert.rejects(f.manager.run({ kind: 'mcp', target: 'playwright', tool: 'increment', hold: { id: 'h-go' } }), /already used/);
-  await assert.rejects(call({ action: 'gate', hold: 'h-none', decision: 'go' }), /No relay_run in this session named hold h-none/);
+  await assert.rejects(call({ action: 'gate', guest: G, hold: 'h-none', decision: 'go' }), /No relay_run on guest manager-test-1 named hold h-none/);
   await f.assertRetained(acquired.vm);
   await f.manager.release(); await f.assertClean();
 });
@@ -1201,12 +1217,12 @@ test('relay_run with a hold is delivered and waits; relay_gate go sends it, canc
 test('relay_run: a server crash mid-call is uncertain, keeps the VM and is never replayed', { timeout: 60000 }, async t => {
   const f = await fixture(t);
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  const crashed = await relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'playwright', tool: 'crash' });
+  const crashed = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'crash' });
   assert.equal(crashed.isError, true);
   assert.equal(relayJson(crashed.text).outcome.kind, 'uncertain');
   assert.equal(f.service.receiverCalls, 1);
   await f.assertRetained(acquired.vm);
-  const after = await relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment' });
+  const after = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
   assert.match((after.content![0] as { text: string }).text, /^count=1 /, 'a fresh server; the crashed call was not replayed');
   assert.deepEqual((await f.mcpCalls()).map(entry => entry.tool), ['crash', 'increment']);
   await f.manager.release(); await f.assertClean();
@@ -1229,13 +1245,13 @@ test('relay_run stages pinned packages hash-checked and refuses a tarball that d
     targetLaunches: context => ({ ...fixtureLaunches(log)(context), playwright: { command: context.node, args: [join(context.packagesRoot, 'node_modules', 'fixture-mcp', 'server.cjs'), 'playwright'], cwd: context.workspace, env: { FIXTURE_LOG: log } } }),
   });
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  const ran = await relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment' });
+  const ran = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
   assert.equal(ran.isError, false, ran.text);
   assert.equal(await readFile(join(acquired.guestRoot, 'mcp/packages/node_modules/fixture-mcp/server.cjs'), 'utf8'), `import(${JSON.stringify(mcpFixture)});`);
-  await relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment' });
+  await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
   assert.equal(fetched, 1, 'fetched once, then served from the verified host cache');
   const receiverCalls = f.service.receiverCalls;
-  await assert.rejects(relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'chrome-devtools', tool: 'increment' }), /does not match its pinned integrity/);
+  await assert.rejects(relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'chrome-devtools', tool: 'increment' }), /does not match its pinned integrity/);
   assert.equal(f.service.receiverCalls, receiverCalls);
   await f.manager.release(); await f.assertClean();
 });
@@ -1247,7 +1263,7 @@ test('probe scope=guest reports per-target availability without starting anythin
   assert.equal(facts.targets.playwright.server.state, 'not-started');
   assert.deepEqual(facts.targets.playwright.pinned, ['@playwright/mcp@0.0.82', 'playwright@1.64.0-alpha-1789764292000', 'playwright-core@1.64.0-alpha-1789764292000']);
   assert.equal(f.service.receiverCalls, 0);
-  await relayCall(f.manager, { action: 'run', kind: 'mcp', target: 'playwright', tool: 'increment' });
+  await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
   const later = await f.manager.probe('guest') as any;
   assert.equal(later.targets.playwright.server.state, 'running');
   await f.manager.release(); await f.assertClean();
@@ -1267,19 +1283,19 @@ test('late heartbeat from released enclosure cannot destroy its replacement', as
   const f = await fixture(t), entered = deferred(), returnFailure = deferred();
   await f.manager.acquire(acquireInput());
   f.service.heartbeatHook = async () => { entered.resolve(); await returnFailure.promise; throw new Error('old VM gone'); };
-  const heartbeat = (f.manager as any).heartbeat(); await entered.promise;
+  const heartbeat = guestOf(f.manager)?.heartbeat(); await entered.promise;
   await f.manager.release();
   const next = await f.manager.acquire(acquireInput());
   returnFailure.resolve(); await heartbeat;
-  await (f.manager as any).queue;
-  assert.equal(f.manager.status().vm, next.vm); assert.equal(f.service.leases.size, 1);
+  await guestOf(f.manager)?.queue;
+  assert.equal(f.manager.guestStatus().vm, next.vm); assert.equal(f.service.leases.size, 1);
   await f.manager.release(); await f.assertClean();
 });
 
 test('pre-stage diagnostic records host-only results and repairs setup without allocating again', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
   const tool = createRelayTool(() => f.manager);
-  const args = (id: string, code: string, timeoutMs?: number): RelayInput => ({ action: 'run', reason, kind: 'exec', diagnostic: true, argv: [process.execPath, '-e', code], step: { ...operation(id).step, expected: 'Diagnostic command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 }, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  const args = (id: string, code: string, timeoutMs?: number): RelayInput => ({ action: 'run', guest: G, reason, kind: 'exec', diagnostic: true, argv: [process.execPath, '-e', code], step: { ...operation(id).step, expected: 'Diagnostic command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 }, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   const failed = await tool.execute('failed-diagnostic', args('diagnose', 'process.exit(7)'), undefined, undefined, {} as ExtensionContext);
   const failure = failed.details as any;
   assert.equal(failure.kind, 'relay-image-result-v1'); assert.equal(failure.isError, true);
@@ -1296,7 +1312,7 @@ test('pre-stage diagnostic records host-only results and repairs setup without a
   assert.equal(response.outcome.kind, 'completed'); assert.equal(response.timeoutMs, 3600000);
   assert.equal(response.evidenceMode, 'diagnostic'); assert.equal(response.screenshotEvidence, false); assert.equal(response.leaseReleased, false);
   assert.equal(await readFile(marker, 'utf8'), 'fixed'); assert.equal(f.service.receiverCalls, 0);
-  assert.equal(f.manager.status().staged, false);
+  assert.equal(f.manager.guestStatus().staged, false);
   const records = await readdir(join(acquired.output!, 'host/diagnostics'));
   assert.equal(records.length, 4);
   const requests = await Promise.all(records.filter(p => p.endsWith('.request.json')).map(p => json(join(acquired.output!, 'host/diagnostics', p))));
@@ -1333,7 +1349,7 @@ test('damaged journal can be diagnosed and explicitly archived before recording 
   const damaged = await f.manager.run(operation('damaged')); assert.notEqual(damaged.outcome.kind, 'completed');
   const diagnostic = await f.manager.run(operation('inspect-damage', { diagnostic: true })); assert.equal(diagnostic.outcome.kind, 'completed');
   await f.manager.stage({ resetRecording: true });
-  const state = f.manager.status(); assert.ok('previousEvidence' in state && state.previousEvidence?.length === 1);
+  const state = f.manager.guestStatus(); assert.ok('previousEvidence' in state && state.previousEvidence?.length === 1);
   const retained = await readFile(join(acquired.output!, 'state/journal/events.jsonl')); assert.ok(retained.toString().endsWith('{broken'));
   const recovered = await f.manager.run(operation('after-reset')); assert.equal(recovered.outcome.kind, 'completed', JSON.stringify(recovered));
   assert.notEqual(recovered.evidencePath, acquired.output); await f.assertRetained(acquired.vm);
@@ -1367,7 +1383,7 @@ test('guest probe checks executable readiness read-only before stage and after p
   let commands = f.service.requests.slice(before).filter(r => r.path.endsWith('/exec'));
   assert.equal(commands.length, 3); assert.ok(commands.slice(0, 2).every(r => r.body.argv.at(-1) === '--version'));
   assert.equal(commands[2].body.argv[1], '-e', 'the browser executable check is a read-only access test');
-  assert.equal(f.service.receiverCalls, 0); assert.equal(f.manager.status().staged, false);
+  assert.equal(f.service.receiverCalls, 0); assert.equal(f.manager.guestStatus().staged, false);
   await f.stage(); before = f.service.requests.length;
   const staged = await f.manager.probe('guest');
   assert.ok('checks' in staged);
@@ -1385,11 +1401,11 @@ test('staged executable path correction reattaches without replay or workspace r
   await f.manager.stage({ nodePath: process.execPath, cuaDriver: join(f.root, 'missing-driver') });
   const failed = await f.manager.run(operation('bad-driver'));
   assert.notEqual(failed.outcome.kind, 'completed'); await f.assertRetained(acquired.vm);
-  const sessionId = (await json(join(f.manager.root, 'lease.json'))).sessionId;
+  const sessionId = (await json(leaseFile(f.manager))).sessionId;
   await writeFile(join(acquired.workspace, 'keep.txt'), 'keep');
   const calls = f.service.receiverCalls;
   await f.stage(); assert.equal(f.service.receiverCalls, calls, 'path correction cannot replay failed input');
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).sessionId, sessionId);
+  assert.equal((await json(leaseFile(f.manager))).sessionId, sessionId);
   assert.equal(await readFile(join(acquired.workspace, 'keep.txt'), 'utf8'), 'keep');
   const result = await f.manager.run(operation('corrected-driver'));
   assert.equal(result.outcome.kind, 'completed', JSON.stringify(result)); assert.notEqual(result.executionId, failed.executionId);
@@ -1402,8 +1418,8 @@ for (const failure of ['verification'] as const) test(`finish ${failure} failure
   await f.stage(); await f.manager.run(operation('before-finish'));
   await writeFile(join(acquired.workspace, 'artifact.txt'), 'original'); f.service.corruptPull = true;
   await assert.rejects(f.manager.finish(), /checksum mismatch/);
-  await f.assertRetained(acquired.vm); assert.ok(f.manager.status().lastError);
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).delivered, undefined);
+  await f.assertRetained(acquired.vm); assert.ok(f.manager.guestStatus().lastError);
+  assert.equal((await json(leaseFile(f.manager))).delivered, undefined);
   f.service.corruptPull = false; await writeFile(join(acquired.workspace, 'artifact.txt'), 'fixed');
   const delivered = await f.manager.finish(); assert.equal(delivered.deliveryVerified, true);
   await f.assertClean(); assert.deepEqual(await verifyDeliveredPackage(acquired.output!), delivered);
@@ -1425,7 +1441,7 @@ test('fullWorkspace retry preserves the first immutable export after package tra
   const firstVersions = await readdir(directory); assert.equal(firstVersions.length, 1);
   const original = join(directory, firstVersions[0], 'seed.txt');
   assert.equal(await readFile(original, 'utf8'), 'first workspace');
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).delivered, undefined);
+  assert.equal((await json(leaseFile(f.manager))).delivered, undefined);
   await writeFile(join(acquired.workspace, 'seed.txt'), 'repaired workspace');
   const delivered = await f.manager.finish();
   assert.equal(delivered.deliveryVerified, true);
@@ -1442,7 +1458,7 @@ test('untruthful service release cannot unregister while authoritative VM invent
   await assert.rejects(f.manager.release(), /Tart still lists/);
   assert.equal(f.service.leases.size, 0, 'service forgot the clone');
   assert.match(await readFile(f.registryPath, 'utf8'), /relay-manager-test/);
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).released, undefined);
+  assert.equal((await json(leaseFile(f.manager))).released, undefined);
   absent = true; await f.manager.release(); await f.assertClean();
 });
 
@@ -1453,7 +1469,7 @@ test('R4: a lease that arrives after the caller cancelled relay_acquire is renew
   const vm = [...f.service.leases.keys()][0];
   await f.assertRetained(vm);
   await new Promise(done => setTimeout(done, 300));
-  assert.equal(f.manager.status().active, true, 'the owned lease is being renewed');
+  assert.equal(f.manager.guestStatus().active, true, 'the owned lease is being renewed');
   assert.ok(f.service.heartbeatCount > 0, 'a retained lease is renewed rather than left to expire unnoticed');
   assert.match(failure.message, /cancel during allocation/);
   assert.match(failure.message, new RegExp(`${vm}.*retained`), 'the error names the VM that is now owned and retained');
@@ -1520,7 +1536,7 @@ test('R7 (owner decision): a finish whose packaging fails keeps the VM and does 
   await writeFile(join(acquired.guestRoot, 'state', 'artifact.txt'), 'state bytes'); f.service.corruptPull = true;
   await assert.rejects(f.manager.finish(), /Extraction inventory mismatch/);
   await f.assertRetained(acquired.vm);
-  assert.equal((await json(join(f.manager.root, 'lease.json'))).delivered, undefined, 'nothing was delivered');
+  assert.equal((await json(leaseFile(f.manager))).delivered, undefined, 'nothing was delivered');
   assert.equal(f.service.releaseCalls, 0, 'finish did not release the VM');
   f.service.corruptPull = false; await rm(join(acquired.guestRoot, 'state', 'artifact.txt'));
 });
@@ -1581,7 +1597,7 @@ const renewals = (service: FixtureService) => ({
 test('H6: acquire and each heartbeat ask vm-service for a 15-minute window, not the lease\'s whole TTL', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   await f.manager.acquire(acquireInput({ ttlHours: 4 }));
-  await (f.manager as any).heartbeat(); await (f.manager as any).heartbeat();
+  await guestOf(f.manager)?.heartbeat(); await guestOf(f.manager)?.heartbeat();
   const seen = renewals(f.service);
   assert.deepEqual(seen.acquire, [0.25], 'acquire asks for the renewal window');
   assert.equal(seen.heartbeats.length, 2);
@@ -1592,11 +1608,11 @@ test('H6: acquire and each heartbeat ask vm-service for a 15-minute window, not 
 test('H6: renewal never reaches past the lease\'s own deadline and stops at its end', { timeout: 30000 }, async t => {
   const f = await fixture(t); // the 60 s fixture timer never fires here; the test drives each heartbeat
   await f.manager.acquire(acquireInput({ ttlHours: 1 }));
-  assert.ok((f.manager as any).timer, 'renewal is running');
-  const enclosure = (f.manager as any).enclosure;
+  assert.ok(guestOf(f.manager)?.timer, 'renewal is running');
+  const enclosure = guestOf(f.manager)?.enclosure;
   // Move the lease's start back so that 10 minutes of its 1-hour TTL remain.
   enclosure.startedAt = new Date(Date.now() - 50 * 60000).toISOString();
-  await (f.manager as any).heartbeat();
+  await guestOf(f.manager)?.heartbeat();
   const last = renewals(f.service).heartbeats.at(-1)!;
   assert.ok(last > 9.9 / 60 && last <= 10 / 60, `the renewal ends at the lease's deadline (${last} h), not 15 minutes out`);
   // With 5 minutes left, less than vm-service's 0.1 h minimum renewal, the lease
@@ -1604,10 +1620,10 @@ test('H6: renewal never reaches past the lease\'s own deadline and stops at its 
   for (const minutesAgo of [55, 61]) {
     enclosure.startedAt = new Date(Date.now() - minutesAgo * 60000).toISOString();
     const count = renewals(f.service).heartbeats.length;
-    await (f.manager as any).heartbeat();
+    await guestOf(f.manager)?.heartbeat();
     assert.equal(renewals(f.service).heartbeats.length, count, `no renewal ${60 - minutesAgo} minutes before the lease's deadline`);
-    assert.equal((f.manager as any).timer, undefined, 'the renewal timer stops');
-    assert.equal(f.manager.status().active, false, 'status shows that renewal stopped');
+    assert.equal(guestOf(f.manager)?.timer, undefined, 'the renewal timer stops');
+    assert.equal(f.manager.guestStatus().active, false, 'status shows that renewal stopped');
   }
   await f.assertRetained(); // stopping renewal never releases
   await f.manager.release(); await f.assertClean();
@@ -1622,7 +1638,7 @@ for (const pause of ['cleanup', 'settle'] as const) test(`H6: a graceful pause (
   assert.equal(sent.length, 1, 'one final renewal');
   assert.ok(sent[0] > 1.99 && sent[0] <= 2, `the final renewal covers the remaining TTL (${sent[0]} h)`);
   assert.ok(f.service.leases.has(acquired.vm!), 'the VM is retained');
-  const lease = await json(join(f.manager.root, 'lease.json'));
+  const lease = await json(leaseFile(f.manager));
   assert.equal(lease.active, false, 'renewal is paused');
   assert.ok(lease.expiresAt >= Date.now() / 1000 + 1.99 * 3600, 'the recorded expiry is the lease\'s own deadline');
 });
@@ -1664,7 +1680,7 @@ test('a run returns before its step downloads; relay_image waits for that one do
   const second = f.manager.run(operation('second-download')).then(result => { returned = true; return result; });
   await until(() => f.service.receiverCalls === 2, 'the second run to reach the guest'); await sleep(200);
   assert.equal(returned, false, 'with one download over the bound, the run waits for the oldest');
-  assert.equal(f.manager.status().downloads?.inFlight, 1);
+  assert.equal(f.manager.guestStatus().downloads?.inFlight, 1);
   const image = f.manager.image({ source: 'reference', imageId: first.imageDelivery.image!.imageId });
   hold.release();
   const shownFirst = await image;
@@ -1693,16 +1709,16 @@ test('a transient download failure waits 1 s, then 3 s, then pauses the download
   const a = await f.manager.run(operation('fails-transiently')), b = await f.manager.run(operation('waits-for-resume'));
   await until(() => hold.held === 1, 'the first step download to reach its archive pull');
   f.service.archivePullFailures = 3; hold.release();
-  await until(() => f.manager.status().downloads?.failed === 1, 'the first download to fail');
+  await until(() => f.manager.guestStatus().downloads?.failed === 1, 'the first download to fail');
   const pulls = archivePulls(f); await sleep(300);
-  assert.deepEqual({ ...f.manager.status().downloads, pulls: archivePulls(f) }, { queued: 1, inFlight: 0, downloaded: 0, failed: 1, cancelled: 0, coalesced: 0, paused: true, state: 'open', pulls }, 'the worker is paused');
+  assert.deepEqual({ ...f.manager.guestStatus().downloads, pulls: archivePulls(f) }, { queued: 1, inFlight: 0, downloaded: 0, failed: 1, cancelled: 0, coalesced: 0, paused: true, state: 'open', pulls }, 'the worker is paused');
   const failed = await downloadRecord(acquired.output!, a.executionId!);
   assert.equal(failed.status, 'failed'); assert.equal(failed.failure, 'transfer-failed');
   assert.ok(Date.parse(failed.endedAt) - Date.parse(failed.startedAt) >= 4000, 'the download waited 1 s, then 3 s, between its three archive pulls');
   await f.manager.extract([]);
-  await until(() => f.manager.status().downloads?.downloaded === 1, 'the paused download to resume');
+  await until(() => f.manager.guestStatus().downloads?.downloaded === 1, 'the paused download to resume');
   assert.equal((await downloadRecord(acquired.output!, b.executionId!)).status, 'downloaded');
-  assert.equal(f.manager.status().downloads?.paused, false);
+  assert.equal(f.manager.guestStatus().downloads?.paused, false);
   const delivered = await f.manager.finish(); assert.equal(delivered.snapshots, 'complete'); await f.assertClean();
 });
 
@@ -1714,7 +1730,7 @@ test('finish waits for the download in flight, coalesces the queued steps into i
   let finished = false;
   const finishing = f.manager.finish().then(result => { finished = true; return result; });
   await sleep(300); assert.equal(finished, false, 'finish waits while a download is in flight');
-  assert.equal(f.manager.status().downloads?.state, 'closing'); assert.equal(f.manager.status().downloads?.coalesced, 2);
+  assert.equal(f.manager.guestStatus().downloads?.state, 'closing'); assert.equal(f.manager.guestStatus().downloads?.coalesced, 2);
   const requests = archiveRequests(f);
   f.service.archivePullFailures = 3; hold.release();
   const delivered = await finishing;
@@ -1745,10 +1761,10 @@ test('release and a recording reset wait for every queued download before touchi
   hold.release(); await resetting;
   assert.equal((await downloadRecord(acquired.output!, beforeReset.executionId!)).status, 'downloaded');
   assert.equal(await exists(join(acquired.output!, 'host/steps')), false, 'the reset recording keeps no step folders');
-  assert.notEqual(f.manager.status().output, acquired.output);
+  assert.notEqual(f.manager.guestStatus().output, acquired.output);
   hold = holdStepDownloads(f);
   const beforeRelease = await f.manager.run(operation('before-release'));
-  const recording = f.manager.status().output!;
+  const recording = f.manager.guestStatus().output!;
   await until(() => hold.held === 1, 'the step download to reach its archive pull');
   let released = false;
   const releasing = f.manager.release().then(() => { released = true; });
@@ -1799,7 +1815,7 @@ test('a step lists a result file it cannot find as missing, and an extraction ta
 test('a step file that changed after its download comes from the guest at finish (AD-6)', { timeout: 30000 }, async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput()); await f.stage();
   const run = await f.manager.run(operation('changed-after-download')); await shown(f.manager, run);
-  const guestRoot = (f.manager as any).current().guestRoot as string;
+  const guestRoot = guestOf(f.manager)?.current().guestRoot as string;
   const started = join(guestRoot, 'state/receiver/started', `${run.executionId}.json`);
   const changed = `${JSON.stringify(await json(started), null, 2)}\n`; await writeFile(started, changed);
   const requests = archiveRequests(f);
@@ -1817,9 +1833,167 @@ test('cleanup aborts the download in flight and releases the owner lock without 
   await until(() => hold.held === 1, 'the step download to reach its archive pull');
   await f.manager.cleanup('shutdown during a download');
   const sibling = new RelayManager(f.options);
-  try { await sibling.initialize(); assert.equal(sibling.status().vm, acquired.vm, 'the owner lock was released'); }
+  try { await sibling.initialize(); assert.equal(sibling.guestStatus().vm, acquired.vm, 'the owner lock was released'); }
   finally { await sibling.cleanup('sibling check'); }
   hold.release(); await sleep(300);
   assert.equal(await exists(join(acquired.output!, 'host/evidence-downloads', `${run.executionId}.json`)), false, 'a closed queue writes nothing');
   assert.equal(await exists(run.imageDelivery.image!.originalPath!), false, 'an aborted download does not publish');
+});
+
+// DC-20: one session holds several guests at once.
+const stageGuest = (f: Awaited<ReturnType<typeof fixture>>, guest: string) => f.manager.stage({ guest, cuaDriver: f.driver, nodePath: process.execPath });
+/** Rejects when `work` has not settled within `ms`, so a lost concurrency shows as a failure rather than a hang. */
+const within2 = <T>(work: Promise<T>, ms: number, what: string) => Promise.race([work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what} did not settle within ${ms} ms`)), ms).unref())]);
+
+test('two guests in one session run at the same time and finish independently, each with its own evidence (DC-20)', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const [first, second] = await Promise.all([f.manager.acquire(acquireInput({ extractions: [{ name: 'artifact', path: 'artifact.txt' }] })), f.manager.acquire(acquireInput({ extractions: [{ name: 'artifact', path: 'artifact.txt' }] }))]);
+  assert.deepEqual([first.guest, second.guest].sort(), ['manager-test-1', 'manager-test-2']);
+  assert.notEqual(first.vm, second.vm); assert.notEqual(first.output, second.output); assert.notEqual(first.purpose, second.purpose);
+  assert.equal(f.service.leases.size, 2);
+  const status = f.manager.status();
+  assert.deepEqual(status.guests.map(guest => guest.guest).sort(), ['manager-test-1', 'manager-test-2']); assert.equal(status.active, true); assert.equal(status.maxGuests, 4);
+  assert.equal((await readFile(f.registryPath, 'utf8')).split('\n').filter(line => line.includes('vm-service relay-manager-test-')).length, 2, 'each guest has its own registry row');
+  for (const guest of [first, second]) assert.equal((await json(leaseFile(f.manager, guest.guest!))).lease.vm, guest.vm, `guest ${guest.guest} has its own ownership record`);
+  await assert.rejects(f.manager.run(operation('ambiguous')), /Name the guest this call acts on: this session holds manager-test-1, manager-test-2/);
+  await Promise.all([stageGuest(f, first.guest!), stageGuest(f, second.guest!)]);
+  // Each guest's first command waits until the other guest's command has reached its receiver: only concurrent calls get past it.
+  const both = deferred(); let arrived = 0;
+  f.service.receiverHook = async () => { if (++arrived === 2) both.resolve(); await both.promise; };
+  const write = (guest: string, text: string) => f.manager.run(operation(`write-${guest}`, { guest, argv: [process.execPath, '-e', `require('fs').appendFileSync('artifact.txt', ${JSON.stringify(text)})`] }));
+  const [one, two] = await within2(Promise.all([write(first.guest!, 'one'), write(second.guest!, 'two')]), 20000, 'concurrent runs on two guests');
+  f.service.receiverHook = undefined;
+  assert.equal(f.service.maxReceiverActive, 2, 'the two guests\' commands ran at the same time');
+  assert.equal(one.guest, first.guest); assert.equal(two.guest, second.guest);
+  assert.equal(one.evidencePath, first.output); assert.equal(two.evidencePath, second.output);
+  // Interleaved: more commands on both guests, sent together.
+  const more = await Promise.all([write(first.guest!, '|one-again'), write(second.guest!, '|two-again'), write(first.guest!, '|one-last')]);
+  for (const result of more) assert.equal(result.outcome.kind, 'completed', JSON.stringify(result.outcome));
+  assert.equal(await readFile(join(first.workspace, 'artifact.txt'), 'utf8'), 'one|one-again|one-last', 'calls on one guest kept their order');
+  assert.equal(await readFile(join(second.workspace, 'artifact.txt'), 'utf8'), 'two|two-again');
+  const image = await f.manager.image({ source: 'reference', imageId: two.imageDelivery.image!.imageId }, undefined, second.guest);
+  assert.equal(image.status, 'attached', JSON.stringify(image));
+  // Finishing the first guest leaves the second running.
+  const delivered = await f.manager.finish(undefined, first.guest);
+  assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.execution, 'passed');
+  assert.deepEqual(await verifyDeliveredPackage(first.output!), delivered);
+  assert.equal(f.service.leases.has(first.vm!), false); assert.equal(f.service.leases.has(second.vm!), true);
+  assert.deepEqual(f.manager.status().guests.map(guest => guest.guest), [second.guest]);
+  assert.equal(f.manager.guestStatus(second.guest).active, true, 'the second guest is still renewed');
+  assert.equal(await json(leaseFile(f.manager, first.guest!)), null);
+  assert.equal((await json(`${first.output}.lifecycle.json`)).guest, first.guest);
+  await assert.rejects(f.manager.run(operation('after-finish', { guest: first.guest })), /holds no guest named "manager-test-1"; it holds manager-test-2/);
+  assert.equal((await write(second.guest!, '|two-after')).outcome.kind, 'completed');
+  const second_ = await f.manager.finish(undefined, second.guest);
+  assert.equal(second_.deliveryVerified, true); assert.equal(second_.execution, 'passed');
+  assert.deepEqual(await verifyDeliveredPackage(second.output!), second_);
+  const extracted = async (output: string) => { const dir = join(output, 'extractions', 'artifact'); return Promise.all((await readdir(dir)).map(name => readFile(join(dir, name), 'utf8'))); };
+  assert.deepEqual(await extracted(first.output!), ['one|one-again|one-last']);
+  assert.deepEqual(await extracted(second.output!), ['two|two-again|two-after']);
+  await f.assertClean(); assert.equal(f.service.releaseCalls, 2);
+});
+
+test('calls on one guest keep their order while another guest\'s calls run (DC-20)', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const a = await f.manager.acquire(acquireInput()), b = await f.manager.acquire(acquireInput());
+  await stageGuest(f, a.guest!); await stageGuest(f, b.guest!);
+  const order: string[] = [], held = deferred();
+  f.service.execHook = async argv => { if (argv[0] === '/usr/bin/env' && (await readFile(argv.at(-1)!, 'utf8')).includes('a-first')) await held.promise; };
+  const run = (guest: string, id: string) => f.manager.run(operation(id, { guest, argv: [process.execPath, '-e', `console.log(${JSON.stringify(id)})`] })).then(result => { order.push(id); return result; });
+  const first = run(a.guest!, 'a-first'), second = run(a.guest!, 'a-second');
+  // The first call on guest A is held at its receiver; guest B is not held up by it.
+  assert.equal((await within2(run(b.guest!, 'b-only'), 20000, 'a call on another guest')).outcome.kind, 'completed');
+  assert.deepEqual(order, ['b-only']);
+  assert.equal(f.service.requests.filter(r => r.path === `/vms/${a.vm}/exec` && r.body.argv[0] === '/usr/bin/env').length, 1, 'the second call on guest A waits for the first');
+  held.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['b-only', 'a-first', 'a-second']);
+  await f.manager.release(a.guest); await f.manager.release(b.guest); await f.assertClean();
+});
+
+test('a session holds at most maxGuests guests; acquisition beyond it is refused naming them, and a released guest\'s name is never reused (DC-20)', { timeout: 30000 }, async t => {
+  const f = await fixture(t, { maxGuests: 2 });
+  const a = await f.manager.acquire(acquireInput()), b = await f.manager.acquire(acquireInput());
+  await assert.rejects(f.manager.acquire(acquireInput()), /This session already holds 2 guests, the most MCP_RELAY_MAX_GUESTS allows \(2\): manager-test-1, manager-test-2\. .*nothing was acquired/);
+  assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 2, 'the refused acquisition never reached vm-service');
+  await f.manager.release(a.guest);
+  assert.deepEqual(f.manager.status().guests.map(guest => guest.guest), [b.guest]);
+  const c = await f.manager.acquire(acquireInput());
+  assert.equal(c.guest, 'manager-test-3');
+  await f.manager.release(b.guest); await f.manager.release(c.guest); await f.assertClean();
+});
+
+test('a call naming a guest the session does not hold is refused and changes nothing (DC-20)', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const a = await f.manager.acquire(acquireInput());
+  const requests = f.service.requests.length;
+  for (const call of [
+    () => f.manager.stage({ guest: 'other-1', cuaDriver: f.driver }),
+    () => f.manager.run(operation('nowhere', { guest: 'other-1' })),
+    () => f.manager.extract([], undefined, 'other-1'),
+    () => f.manager.finish(undefined, 'other-1'),
+    () => f.manager.release('other-1'),
+    () => f.manager.gate('h', 'go', undefined, 'other-1'),
+    () => f.manager.consoleResolve(undefined, 'other-1'),
+    () => f.manager.probe('guest', 'other-1'),
+  ]) await assert.rejects(call(), /This session holds no guest named "other-1"; it holds manager-test-1\. relay_acquire answers each guest's name/);
+  const image = await f.manager.image({ source: 'reference', imageId: `image-${'0'.repeat(64)}` }, undefined, 'other-1');
+  assert.equal(image.status, 'stale-reference'); assert.match(image.diagnostic!, /no guest named "other-1"/);
+  const viaTool = await relayCall(f.manager, { action: 'run', kind: 'exec', guest: 'other-1', argv: ['true'] }).catch(error => error);
+  assert.match(String(viaTool), /no guest named "other-1"/);
+  assert.equal(f.service.requests.length, requests, 'nothing reached vm-service');
+  await f.assertRetained(a.vm);
+  await f.manager.release(a.guest); await f.assertClean();
+  const none = await relayCall(f.manager, { action: 'release', guest: 'manager-test-1' });
+  assert.equal(none.isError, true); assert.match(none.text, /owns no lease/);
+});
+
+test('a restarted session restores both its guests by name, pauses both at shutdown and replays nothing (DC-20)', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  const a = await f.manager.acquire(acquireInput()), b = await f.manager.acquire(acquireInput());
+  await stageGuest(f, a.guest!); await stageGuest(f, b.guest!);
+  const ranA = await f.manager.run(operation('a-before', { guest: a.guest })), ranB = await f.manager.run(operation('b-before', { guest: b.guest }));
+  await f.manager.cleanup('restart with two guests');
+  for (const guest of [a, b]) {
+    const record = await json(leaseFile(f.manager, guest.guest!));
+    assert.equal(record.active, false, `${guest.guest} renewal paused`); assert.equal(record.lease.vm, guest.vm);
+    const events = await Promise.all((await readdir(join(guest.output!, 'host/events'))).map(name => json(join(guest.output!, 'host/events', name))));
+    assert.ok(events.some(event => event.kind === 'renewal-paused' && /restart with two guests/.test(event.details.reason)), `${guest.guest} records the pause`);
+  }
+  assert.equal(f.service.releaseCalls, 0);
+  const recovered = new RelayManager(f.options);
+  try {
+    await recovered.initialize();
+    assert.deepEqual(recovered.status().guests.map(guest => [guest.guest, guest.vm, guest.staged]), [[a.guest, a.vm, true], [b.guest, b.vm, true]]);
+    assert.equal(f.service.receiverCalls, 2, 'restoring replays nothing');
+    const [nextA, nextB] = await Promise.all([recovered.run(operation('a-after', { guest: a.guest })), recovered.run(operation('b-after', { guest: b.guest }))]);
+    assert.equal(nextA.outcome.kind, 'completed'); assert.equal(nextB.outcome.kind, 'completed');
+    assert.notEqual(nextA.executionId, ranA.executionId); assert.notEqual(nextB.executionId, ranB.executionId);
+    assert.equal(f.service.receiverCalls, 4);
+    assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 2, 'nothing was acquired again');
+    assert.equal((await recovered.finish(undefined, b.guest)).execution, 'passed');
+    assert.deepEqual(recovered.status().guests.map(guest => guest.guest), [a.guest]);
+    assert.equal((await recovered.finish(undefined, a.guest)).execution, 'passed');
+    assert.deepEqual(recovered.status().guests, []);
+  } finally { await recovered.release().catch(() => {}); await recovered.cleanup('recovered teardown'); await f.manager.initialize(); }
+  await f.assertClean();
+});
+
+test('a session state written before DC-20 is restored as one named guest (DC-20)', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const acquired = await f.manager.acquire(acquireInput());
+  await f.manager.cleanup('upgrade');
+  // A relay before DC-20 kept its one enclosure in the session's lease.json.
+  await writeFile(join(f.manager.root, 'lease.json'), await readFile(leaseFile(f.manager), 'utf8'));
+  await rm(join(f.manager.root, 'guests'), { recursive: true });
+  const recovered = new RelayManager(f.options);
+  try {
+    await recovered.initialize();
+    assert.equal(recovered.guestStatus(G).vm, acquired.vm);
+    assert.equal(await json(join(recovered.root, 'lease.json')), null, 'the old record is emptied once the guest holds it');
+    assert.equal((await json(leaseFile(recovered))).lease.vm, acquired.vm);
+    assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 1);
+    await recovered.release(G);
+  } finally { await recovered.cleanup('migrated teardown'); await f.manager.initialize(); }
+  await f.assertClean();
 });

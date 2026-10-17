@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { guestNetwork, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
+import { guestNetwork, maxGuests, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
 import { acquireOwnerLock } from "../src/owner-lock.js";
 
 const home = join(tmpdir(), "relay-config-home");
@@ -72,4 +72,11 @@ test("the variables of the project's earlier name, MCP_VM_RELAY_*, are not read 
   assert.equal(relayStateRoot({ env, home }), join(home, ".local/state/mcp-relay"));
   assert.equal(registryDiagnosticsPath({ env, home }), join(home, ".local/state/mcp-relay/registry.md"));
   assert.equal(pythonExecutable(env), "python3");
+});
+
+test("the guest limit is MCP_RELAY_MAX_GUESTS, 4 when unset, and anything but a positive integer is refused (DC-20)", () => {
+  assert.equal(maxGuests({}), 4);
+  assert.equal(maxGuests({ MCP_RELAY_MAX_GUESTS: "1" }), 1);
+  assert.equal(maxGuests({ MCP_RELAY_MAX_GUESTS: "12" }), 12);
+  for (const value of ["0", "-2", "1.5", "01", " 3", "3 ", "many", "", "99999999999999999999"]) assert.throws(() => maxGuests({ MCP_RELAY_MAX_GUESTS: value }), /MCP_RELAY_MAX_GUESTS must be a positive integer/, value);
 });

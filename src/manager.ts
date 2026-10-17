@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, cp, access, writeFile, statfs } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { GUEST_NETWORKS, guestNetwork, relayStateRoot, type GuestNetwork } from './config.js';
+import { GUEST_NETWORKS, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
 import { VmService, VmServiceError, type VmLease, type VmBackend } from './vm-service.js';
@@ -29,17 +29,24 @@ import type { RelayImageContent } from './surface.js';
 
 export interface Extraction { path: string; name: string }
 export interface AcquireInput { task: string; image: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean }
-export interface ConsoleAttemptInput { console_id: string; attempt_id: string }
+/**
+ * `guest` names the guest a call acts on (DC-20). The MCP tools require it;
+ * a caller of the manager itself may leave it out while the session holds
+ * exactly one guest.
+ */
+export interface GuestSelector { guest?: string }
+export interface ConsoleAttemptInput extends GuestSelector { console_id: string; attempt_id: string }
 export interface ConsoleOpenInput extends ConsoleAttemptInput { userRequested: true; reason: string; expected: string }
-export interface StageInput { resetRecording?: boolean; workspace?: string; files?: Array<{ local: string; path: string }>; nodePath?: string; cuaDriver?: string; browserExecutable?: string }
+export interface StageInput extends GuestSelector { resetRecording?: boolean; workspace?: string; files?: Array<{ local: string; path: string }>; nodePath?: string; cuaDriver?: string; browserExecutable?: string }
 /**
  * One run. `because`, `step` and `snapshots` are optional: whatever is left
  * out is derived from the call (see `derive`). `kind: 'mcp'` is relay_run:
  * `target`, `tool` and `args` name one tool call on an in-guest MCP server;
  * `expected` and `afterIntervalMs` are its record overrides.
  */
-export interface RunInput { because?: string; timeoutMs?: number; diagnostic?: boolean; kind: 'exec' | 'script' | 'code' | 'mcp'; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; argv?: string[]; localPath?: string; language?: 'javascript' | 'typescript' | 'python'; code?: string; target?: Target; tool?: string; args?: Record<string, unknown>; expected?: string; afterIntervalMs?: number; hold?: { id: string; timeoutMs?: number } }
+export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; kind: 'exec' | 'script' | 'code' | 'mcp'; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; argv?: string[]; localPath?: string; language?: 'javascript' | 'typescript' | 'python'; code?: string; target?: Target; tool?: string; args?: Record<string, unknown>; expected?: string; afterIntervalMs?: number; hold?: { id: string; timeoutMs?: number } }
 interface BackendBinding { endpoint: string; tartHome: string; environmentFingerprint?: string }
+/** One guest's durable ownership record, `guests/<guest>/lease.json` in the session's state directory. */
 interface Enclosure {
   backend?: BackendBinding;
   purpose: string; task: string; image: string; project: string; startedAt: string;
@@ -63,6 +70,15 @@ interface Enclosure {
   consoleAttempt?: { console_id: string; attempt_id: string; status: string };
   consoleAttemptIds?: string[];
 }
+/** What relay_status, relay_probe and every guest result report about one guest. */
+export interface GuestStatus {
+  /** The guest's name in this session; absent only when the session holds no guest. */
+  guest?: string;
+  task?: string; backend?: BackendBinding; vm?: string; lease_id?: string; console?: ConsoleStatus; consoleAttempt?: { console_id: string; attempt_id: string; status: string };
+  purpose?: string; staged?: boolean; lastError?: string; released?: boolean; active: boolean; guestState?: string;
+  previousEvidence?: Array<{ path: string; sessionId: string; guestState?: string }>; recordingResetPending?: boolean; expiresAt?: number; output?: string;
+  downloads?: ReturnType<DownloadQueue['counts']>;
+}
 /** A run's result: its execution identity and outcome, the after-snapshot delivery, and kind-specific facts. */
 export interface RunResult {
   executionId: string | null;
@@ -83,6 +99,8 @@ export interface ManagerOptions {
   renewalWindowMs?: number;
   /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
   guestNetwork?: GuestNetwork;
+  /** The most guests the session holds at once; default MCP_RELAY_MAX_GUESTS (DC-20). */
+  maxGuests?: number;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -123,10 +141,20 @@ export const MAX_TOOL_IMAGES = 4;
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
 export const DOWNLOAD_RETRY_DELAYS_MS = [1000, 3000] as const;
+/** A task slug, as relay_acquire takes it. */
+const TASK = /^[a-z0-9][a-z0-9-]{0,35}$/;
+/** A guest name: the task and a counter, such as `login-test-2`; it names the guest's folder in the state directory (DC-20). */
+export const GUEST_NAME = /^[a-z0-9][a-z0-9-]{0,47}$/;
 type DisplayTarget = Extract<ImageTarget, { source: 'display' }>;
 /** One step download serves both of the step's images (AD-3). */
 const downloadKey = (target: Pick<DisplayTarget, 'sessionId' | 'executionId'>) => `${target.sessionId}/${target.executionId}`;
 const stepId = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
+const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+/** Wait for every one of several operations, then throw the first failure, so one guest's failure never cuts another's operation short. */
+async function settleEach(work: Array<Promise<unknown>>) {
+  const failed = (await Promise.allSettled(work)).find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
+}
 /**
  * The server's MCP `instructions`: the rules that cut across all nineteen
  * tools rather than belonging to one of them (see each tool's own
@@ -134,11 +162,19 @@ const stepId = (value: unknown): value is string => typeof value === 'string' &&
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers nineteen tools for one enclosure, a guest VM that runs the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. One task gets one enclosure: call relay_acquire once per task, never reused for a second task. Work an enclosure in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release. Always call relay_finish or relay_release explicitly before you return an answer; ending the session only pauses lease renewal, it does not destroy the VM, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session only pauses lease renewal, it does not destroy the VMs, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
-export const NO_OWNED_LEASE = 'This session owns no lease, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
+export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
 
+/**
+ * One relay session: its identity, owner lock and state directory, and the
+ * guests it holds (DC-20). Each guest keeps its own lease, heartbeat,
+ * evidence, downloads, recording session, owner lock and registry row in a
+ * `Guest`; calls on one guest run in order, calls on different guests at the
+ * same time. The session's own queue orders what spans guests: loading the
+ * state, admitting an acquisition, search, the host probe and shutdown.
+ */
 export class RelayManager {
   readonly vm: VmBackend;
   readonly environment?: SelectedEnvironment;
@@ -147,25 +183,23 @@ export class RelayManager {
   readonly registry: Registry;
   readonly root: string;
   readonly channel: VmChannel;
-  private enclosure?: Enclosure;
-  private session?: Session;
-  private transport?: VmTransport;
-  private timer?: ReturnType<typeof setInterval>;
-  private heartbeating = false;
-  private renewal?: Promise<void>;
+  /** The most guests this session holds at once (DC-20). */
+  readonly maxGuests: number;
+  /** The guests the session holds, by name, in the order they were acquired. */
+  private guests = new Map<string, Guest>();
   private queue: Promise<unknown> = Promise.resolve();
-  private initialized = false;
+  private loading?: Promise<void>;
+  private loaded = false;
   private ownerLock?: OwnerLock;
-  private shuttingDown = false;
-  /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
-  private readonly downloads: DownloadQueue;
-  /** Holds named by relay_run, and the decision each ended with once its receipt is in (docs/relay-run.md, Held input). */
-  private readonly holds = new Map<string, { decided?: string }>();
+  /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
+  shuttingDown = false;
   constructor(readonly options: ManagerOptions) {
     this.environment = options.environment ?? selectedEnvironment();
     this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join(process.env.HOME ?? homedir(), '.tart'));
     this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? 'tart';
     if (this.environment && ((options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir) || (options.tartHome && canonicalPath(options.tartHome) !== this.tartHome) || (options.tartPath && canonicalPath(options.tartPath) !== this.tartPath))) throw new Error('Injected paths conflict with the selected environment');
+    this.maxGuests = options.maxGuests ?? maxGuests();
+    if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error('maxGuests must be a positive integer');
     this.vm = options.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
@@ -177,35 +211,100 @@ export class RelayManager {
       push: (name, local_path, remote_path) => this.vm.push(name, { local_path, remote_path }),
       pull: (name, remote_path, local_path, options) => this.vm.pull(name, { remote_path, local_path }, options),
     };
-    this.downloads = new DownloadQueue({ bound: options.downloadBound ?? DOWNLOAD_BOUND, record: job => this.recordDownload(job) });
   }
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn); this.queue = next.catch(() => {}); return next;
   }
-  async initialize() { return this.serialized(() => this.init()); }
-  private async init(hostOnly = false) {
-    if (this.initialized) return;
-    await mkdir(this.root, { recursive: true, mode: 0o700 });
-    if (!this.ownerLock) {
-      this.ownerLock = await acquireOwnerLock(join(this.root, 'owner.lock')); // Stable inode; never unlink.
-      try { this.enclosure = JSON.parse(await readFile(join(this.root, 'lease.json'), 'utf8')); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') { await this.unlock(); throw e; } }
-    }
-    try {
-      if (this.enclosure) {
-        this.enclosure.active = false;
-        if (hostOnly) return;
-        await this.reconcile();
-        if (this.enclosure?.staged && !this.enclosure.delivered) {
-          try { await this.attach(); }
-          catch (error) { await this.fail(new Error(`Recording session restoration failed; diagnostic repair remains available: ${String(error)}`)); }
-        }
-      }
-      this.initialized = true;
-    } catch (error) { await this.unlock(); throw error; }
+  /**
+   * Load the session's state, then restore every guest it holds: reconcile
+   * each with the backend and reattach its recording. The first failure is
+   * thrown once every guest has been tried, and the owner locks are given up,
+   * so a session that cannot be restored here, such as one bound to another
+   * environment, is left for a process that can.
+   */
+  async initialize() {
+    await this.load();
+    const guests = [...this.guests.values()];
+    try { await settleEach(guests.map(guest => guest.serialized(() => guest.restore()))); }
+    catch (error) { await this.unload(guests); throw error; }
   }
-  private binding(): BackendBinding { return { endpoint: this.vm.baseUrl, tartHome: this.tartHome, ...(this.environment ? { environmentFingerprint: this.environment.identity.fingerprint } : {}) }; }
-  private bindingMatches(e: Enclosure): boolean {
+  /**
+   * Take the session's owner lock and read the guests it holds, host-only:
+   * no backend call. A guest is reconciled when a call first acts on it.
+   */
+  private load(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    return this.loading ??= this.readState().then(() => { this.loaded = true; }, error => { this.loading = undefined; throw error; });
+  }
+  private async readState() {
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    if (!this.ownerLock) this.ownerLock = await acquireOwnerLock(join(this.root, 'owner.lock')); // Stable inode; never unlink.
+    const guests: Guest[] = [];
+    try {
+      const folder = join(this.root, 'guests');
+      for (const name of await readdir(folder).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [] as string[]; throw error; })) {
+        if (!GUEST_NAME.test(name)) continue;
+        const record = await readRecord(join(folder, name, 'lease.json'));
+        if (!record) continue;
+        const guest = new Guest(this, name, record); await guest.lock(); guests.push(guest);
+      }
+      // A relay before DC-20 kept its one enclosure in `lease.json`: it becomes a guest, named from its task.
+      const legacy = await readRecord(join(this.root, 'lease.json'));
+      if (legacy) {
+        if (!guests.some(guest => guest.enclosure?.purpose === legacy.purpose)) {
+          const taken = new Set(guests.map(guest => guest.name));
+          const guest = new Guest(this, await this.freeName(TASK.test(legacy.task) ? legacy.task : 'guest', taken), legacy);
+          await guest.lock(); await guest.save(); guests.push(guest);
+        }
+        await jsonFile(join(this.root, 'lease.json'), null);
+      }
+    } catch (error) {
+      for (const guest of guests) await guest.unlock().catch(() => {});
+      await this.unlock(); throw error;
+    }
+    guests.sort((a, b) => (a.enclosure!.startedAt ?? '').localeCompare(b.enclosure!.startedAt ?? '') || a.name.localeCompare(b.name, undefined, { numeric: true }));
+    this.guests = new Map(guests.map(guest => [guest.name, guest]));
+  }
+  /** The first `<task>-<n>` the session has never used: a guest's folder stays when it is released, so a name is never reused. */
+  private async freeName(task: string, taken: ReadonlySet<string> = new Set()) {
+    for (let n = 1; ; n++) {
+      const name = `${task}-${n}`;
+      if (taken.has(name) || this.guests.has(name)) continue;
+      if (await access(join(this.root, 'guests', name)).then(() => true, () => false)) continue;
+      return name;
+    }
+  }
+  private held() { return this.guests.size ? [...this.guests.keys()].join(', ') : 'none'; }
+  /** The guest a call names; without a name, the session's only guest. */
+  private named(guest?: string): Guest {
+    if (guest === undefined) {
+      if (this.guests.size === 1) return [...this.guests.values()][0]!;
+      if (!this.guests.size) throw new Error('No active lease: this session holds no guest; use relay_acquire');
+      throw new Error(`Name the guest this call acts on: this session holds ${this.held()}`);
+    }
+    const found = typeof guest === 'string' && GUEST_NAME.test(guest) ? this.guests.get(guest) : undefined;
+    if (!found) throw new Error(`This session holds no guest named ${JSON.stringify(guest)}; it holds ${this.held()}. relay_acquire answers each guest's name.`);
+    return found;
+  }
+  /**
+   * Run once the state is loaded: at once when it already is, so calls take
+   * their guest's order in the order they were made.
+   */
+  private whenLoaded<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.loaded) return this.load().then(fn);
+    try { return fn(); } catch (error) { return Promise.reject(error); }
+  }
+  /** Run one operation on a named guest, in that guest's order. */
+  private onGuest<T>(guest: string | undefined, fn: (guest: Guest) => Promise<T>): Promise<T> {
+    return this.whenLoaded(() => { const found = this.named(guest); return found.serialized(() => fn(found)); });
+  }
+  /** A guest whose record is gone, after its release or its verified destruction, leaves the session. */
+  async forget(guest: Guest) {
+    if (this.guests.get(guest.name) === guest) this.guests.delete(guest.name);
+    guest.stopTimer(); await guest.unlock();
+  }
+  binding(): BackendBinding { return { endpoint: this.vm.baseUrl, tartHome: this.tartHome, ...(this.environment ? { environmentFingerprint: this.environment.identity.fingerprint } : {}) }; }
+  bindingMatches(e: Enclosure): boolean {
     if (e.backend) {
       const expected = this.binding();
       return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => e.backend![key as keyof BackendBinding] === value);
@@ -213,55 +312,22 @@ export class RelayManager {
     // Only the original default deployment may adopt pre-binding legacy state.
     return !this.environment && new URL(this.vm.baseUrl).origin === 'http://localhost:6240' && this.tartHome === canonicalPath(join(process.env.HOME ?? homedir(), '.tart'));
   }
-  private assertBinding() {
-    if (this.enclosure && !this.bindingMatches(this.enclosure)) throw new Error('Owned lease belongs to a different or unknown VM environment; select its original environment before operating on it');
-  }
-  private async assertBackend() {
+  async assertBackend() {
     if (!this.environment) return;
     if (new URL(this.vm.baseUrl).origin !== new URL(this.environment.profile.vmServiceUrl).origin) throw new Error('Injected backend endpoint does not match selected environment');
     const health = await this.vm.health({ timeoutMs: 5000 });
     if (!health.ok || !matchesEnvironment(health.environment, this.environment)) throw new Error('VM service environment identity mismatch; no lease operation was performed');
   }
-  private async save() { await jsonFile(join(this.root, 'lease.json'), this.enclosure ?? null); }
   private async unlock() { if (this.ownerLock) { await this.ownerLock.release(); this.ownerLock = undefined; } }
-  status() { const e = this.enclosure; return e ? { task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts() } : { active: false }; }
-  private async reconcile() {
-    const e = this.enclosure; if (!e) return;
-    this.assertBinding(); await this.assertBackend();
-    e.backend ??= this.binding();
-    if (!e.lease) {
-      const matches = Object.values((await this.vm.list({ timeoutMs: 10000 })).vms).filter(v => v.purpose === e.purpose);
-      if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
-      e.lease = matches[0]; e.acquisitionInFlight = false;
-    }
-    try {
-      const lease = await this.vm.get(e.lease.vm, { timeoutMs: 10000 });
-      if (lease.purpose !== e.purpose || (e.lease.lease_id && lease.lease_id !== e.lease.lease_id)) throw new Error('Lease ownership identity mismatch');
-      if (e.lease.console?.console_id && lease.console?.console_id !== e.lease.console.console_id) throw new Error('Console instance identity mismatch during lease reconciliation');
-      if (lease.console) {
-        lease.console = consoleStatus(lease.console);
-        if (lease.console.status === 'revoked') e.consoleObservation = lease.console;
-      }
-      e.lease = lease; e.guestState = lease.state; e.expiresAt = lease.ttl_expires_at;
-      if (e.failed) { e.lastError = e.failed; delete e.failed; }
-      await this.save();
-    } catch (error) {
-      e.guestState = 'unknown';
-      if (error instanceof VmServiceError && error.status === 404 && await this.destroyed(e.lease.vm)) {
-        await this.registry.remove(e.row);
-        await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease.vm, released: true, reason: 'backend lease absent and destruction verified', finishedAt: new Date().toISOString() });
-        this.enclosure = undefined; await this.save(); return;
-      }
-      await this.save(); throw error;
-    }
+  /** Every guest the session holds, with its state; `active` is true while any guest's lease is being renewed. */
+  status() {
+    const guests = [...this.guests.values()].map(guest => guest.status());
+    return { active: guests.some(guest => guest.active), guests, maxGuests: this.maxGuests };
   }
-  private async attach() {
-    const e = this.current();
-    if (!e.sessionId || !e.node) throw new Error('Persisted staged session lacks runtime identity');
-    const relay = Relay.open(join(e.hostRoot, 'host', 'submissions'));
-    this.transport = new VmTransport(this.transfer(), e.guestRoot, join(e.hostRoot, 'host'), e.cuaDriver!);
-    this.transport.capture = e.capture !== false;
-    this.session = await relay.attach(e.sessionId, this.transport);
+  /** One guest's status; without a name, the only guest's, or `active: false` when the session holds none. */
+  guestStatus(guest?: string): GuestStatus {
+    if (guest === undefined && !this.guests.size) return { active: false };
+    return this.named(guest).status();
   }
   search(query: SearchQuery, signal?: AbortSignal, toolCallId?: string) { return this.serialized(async () => {
     // Deliberately bypass init/recovery, ownership locks, probes and lease APIs.
@@ -276,52 +342,311 @@ export class RelayManager {
     await recordSearch(this.root, query, { result }, { toolCallId });
     return result;
   }); }
-  probe(scope: 'host' | 'guest' = 'host') { return this.serialized(async () => {
-    if (scope === 'guest') {
-      await this.init();
-      return this.guarded(undefined, async () => {
-        const e = this.current();
-        const checks = [];
-        for (const [name, argv] of [['node', [e.node ?? 'node', '--version']], ['cuaDriver', [e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver'), '--version']]] as const) {
-          // Only Node.js is required, by staging; cua-driver is a fact (DC-13).
-          const required = name === 'node';
-          try { const r = await this.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, required, ...r, ready: r.code === 0 }); }
-          catch (error) { checks.push({ name, required, ready: false, diagnostic: String(error) }); }
-        }
-        const targets = await this.targetAvailability(e, checks);
-        const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
-        const facts = { scope, observedAt: new Date().toISOString(), owned: this.status(), checks, targets, snapshots, captureVerified: false, browserVerified: false };
-        await this.log('guest-readiness', undefined, facts); return facts;
-      });
-    }
-    const local = await probeLocal();
-    let relay;
-    try { const [health, images, leases] = await Promise.all([this.vm.health({ timeoutMs: 5000 }), this.vm.images({ timeoutMs: 5000 }), this.vm.list({ timeoutMs: 5000 })]); relay = { reachable: health.ok, images, capacity: leases.limits }; }
-    catch (error) { relay = { reachable: false, diagnostic: String(error) }; }
-    const facts = { scope: 'host', local, relay, environment: this.environment?.identity, owned: this.status(), capabilities: { image: imageCapability } };
-    await jsonFile(join(this.root, 'probes', `${Date.now()}-${randomUUID()}.json`), facts);
-    await this.log('probe', undefined, facts);
-    return facts;
-  }); }
-  private async readAcquisitionCapabilities(signal?: AbortSignal) {
+  probe(scope: 'host' | 'guest' = 'host', guest?: string) {
+    if (scope === 'guest') return this.onGuest(guest, found => found.guarded(undefined, () => found.probe()));
+    return this.serialized(async () => {
+      // The host facts list every guest the session holds, after a restart too; loading is host-only.
+      let ownership: string | undefined;
+      try { await this.load(); } catch (error) { ownership = `This session's guests could not be loaded: ${message(error)}`; }
+      const local = await probeLocal();
+      let relay;
+      try { const [health, images, leases] = await Promise.all([this.vm.health({ timeoutMs: 5000 }), this.vm.images({ timeoutMs: 5000 }), this.vm.list({ timeoutMs: 5000 })]); relay = { reachable: health.ok, images, capacity: leases.limits }; }
+      catch (error) { relay = { reachable: false, diagnostic: String(error) }; }
+      const facts = { scope: 'host', local, relay, environment: this.environment?.identity, owned: this.status(), ...(ownership ? { ownership } : {}), capabilities: { image: imageCapability } };
+      await jsonFile(join(this.root, 'probes', `${Date.now()}-${randomUUID()}.json`), facts);
+      // Each guest's evidence records the host facts its agent saw.
+      for (const found of this.guests.values()) await found.log('probe', undefined, facts).catch(() => {});
+      return facts;
+    });
+  }
+  async readAcquisitionCapabilities(signal?: AbortSignal) {
     signal?.throwIfAborted(); await this.assertBackend();
     if (!this.vm.acquisitionCapabilities) throw new Error('Backend lacks acquisition-capabilities; upgrade vm-service for VNC');
     return acquisitionCapabilities(await this.vm.acquisitionCapabilities({ signal, timeoutMs: 10000 }));
   }
   acquisitionCapabilities(signal?: AbortSignal) { return this.serialized(() => this.readAcquisitionCapabilities(signal)); }
+  consoleResolve(signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.resolveConsole(signal)); }
+  consoleOpen(input: ConsoleOpenInput, signal?: AbortSignal) {
+    return this.onGuest(input.guest, found => {
+      this.reason(input.reason); this.reason(input.expected);
+      if (input.userRequested !== true) throw new Error('Opening requires an explicit user request');
+      return found.consoleOperation('open', input, signal);
+    });
+  }
+  consoleCancel(input: ConsoleAttemptInput, signal?: AbortSignal) { return this.onGuest(input.guest, found => found.consoleOperation('cancel', input, signal)); }
+  /**
+   * A host path the relay reads: relative to the project folder, or absolute
+   * and already in it; no symlink at or below the folder (DC-15).
+   */
+  async projectPath(path: string, label: string) {
+    if (typeof path !== 'string' || !path) throw new Error(`${label} must name a host path in the project folder`);
+    const project = resolve(this.options.project), target = resolve(project, path);
+    try { await assertHostPath(project, target); }
+    catch (error) { throw new Error(`${label} ${path} must lie in the project folder ${project}, without symlinks: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+    return target;
+  }
+  reason(because: string) { if (typeof because !== 'string' || !because.trim() || because.length > 4000) throw new Error('reason must be nonblank and at most 4000 characters'); }
+  /**
+   * Admit one acquisition in the session's order: check its input and the
+   * guest limit, then name the guest. The acquisition itself runs in the new
+   * guest's own order, so it neither waits for nor holds up the other guests.
+   */
+  async acquire(input: AcquireInput, signal?: AbortSignal) {
+    const { guest, network } = await this.serialized(async () => {
+      await this.load(); signal?.throwIfAborted(); await this.assertBackend();
+      if (this.shuttingDown) throw new Error('Relay manager is shutting down');
+      // The host names the guest's network; the agent cannot (DC-17).
+      const network = this.options.guestNetwork ?? guestNetwork();
+      if (!(GUEST_NETWORKS as readonly string[]).includes(network)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network)}`);
+      if (typeof input.task !== 'string' || !TASK.test(input.task)) throw new Error('task must be a lowercase slug (1–36 chars)');
+      if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error('Declare up to 100 extractions before work');
+      const names = new Set<string>();
+      for (const extraction of input.extractions) {
+        within('/workspace', extraction.path);
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(extraction.name) || names.has(extraction.name)) throw new Error('Extraction names must be unique safe basenames');
+        if (extraction.name === 'full-workspace') throw new Error('full-workspace is a reserved extraction name');
+        if (extraction.name === RELAY_RUN_OUTPUTS && extraction.path !== RELAY_RUN_OUTPUTS) throw new Error(`${RELAY_RUN_OUTPUTS} is reserved for relay_run results at workspace/${RELAY_RUN_OUTPUTS}`);
+        names.add(extraction.name);
+      }
+      const ttlHours = input.ttlHours ?? 4;
+      if (!Number.isFinite(ttlHours) || ttlHours < 0.1 || ttlHours > 720) throw new Error('ttlHours must be 0.1–720');
+      if (input.vnc !== undefined && typeof input.vnc !== 'boolean') throw new Error('vnc must be boolean');
+      if (this.guests.size >= this.maxGuests) throw new Error(`This session already holds ${this.guests.size} guest${this.guests.size === 1 ? '' : 's'}, the most MCP_RELAY_MAX_GUESTS allows (${this.maxGuests}): ${this.held()}. Finish or release one of them before acquiring another; nothing was acquired.`);
+      const guest = new Guest(this, await this.freeName(input.task));
+      this.guests.set(guest.name, guest);
+      return { guest, network };
+    });
+    return guest.serialized(() => guest.acquire(input, network, signal));
+  }
+  renewalWindowMs() {
+    const ms = this.options.renewalWindowMs ?? RENEWAL_WINDOW_MS;
+    if (!Number.isFinite(ms) || ms < MIN_RENEWAL_MS) throw new Error('renewalWindowMs must be at least 0.1 hours');
+    return ms;
+  }
+  stage(input: StageInput, signal?: AbortSignal) { return this.onGuest(input.guest, guest => guest.guarded(signal, () => guest.stage(input, signal))); }
+  run(input: RunInput, signal?: AbortSignal): Promise<RunResult> {
+    // A hold is known before the run waits its turn, so relay_gate can decide it while the run is queued or delivered.
+    const hold = input.kind === 'mcp' ? input.hold : undefined;
+    const start = (guest: Guest): Promise<RunResult> => {
+      if (hold) {
+        if (guest.holds.has(hold.id)) return Promise.reject(new Error(`Hold ${hold.id} was already used; name each hold once`));
+        guest.holds.set(hold.id, {});
+      }
+      return guest.serialized(() => {
+        if (input.because !== undefined) this.reason(input.because);
+        return guest.guarded<RunResult>(signal, () => guest.run(input, hold, signal));
+      });
+    };
+    // Once the state is loaded the hold is registered at once, before any later relay_gate is read.
+    return this.whenLoaded(() => start(this.named(input.guest)));
+  }
+  /**
+   * Decides a held relay_run call: `go` lets the guest send it, `cancel`
+   * refuses it. Not serialized, since the held run occupies its guest's
+   * queue. The first decision written wins, the guest's own `expired`
+   * included; the result says which one stands.
+   */
+  async gate(id: string, decision: 'go' | 'cancel', signal?: AbortSignal, guest?: string) {
+    await this.load();
+    return this.named(guest).gate(id, decision, signal);
+  }
+  /** relay_tools: a target's real tools (names, descriptions, input schemas), optionally one. */
+  tools(target: Target, tool?: string, signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.guarded(signal, () => found.tools(target, tool, signal))); }
+  image(target: ImageTarget, signal?: AbortSignal, guest?: string): Promise<ImageResult> {
+    const deadline = Date.now() + 90000;
+    const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(90000)]);
+    if (bounded.aborted) return Promise.resolve({ status: 'transfer-failed', diagnostic: 'Image delivery cancelled or deadline exceeded before starting.' });
+    // Verified local image recovery must not depend on a reachable guest: loading the state is host-only.
+    return this.whenLoaded(() => {
+      let found: Guest;
+      try { found = this.named(guest); }
+      catch (error) { return Promise.resolve<ImageResult>({ status: 'stale-reference', diagnostic: `${message(error)} A closed guest's delivered originals stay readable with the host read tool.` }); }
+      return found.serialized(() => found.image(target, bounded, deadline));
+    });
+  }
+  extract(names: string[], signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.guarded(signal, () => found.extract(names))); }
+  finish(signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.guarded(signal, () => found.drained(() => found.finish()))); }
+  release(guest?: string) {
+    return this.whenLoaded(async () => {
+      // Never guess at another session's lease: say plainly that nothing was released.
+      if (!this.guests.size) { await this.assertBackend(); return { active: false as const, ownedLease: false as const, released: false as const, diagnostic: NO_OWNED_LEASE }; }
+      const found = this.named(guest);
+      return found.serialized(() => found.release());
+    });
+  }
+  async settle() { return this.serialized(() => settleEach([...this.guests.values()].map(guest => guest.serialized(() => guest.pause('Agent settled; VM retained until explicit release or backend expiration'))))); }
+  /**
+   * Shutdown's last resort when an operation does not settle: pause every
+   * guest's renewal and release the owner locks without waiting for the
+   * queues. The process exits right after, so an abandoned operation cannot
+   * save again.
+   */
+  async pauseNow(reason: string) {
+    this.shuttingDown = true;
+    const guests = [...this.guests.values()];
+    try {
+      await settleEach(guests.map(async guest => {
+        guest.closed = true; void guest.downloads.close(false);
+        await guest.pause(`${reason}; an in-flight operation did not settle and was abandoned`);
+      }));
+    } finally { await this.unload(guests); }
+  }
+  /**
+   * The session ends: each guest's renewal pauses after the operation its
+   * queue already holds, so a finish or release the client already sent
+   * completes first. The VMs are retained for an explicit finish or release.
+   */
+  async cleanup(reason: string) { return this.serialized(async () => {
+    const guests = [...this.guests.values()];
+    try {
+      await settleEach(guests.map(guest => guest.serialized(async () => {
+        guest.closed = true;
+        await guest.downloads.close(true); await guest.pause(reason);
+        await guest.session?.close(); guest.session = undefined; guest.transport = undefined;
+      })));
+    } finally { this.shuttingDown = true; await this.unload(guests); }
+  }); }
+  /** Give up the owner locks. The guests stay listed for status; a later call loads the state again. */
+  private async unload(guests: Guest[]) {
+    for (const guest of guests) { guest.stopTimer(); await guest.unlock().catch(() => {}); }
+    this.loaded = false; this.loading = undefined;
+    await this.unlock();
+  }
+}
+
+async function readRecord(path: string): Promise<Enclosure | null> {
+  try { return JSON.parse(await readFile(path, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+}
+
+/**
+ * One guest of a relay session (DC-20): its lease and heartbeat, its
+ * evidence folder, its background downloads, its recording session and
+ * transport, its owner lock and registry row. Its operations run in its own
+ * order; its finish or release leaves the session's other guests running.
+ */
+class Guest {
+  /** `guests/<name>` in the session's state directory: the guest's `lease.json` and `owner.lock`. */
+  readonly dir: string;
+  enclosure?: Enclosure;
+  session?: Session;
+  transport?: VmTransport;
+  private timer?: ReturnType<typeof setInterval>;
+  private heartbeating = false;
+  private renewal?: Promise<void>;
+  private queue: Promise<unknown> = Promise.resolve();
+  private ownerLock?: OwnerLock;
+  /** Reconciled with the backend since it was loaded; a guest acquired in this process starts so. */
+  private restored: boolean;
+  /** Shutdown has paused this guest: operations queued after it are refused. */
+  closed = false;
+  /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
+  readonly downloads: DownloadQueue;
+  /** Holds named by relay_run, and the decision each ended with once its receipt is in (docs/relay-run.md, Held input). */
+  readonly holds = new Map<string, { decided?: string }>();
+  private toolLists = new Map<string, Array<{ name: string; description?: string; inputSchema: unknown }>>();
+  constructor(readonly m: RelayManager, readonly name: string, record?: Enclosure) {
+    this.dir = join(m.root, 'guests', name);
+    if (record) { this.enclosure = record; record.active = false; }
+    this.restored = !record;
+    this.downloads = new DownloadQueue({ bound: m.options.downloadBound ?? DOWNLOAD_BOUND, record: job => this.recordDownload(job) });
+  }
+  serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(fn, fn); this.queue = next.catch(() => {}); return next;
+  }
+  async lock() {
+    if (this.ownerLock) return;
+    await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    this.ownerLock = await acquireOwnerLock(join(this.dir, 'owner.lock')); // Stable inode; never unlink.
+  }
+  async unlock() { const lock = this.ownerLock; this.ownerLock = undefined; await lock?.release(); }
+  stopTimer() { if (this.timer) { clearInterval(this.timer); this.timer = undefined; } }
+  async save() { await jsonFile(join(this.dir, 'lease.json'), this.enclosure ?? null); }
+  /** Reconcile a guest loaded from the state directory with the backend, and reattach its recording; once. */
+  async restore() {
+    if (this.restored) return;
+    if (this.enclosure) {
+      await this.reconcile();
+      if (this.enclosure?.staged && !this.enclosure.delivered) {
+        try { await this.attach(); }
+        catch (error) { await this.fail(new Error(`Recording session restoration failed; diagnostic repair remains available: ${String(error)}`)); }
+      }
+    }
+    this.restored = true;
+  }
+  private assertBinding() {
+    if (this.enclosure && !this.m.bindingMatches(this.enclosure)) throw new Error('Owned lease belongs to a different or unknown VM environment; select its original environment before operating on it');
+  }
+  status(): GuestStatus {
+    const e = this.enclosure;
+    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts() } : { guest: this.name, active: false };
+  }
+  private async reconcile() {
+    const e = this.enclosure; if (!e) return;
+    this.assertBinding(); await this.m.assertBackend();
+    e.backend ??= this.m.binding();
+    if (!e.lease) {
+      const matches = Object.values((await this.m.vm.list({ timeoutMs: 10000 })).vms).filter(v => v.purpose === e.purpose);
+      if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
+      e.lease = matches[0]; e.acquisitionInFlight = false;
+    }
+    try {
+      const lease = await this.m.vm.get(e.lease.vm, { timeoutMs: 10000 });
+      if (lease.purpose !== e.purpose || (e.lease.lease_id && lease.lease_id !== e.lease.lease_id)) throw new Error('Lease ownership identity mismatch');
+      if (e.lease.console?.console_id && lease.console?.console_id !== e.lease.console.console_id) throw new Error('Console instance identity mismatch during lease reconciliation');
+      if (lease.console) {
+        lease.console = consoleStatus(lease.console);
+        if (lease.console.status === 'revoked') e.consoleObservation = lease.console;
+      }
+      e.lease = lease; e.guestState = lease.state; e.expiresAt = lease.ttl_expires_at;
+      if (e.failed) { e.lastError = e.failed; delete e.failed; }
+      await this.save();
+    } catch (error) {
+      e.guestState = 'unknown';
+      if (error instanceof VmServiceError && error.status === 404 && await this.destroyed(e.lease.vm)) {
+        await this.m.registry.remove(e.row);
+        await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease.vm, released: true, reason: 'backend lease absent and destruction verified', finishedAt: new Date().toISOString() });
+        this.enclosure = undefined; await this.save(); await this.m.forget(this); return;
+      }
+      await this.save(); throw error;
+    }
+  }
+  private async attach() {
+    const e = this.current();
+    if (!e.sessionId || !e.node) throw new Error('Persisted staged session lacks runtime identity');
+    const relay = Relay.open(join(e.hostRoot, 'host', 'submissions'));
+    this.transport = new VmTransport(this.transfer(), e.guestRoot, join(e.hostRoot, 'host'), e.cuaDriver!);
+    this.transport.capture = e.capture !== false;
+    this.session = await relay.attach(e.sessionId, this.transport);
+  }
+  /** relay_probe scope=guest: what the guest has, as facts, without installing or starting anything. */
+  async probe() {
+    const e = this.current();
+    const checks = [];
+    for (const [name, argv] of [['node', [e.node ?? 'node', '--version']], ['cuaDriver', [e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver'), '--version']]] as const) {
+      // Only Node.js is required, by staging; cua-driver is a fact (DC-13).
+      const required = name === 'node';
+      try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, required, ...r, ready: r.code === 0 }); }
+      catch (error) { checks.push({ name, required, ready: false, diagnostic: String(error) }); }
+    }
+    const targets = await this.targetAvailability(e, checks);
+    const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
+    const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, targets, snapshots, captureVerified: false, browserVerified: false };
+    await this.log('guest-readiness', undefined, facts); return facts;
+  }
   private async consoleOwner(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (this.shuttingDown) throw new Error('Relay manager is shutting down');
-    await this.init(); await this.reconcile();
+    if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
+    await this.restore(); await this.reconcile();
     const e = this.current();
     if (!e.lease!.lease_id) throw new Error('Legacy lease lacks console identity; no automatic retrofit is available');
     return e;
   }
-  private async resolveConsole(signal?: AbortSignal) {
+  async resolveConsole(signal?: AbortSignal) {
     const e = await this.consoleOwner(signal);
-    if (!this.vm.consoleResolve) throw new Error('Backend lacks console API; upgrade vm-service');
+    if (!this.m.vm.consoleResolve) throw new Error('Backend lacks console API; upgrade vm-service');
     let observation: ConsoleStatus;
-    try { observation = consoleStatus(await this.vm.consoleResolve(e.lease!.vm, { lease_id: e.lease!.lease_id! }, { signal, timeoutMs: 10000 })); }
+    try { observation = consoleStatus(await this.m.vm.consoleResolve(e.lease!.vm, { lease_id: e.lease!.lease_id! }, { signal, timeoutMs: 10000 })); }
     catch (error) {
       if (e.consoleObservation && e.consoleObservation.status !== 'revoked') e.consoleObservation = { ...e.consoleObservation, status: 'unknown' };
       await this.save(); throw error;
@@ -334,22 +659,15 @@ export class RelayManager {
   }
   private assertConsoleIdentity(observation: ConsoleStatus, e: Enclosure) {
     if (observation.vm !== e.lease!.vm || observation.lease_id !== e.lease!.lease_id) throw new Error('Console lease identity mismatch');
-    const fingerprint = this.environment?.identity.fingerprint ?? e.lease!.console?.environment_fingerprint ?? null;
+    const fingerprint = this.m.environment?.identity.fingerprint ?? e.lease!.console?.environment_fingerprint ?? null;
     if (observation.environment_fingerprint !== fingerprint) throw new Error('Console environment identity mismatch');
   }
-  consoleResolve(signal?: AbortSignal) { return this.serialized(() => this.resolveConsole(signal)); }
-  consoleOpen(input: ConsoleOpenInput, signal?: AbortSignal) { return this.serialized(async () => {
-    this.reason(input.reason); this.reason(input.expected);
-    if (input.userRequested !== true) throw new Error('Opening requires an explicit user request');
-    return this.consoleOperation('open', input, signal);
-  }); }
-  consoleCancel(input: ConsoleAttemptInput, signal?: AbortSignal) { return this.serialized(() => this.consoleOperation('cancel', input, signal)); }
-  private async consoleOperation(operation: 'open' | 'cancel', input: ConsoleAttemptInput | ConsoleOpenInput, signal?: AbortSignal) {
+  async consoleOperation(operation: 'open' | 'cancel', input: ConsoleAttemptInput | ConsoleOpenInput, signal?: AbortSignal) {
     if (![input.console_id, input.attempt_id].every(v => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(v))) throw new Error('Invalid console or attempt identity');
     const resolved = await this.resolveConsole(signal), e = this.current();
     if (!e.lease!.console?.console_id) throw new Error('This lease has no acquired console; automatic VNC retrofit is forbidden');
     if (resolved.console_id !== input.console_id) throw new Error('Console instance identity mismatch');
-    const method = operation === 'open' ? this.vm.consoleOpen : this.vm.consoleCancel;
+    const method = operation === 'open' ? this.m.vm.consoleOpen : this.m.vm.consoleCancel;
     if (!method) throw new Error('Backend lacks console API; upgrade vm-service');
     if (operation === 'open') {
       if (resolved.viewer_location !== 'service-host') throw new Error('Only a viewer on the declared service host is supported; no remote-client viewer fallback');
@@ -369,7 +687,7 @@ export class RelayManager {
     await this.save();
     await this.log(`console-${operation}-intent`, 'reason' in input ? input.reason : undefined, { ...body, ...('expected' in input ? { expected: input.expected } : {}), screenshotEvidence: false });
     try {
-      const observation = consoleStatus(await method.call(this.vm, e.lease!.vm, body, { signal, timeoutMs: 30000 }));
+      const observation = consoleStatus(await method.call(this.m.vm, e.lease!.vm, body, { signal, timeoutMs: 30000 }));
       this.assertConsoleIdentity(observation, e);
       if (observation.console_id !== body.console_id || observation.attempt?.attempt_id !== body.attempt_id) throw new Error('Console response identity mismatch');
       e.consoleObservation = observation; e.consoleAttempt.status = observation.attempt.status;
@@ -380,91 +698,91 @@ export class RelayManager {
       throw new Error(`Console ${operation} outcome unknown; ownership retained. Resolve or cancel attempt ${input.attempt_id}; never automatically replay opening.`);
     }
   }
-  /**
-   * A host path the relay reads: relative to the project folder, or absolute
-   * and already in it; no symlink at or below the folder (DC-15).
-   */
-  private async projectPath(path: string, label: string) {
-    if (typeof path !== 'string' || !path) throw new Error(`${label} must name a host path in the project folder`);
-    const project = resolve(this.options.project), target = resolve(project, path);
-    try { await assertHostPath(project, target); }
-    catch (error) { throw new Error(`${label} ${path} must lie in the project folder ${project}, without symlinks: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
-    return target;
-  }
-  private reason(because: string) { if (typeof because !== 'string' || !because.trim() || because.length > 4000) throw new Error('reason must be nonblank and at most 4000 characters'); }
-  private current() { this.assertBinding(); if (!this.enclosure?.lease || this.enclosure.released) throw new Error('No active lease; use relay action=acquire'); return this.enclosure; }
-  private transfer() { const e = this.current(); if (!e.node) throw new Error('Stage runtime first'); return new Transfer(this.channel, e.lease!.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join(this.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) }); }
-  private async log(kind: string, because?: string, details: unknown = {}) {
-    if (because !== undefined) this.reason(because);
+  private current() { this.assertBinding(); if (!this.enclosure?.lease || this.enclosure.released) throw new Error(`No active lease for guest ${this.name}; use relay_acquire`); return this.enclosure; }
+  private transfer() { const e = this.current(); if (!e.node) throw new Error('Stage runtime first'); return new Transfer(this.m.channel, e.lease!.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) }); }
+  async log(kind: string, because?: string, details: unknown = {}) {
+    if (because !== undefined) this.m.reason(because);
     const e = this.enclosure;
     if (e) await jsonFile(e.delivered ? join(`${e.hostRoot}.lifecycle-events`, `${Date.now()}-${randomUUID()}.json`) : join(e.hostRoot, 'host', 'events', `${Date.now()}-${randomUUID()}.json`), { kind, because, at: new Date().toISOString(), details });
   }
-  acquire(input: AcquireInput, signal?: AbortSignal) { return this.serialized(async () => {
-    await this.init(); signal?.throwIfAborted(); await this.assertBackend();
-    if (this.shuttingDown) throw new Error('Relay manager is shutting down');
-    if (this.enclosure) throw new Error('This enclosure already owns a lease; finish or release it first');
-    // The host names the guest's network; the agent cannot (DC-17).
-    const network = this.options.guestNetwork ?? guestNetwork();
-    if (!(GUEST_NETWORKS as readonly string[]).includes(network)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network)}`);
-    if (!/^[a-z0-9][a-z0-9-]{0,35}$/.test(input.task)) throw new Error('task must be a lowercase slug (1–36 chars)');
-    if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error('Declare up to 100 extractions before work');
-    const names = new Set<string>();
-    for (const extraction of input.extractions) {
-      within('/workspace', extraction.path);
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(extraction.name) || names.has(extraction.name)) throw new Error('Extraction names must be unique safe basenames');
-      if (extraction.name === 'full-workspace') throw new Error('full-workspace is a reserved extraction name');
-      if (extraction.name === RELAY_RUN_OUTPUTS && extraction.path !== RELAY_RUN_OUTPUTS) throw new Error(`${RELAY_RUN_OUTPUTS} is reserved for relay_run results at workspace/${RELAY_RUN_OUTPUTS}`);
-      names.add(extraction.name);
-    }
+  /**
+   * The acquisition, in this guest's own order. Its ownership intent is
+   * persisted and registered before vm-service is asked. A refusal before
+   * that, or vm-service's own refusal, leaves the session without the guest;
+   * any other failure keeps the guest's record for reconciliation.
+   */
+  async acquire(input: AcquireInput, network: GuestNetwork, signal?: AbortSignal) {
     const ttlHours = input.ttlHours ?? 4;
-    if (!Number.isFinite(ttlHours) || ttlHours < 0.1 || ttlHours > 720) throw new Error('ttlHours must be 0.1–720');
-    const images = await this.vm.images({ timeoutMs: 5000, signal });
-    if (!images.images[input.image]?.base_available) throw new Error(`Image unavailable: ${input.image}`);
-    if (input.vnc !== undefined && typeof input.vnc !== 'boolean') throw new Error('vnc must be boolean');
-    if (input.vnc) {
-      const capabilities = await this.readAcquisitionCapabilities(signal);
-      if (!capabilities.options.vnc.backends[images.images[input.image]!.kind].available) throw new Error('VNC backend unavailable for this image OS; ordinary acquisition was not attempted');
-    }
+    try {
+      if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
+      const images = await this.m.vm.images({ timeoutMs: 5000, signal });
+      if (!images.images[input.image]?.base_available) throw new Error(`Image unavailable: ${input.image}`);
+      if (input.vnc) {
+        const capabilities = await this.m.readAcquisitionCapabilities(signal);
+        if (!capabilities.options.vnc.backends[images.images[input.image]!.kind].available) throw new Error('VNC backend unavailable for this image OS; ordinary acquisition was not attempted');
+      }
+      await this.lock();
+    } catch (error) { await this.m.forget(this); throw error; }
     const purpose = `relay-${input.task}-${randomUUID().slice(0, 8)}`;
     const startedAt = new Date().toISOString();
     const stamp = startedAt.slice(0, 19).replace(/[T:]/g, '-') + '-Z';
-    const hostRoot = join(this.options.outputRoot ?? resolve(this.options.project, 'relay-evidence'), purpose);
-    const row: RegistryRow = { machine: this.environment ? `${this.environment.profile.vmServiceUrl} (${this.environment.profile.id}; ${purpose})` : `127.0.0.1 (vm-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.options.sessionId}`, project: resolve(this.options.project), startDate: stamp };
-    this.enclosure = { backend: this.binding(), purpose, task: input.task, image: input.image, project: this.options.project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
-    await this.save();
+    const project = this.m.options.project, environment = this.m.environment;
+    const hostRoot = join(this.m.options.outputRoot ?? resolve(project, 'relay-evidence'), purpose);
+    const row: RegistryRow = { machine: environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (vm-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
+    const e: Enclosure = this.enclosure = { backend: this.m.binding(), purpose, task: input.task, image: input.image, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    let refused = false;
+    try { await this.save(); }
+    catch (error) { this.enclosure = undefined; await this.m.forget(this); throw error; }
     try {
-      await this.registry.add(row);
-      await this.log('acquire-intent', undefined, { ...input, network });
-      try { await cp(join(this.root, 'probes'), join(hostRoot, 'host', 'probes'), { recursive: true, errorOnExist: true, force: false }); }
+      await this.m.registry.add(row);
+      await this.log('acquire-intent', undefined, { ...input, guest: this.name, network });
+      try { await cp(join(this.m.root, 'probes'), join(hostRoot, 'host', 'probes'), { recursive: true, errorOnExist: true, force: false, filter: source => !source.endsWith('.tmp') }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      this.enclosure.acquisitionInFlight = true; await this.save();
+      e.acquisitionInFlight = true; await this.save();
       try {
-        this.enclosure.lease = await this.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
-        this.enclosure.acquisitionInFlight = false;
+        e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+        e.acquisitionInFlight = false;
       } catch (error) {
-        if (signal?.aborted && error === signal.reason || error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) this.enclosure.acquisitionInFlight = false;
+        if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
+        // vm-service refused it: nothing was acquired, and the refusal passes through (DC-20).
+        else if (error instanceof VmServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) { e.acquisitionInFlight = false; refused = true; }
         throw error;
       }
-      if (this.enclosure.lease?.console) {
-        this.enclosure.lease.console = consoleStatus(this.enclosure.lease.console);
-        this.enclosure.consoleObservation = this.enclosure.lease.console;
+      if (e.lease?.console) {
+        e.lease.console = consoleStatus(e.lease.console);
+        e.consoleObservation = e.lease.console;
       }
       await this.save(); // keep identity even if registration or cancellation fails
-      if (input.vnc && (!this.enclosure.lease?.lease_id || !this.enclosure.lease.console?.console_id || this.enclosure.lease.console.status !== 'ready')) throw new Error('VNC acquisition did not return a ready console and lease identity; ownership retained for reconciliation');
-      this.enclosure.guestState = this.enclosure.lease!.state;
-      this.enclosure.expiresAt = this.enclosure.lease!.ttl_expires_at;
+      if (input.vnc && (!e.lease?.lease_id || !e.lease.console?.console_id || e.lease.console.status !== 'ready')) throw new Error('VNC acquisition did not return a ready console and lease identity; ownership retained for reconciliation');
+      e.guestState = e.lease!.state;
+      e.expiresAt = e.lease!.ttl_expires_at;
       this.startHeartbeat(); await this.save();
       // Cancellation is not a release request (technical design 5.2): a lease
       // that arrived after the caller cancelled stays owned and renewed, and
       // the error says so, so the agent can continue, finish or release it.
-      if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${this.enclosure.lease!.vm} is owned by this session, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: this.enclosure.guestRoot, workspace: join(this.enclosure.guestRoot, 'workspace'), declarations: input.extractions, network };
-    } catch (error) { await this.fail(error); throw error; }
-  }); }
-  private renewalWindowMs() {
-    const ms = this.options.renewalWindowMs ?? RENEWAL_WINDOW_MS;
-    if (!Number.isFinite(ms) || ms < MIN_RENEWAL_MS) throw new Error('renewalWindowMs must be at least 0.1 hours');
-    return ms;
+      if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease!.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, network };
+    } catch (error) {
+      if (refused && await this.withdraw(error)) throw error;
+      await this.fail(error);
+      if (!this.enclosure || message(error).includes(`guest ${this.name}`)) throw error;
+      throw new Error(`${message(error)}\nGuest ${this.name} keeps this acquisition's ownership record: name it to reconcile, stage or release it.`, { cause: error });
+    }
+  }
+  /**
+   * A refused acquisition acquired nothing: once vm-service lists no VM for
+   * its purpose, its registry row goes and the guest leaves the session.
+   * False when that cannot be established, so the record stays.
+   */
+  private async withdraw(error: unknown) {
+    const e = this.enclosure!;
+    try {
+      if (Object.values((await this.m.vm.list({ timeoutMs: 10000 })).vms).some(lease => lease.purpose === e.purpose)) return false;
+      await this.m.registry.remove(e.row);
+      await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, released: false, acquired: false, reason: 'vm-service refused the acquisition', error: String(error), finishedAt: new Date().toISOString() });
+      this.enclosure = undefined; await this.save(); await this.m.forget(this);
+      return true;
+    } catch { return false; }
   }
   /** Milliseconds left until the lease's own deadline, startedAt + ttlHours. */
   private remainingMs(e: Enclosure) { return Date.parse(e.startedAt) + e.ttlHours * 3600000 - Date.now(); }
@@ -474,7 +792,7 @@ export class RelayManager {
     // expires at its own deadline; there is nothing left to renew.
     if (this.remainingMs(this.enclosure) < MIN_RENEWAL_MS) { this.enclosure.active = false; return; }
     this.enclosure.active = true;
-    const ms = this.options.heartbeatMs ?? Math.min(60000, this.renewalWindowMs() / 3);
+    const ms = this.m.options.heartbeatMs ?? Math.min(60000, this.m.renewalWindowMs() / 3);
     this.timer = setInterval(() => { void this.heartbeat(); }, ms); this.timer.unref();
   }
   private heartbeat(): Promise<void> {
@@ -485,7 +803,7 @@ export class RelayManager {
   }
   /** Stop renewing at the lease's own deadline; the VM is retained until the backend expires it. */
   private async stopRenewal(e: Enclosure) {
-    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    this.stopTimer();
     if (this.enclosure !== e || e.released) return;
     e.active = false; await this.save();
     await this.log('renewal-stopped', undefined, { reason: 'the lease reached its own TTL', deadline: new Date(Date.parse(e.startedAt) + e.ttlHours * 3600000).toISOString(), expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at });
@@ -494,8 +812,8 @@ export class RelayManager {
     try {
       const remaining = this.remainingMs(e);
       if (remaining < MIN_RENEWAL_MS) { await this.stopRenewal(e); return; }
-      this.assertBinding(); await this.assertBackend();
-      const renewed = await this.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.renewalWindowMs(), remaining) / 3600000 }, { timeoutMs: 10000 });
+      this.assertBinding(); await this.m.assertBackend();
+      const renewed = await this.m.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 3600000 }, { timeoutMs: 10000 });
       if (this.enclosure !== e || e.released) return;
       e.expiresAt = renewed.ttl_expires_at; e.guestState = renewed.state; await this.save();
     }
@@ -508,11 +826,11 @@ export class RelayManager {
       }).catch(() => {});
     }
   }
-  private async guarded<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  async guarded<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
     try {
-      if (this.shuttingDown) throw new Error('Relay manager is shutting down');
-      await this.init(); signal?.throwIfAborted();
-      if (this.shuttingDown) throw new Error('Relay manager is shutting down');
+      if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
+      await this.restore(); signal?.throwIfAborted();
+      if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
       await this.reconcile(); this.current(); this.startHeartbeat();
       const result = await fn(); signal?.throwIfAborted();
       // The operation reached the guest and completed: a paused download worker may go on (AD-4).
@@ -520,22 +838,22 @@ export class RelayManager {
       return result;
     } catch (error) { await this.fail(error); throw new Error(`${String(error)}\nVM state: ${JSON.stringify(this.status())}`, { cause: error }); }
   }
-  stage(input: StageInput, signal?: AbortSignal) { return this.serialized(() => this.guarded(signal, async () => {
+  async stage(input: StageInput, signal?: AbortSignal) {
     const e = this.current();
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.resetRecording || e.pendingReset) await this.resetRecording();
     if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use diagnostic exec for repairs or stage with only corrected executable paths');
     // Every host path is checked before anything reaches the guest (DC-15).
-    const project = resolve(this.options.project);
+    const project = resolve(this.m.options.project);
     const files = [];
-    for (const file of input.files ?? []) files.push({ local: await this.projectPath(file.local, 'files[].local'), path: file.path });
-    const workspace = input.workspace === undefined ? undefined : await this.projectPath(input.workspace, 'workspace');
-    const bundle = this.options.runtimeBundle ?? fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
+    for (const file of input.files ?? []) files.push({ local: await this.m.projectPath(file.local, 'files[].local'), path: file.path });
+    const workspace = input.workspace === undefined ? undefined : await this.m.projectPath(input.workspace, 'workspace');
+    const bundle = this.m.options.runtimeBundle ?? fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
     await access(bundle);
     // The host decides once per lease whether its runs take snapshots (DC-13).
     if (e.capture === undefined && !e.staged) { e.capture = await this.captureSoftware(e, signal); await this.save(); }
     const node = input.nodePath ?? e.node ?? 'node';
-    const transfer = new Transfer(this.channel, e.lease!.vm, node, { guestRoot: e.guestRoot, hostTempRoot: join(this.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) });
+    const transfer = new Transfer(this.m.channel, e.lease!.vm, node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) });
     // Node.js is the only software staging assumes: it runs the relay's own guest code (DC-13).
     try { await transfer.checked([node, '--version']); }
     catch (error) { throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node} --version\` failed: ${error instanceof Error ? error.message : String(error)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error }); }
@@ -560,7 +878,7 @@ export class RelayManager {
     this.session = await relay.start({ taskId: e.purpose, target: `vm-service:${e.lease!.vm}` });
     e.sessionId = this.session.sessionId; e.staged = true; await this.save();
     return { staged: true, workspace: join(e.guestRoot, 'workspace'), files: staged, extractions: e.extractions, snapshots: this.snapshotFacts(e), capabilities: { image: imageCapability } };
-  })); }
+  }
   /**
    * Whether the lease's image lists capture software, from the image catalog.
    * A catalog that cannot be read refuses the stage, so a run never loses its
@@ -568,7 +886,7 @@ export class RelayManager {
    */
   private async captureSoftware(e: Enclosure, signal?: AbortSignal): Promise<boolean> {
     let catalog: unknown;
-    try { catalog = await this.vm.applications({ timeoutMs: 10000, signal }); validateCatalog(catalog); }
+    try { catalog = await this.m.vm.applications({ timeoutMs: 10000, signal }); validateCatalog(catalog); }
     catch (error) { throw new Error(`relay_stage could not read the image catalog to learn whether ${e.image} lists capture software (cua-driver), so nothing was staged: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
     const capture = catalog.images.some(image => image.image === e.image && image.applications.some(app => CAPTURE_SOFTWARE.includes(app.id)));
     await this.log('capture-software', undefined, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
@@ -580,16 +898,7 @@ export class RelayManager {
       ? { taken: false, reason: `${e.image} lists no capture software (cua-driver), so runs take no snapshots and their records have none.` }
       : { taken: true, reason: e.capture ? `${e.image} lists cua-driver, so each run takes before and after snapshots.` : 'This lease predates the capture decision, so each run takes before and after snapshots.' };
   }
-  run(input: RunInput, signal?: AbortSignal): Promise<RunResult> {
-    // A hold is known before the run waits its turn, so relay_gate can decide it while the run is queued or delivered.
-    const hold = input.kind === 'mcp' ? input.hold : undefined;
-    if (hold) {
-      if (this.holds.has(hold.id)) return Promise.reject(new Error(`Hold ${hold.id} was already used; name each hold once`));
-      this.holds.set(hold.id, {});
-    }
-    return this.serialized(() => {
-    if (input.because !== undefined) this.reason(input.because);
-    return this.guarded<RunResult>(signal, async () => {
+  async run(input: RunInput, hold: RunInput['hold'], signal?: AbortSignal): Promise<RunResult> {
     const e = this.current();
     const timeoutMs = input.timeoutMs ?? 120000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new Error('timeoutMs must be an integer from 1 to 3600000');
@@ -624,7 +933,7 @@ export class RelayManager {
       result = await this.session.exec(argv, options);
     } else if (input.kind === 'script') {
       if (!input.localPath || !input.language) throw new Error('script requires localPath and language');
-      const local = await this.projectPath(input.localPath, 'localPath');
+      const local = await this.m.projectPath(input.localPath, 'localPath');
       result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
     } else if (input.kind === 'code') {
       if (typeof input.code !== 'string' || !input.language) throw new Error('code requires code and language');
@@ -644,25 +953,18 @@ export class RelayManager {
     const store = this.imageStore();
     const imageDelivery = await store.pending(target);
     await this.queueDownload(store, target, imageDelivery.status === 'pending', imageDelivery.image);
-    const common = { step: record.step, snapshots: record.snapshots, timeoutMs, evidencePath: e.hostRoot, leaseReleased: !this.enclosure, owned: this.status(), imageDelivery };
+    const common = { guest: this.name, step: record.step, snapshots: record.snapshots, timeoutMs, evidencePath: e.hostRoot, leaseReleased: !this.enclosure, owned: this.status(), imageDelivery };
     if (input.kind === 'mcp') return { ...result, ...await this.mcpResult(e, input.target!, input.tool!, outcome, signal), ...common, ...(held ? { hold: { id: hold!.id, ...held } } : {}) };
     // The guest's bounded output rides along in the receipt the transport filed.
     return { ...result, ...this.transport?.response, ...common };
-    });
-  }); }
-  /**
-   * Decides a held relay_run call: `go` lets the guest send it, `cancel`
-   * refuses it. Not serialized, since the held run occupies the queue. The
-   * first decision written wins, the guest's own `expired` included; the
-   * result says which one stands.
-   */
+  }
   async gate(id: string, decision: 'go' | 'cancel', signal?: AbortSignal) {
     const known = this.holds.get(id);
-    if (!known) throw new Error(`No relay_run in this session named hold ${id}`);
+    if (!known) throw new Error(`No relay_run on guest ${this.name} named hold ${id}`);
     if (known.decided) return { hold: id, requested: decision, decision: known.decided, applied: known.decided === decision };
     const e = this.current();
     if (!e.node) throw new Error('Stage runtime first');
-    const result = await this.channel.exec(e.lease!.vm, [e.node, '-e', DECIDE, join(e.guestRoot, 'holds'), id, decision], 30000, { signal });
+    const result = await this.m.channel.exec(e.lease!.vm, [e.node, '-e', DECIDE, join(e.guestRoot, 'holds'), id, decision], 30000, { signal });
     const stands = result.code === 0 ? result.stdout.trim().split('\n').at(-1)?.trim() : undefined;
     await this.log('hold-gate', undefined, { hold: id, requested: decision, decision: stands, code: result.code });
     if (!stands) throw new Error(`relay_gate could not write hold ${id} (exit ${result.code}): ${result.stdout.slice(0, 1000)}`);
@@ -705,7 +1007,7 @@ export class RelayManager {
     const tools = await this.toolList(e, target, transfer);
     const refuse = async (diagnostic: string, extra: Record<string, unknown>) => {
       await this.log('relay-run-refused', undefined, { target, tool, diagnostic, ...extra });
-      return { executionId: null, outcome: { kind: 'refused' as const, diagnostic }, relayOutcome: 'refused', sent: false, target, tool, ...extra, owned: this.status() };
+      return { executionId: null, outcome: { kind: 'refused' as const, diagnostic }, relayOutcome: 'refused', sent: false, guest: this.name, target, tool, ...extra, owned: this.status() };
     };
     const definition = tools.find(item => item.name === tool);
     if (!definition) return refuse(`${target} has no tool named ${tool}; nothing was sent. Use relay_tools to see its tools.`, { tools: tools.map(item => item.name) });
@@ -736,7 +1038,7 @@ export class RelayManager {
         content.push({ type: block.type, ...(block.uri ? { uri: block.uri } : {}), chars: block.text.length, ...(cut ? { truncated: true } : {}) });
       } else if (block.type === 'image' && block.path) {
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(block.mimeType ?? '')) toolImages.push({ status: 'presentation-unavailable', path: block.path, mimeType: block.mimeType, diagnostic: 'Only PNG, JPEG and WebP images are delivered inline.' });
-        else if (toolImages.length >= MAX_TOOL_IMAGES) toolImages.push({ status: 'not-requested', path: block.path, diagnostic: `Beyond ${MAX_TOOL_IMAGES} inline images; retrieve with relay_image source=application name=${RELAY_RUN_OUTPUTS} path=${block.path}.` });
+        else if (toolImages.length >= MAX_TOOL_IMAGES) toolImages.push({ status: 'not-requested', path: block.path, diagnostic: `Beyond ${MAX_TOOL_IMAGES} inline images; retrieve with relay_image guest=${this.name} source=application name=${RELAY_RUN_OUTPUTS} path=${block.path}.` });
         else {
           const { content: image, ...delivery } = await this.imageStore().get({ source: 'application', name: RELAY_RUN_OUTPUTS, path: block.path }, signal);
           toolImages.push({ ...delivery, path: block.path });
@@ -753,7 +1055,6 @@ export class RelayManager {
       passthrough,
     };
   }
-  private toolLists = new Map<string, Array<{ name: string; description?: string; inputSchema: unknown }>>();
   /** A target's real `tools/list`, from the in-guest server, pulled home hash-checked and kept in the host evidence. */
   private async toolList(e: Enclosure, target: Target, transfer: Transfer) {
     const cached = this.toolLists.get(target);
@@ -772,11 +1073,11 @@ export class RelayManager {
   private async ensureMcpHost(e: Enclosure, transfer: Transfer) {
     if (!e.extractions.some(item => item.name === RELAY_RUN_OUTPUTS)) { e.extractions.push({ path: RELAY_RUN_OUTPUTS, name: RELAY_RUN_OUTPUTS }); await this.save(); }
     if (e.mcpHost) return;
-    const bundle = this.options.mcpHostBundle ?? fileURLToPath(new URL('../dist/mcp-host.mjs', import.meta.url));
+    const bundle = this.m.options.mcpHostBundle ?? fileURLToPath(new URL('../dist/mcp-host.mjs', import.meta.url));
     const entry = join(e.guestRoot, 'mcp-host.mjs');
     const staged = await transfer.pushFile(bundle, entry);
     const context: LaunchContext = { node: e.node!, cuaDriver: e.cuaDriver!, packagesRoot: join(e.guestRoot, 'mcp', 'packages'), workspace: join(e.guestRoot, 'workspace'), outputDir: join(e.guestRoot, 'workspace', RELAY_RUN_OUTPUTS), ...(e.browserExecutable ? { browserExecutable: e.browserExecutable } : {}) };
-    const config = { stateDir: join(e.guestRoot, 'mcp'), outputDir: context.outputDir, targets: (this.options.targetLaunches ?? targetLaunches)(context), startTimeoutMs: MCP_START_ALLOWANCE_MS };
+    const config = { stateDir: join(e.guestRoot, 'mcp'), outputDir: context.outputDir, targets: (this.m.options.targetLaunches ?? targetLaunches)(context), startTimeoutMs: MCP_START_ALLOWANCE_MS };
     const local = join(e.hostRoot, 'host', 'mcp-host-config.json');
     await jsonFile(local, config);
     await transfer.pushFile(local, join(e.guestRoot, 'mcp-host-config.json'), e.hostRoot);
@@ -787,11 +1088,11 @@ export class RelayManager {
   /** Stage a browser target's pinned packages: host-verified tarballs, pushed hash-checked, unpacked in the guest. */
   private async ensureTargetPackages(e: Enclosure, target: Target, transfer: Transfer, signal?: AbortSignal) {
     if (target === 'cua' || e.mcpPackages?.includes(target)) return;
-    const closure = this.options.targetPackages?.[target] ?? TARGET_PACKAGES[target];
-    const cache = this.options.packageCache ?? join(dirname(this.root), 'mcp-packages');
+    const closure = this.m.options.targetPackages?.[target] ?? TARGET_PACKAGES[target];
+    const cache = this.m.options.packageCache ?? join(dirname(this.m.root), 'mcp-packages');
     const specs: string[] = [], staged: unknown[] = [];
     for (const pin of closure.packages) {
-      const local = await cachedTarball(cache, pin, this.options.tarballSource, signal);
+      const local = await cachedTarball(cache, pin, this.m.options.tarballSource, signal);
       const remote = join(e.guestRoot, 'mcp', 'tarballs', tarballName(pin));
       staged.push({ ...pin, ...await transfer.pushFile(local.path, remote, cache) });
       specs.push(`${pin.name}=${remote}=${local.sha256}`);
@@ -805,13 +1106,12 @@ export class RelayManager {
     const e = this.enclosure;
     if (!e?.mcpHost || !e.node || !e.lease) return;
     try {
-      const result = await this.channel.exec(e.lease.vm, [e.node, join(e.guestRoot, 'mcp-host.mjs'), 'stop', join(e.guestRoot, 'mcp')], 30000);
+      const result = await this.m.channel.exec(e.lease.vm, [e.node, join(e.guestRoot, 'mcp-host.mjs'), 'stop', join(e.guestRoot, 'mcp')], 30000);
       await this.log('mcp-host-stop', undefined, { reason, code: result.code, output: result.stdout.slice(0, 2000) });
     } catch (error) { await this.log('mcp-host-stop-failed', undefined, { reason, error: String(error) }).catch(() => {}); }
     e.mcpHost = false; this.toolLists.clear(); await this.save();
   }
-  /** relay_tools: a target's real tools (names, descriptions, input schemas), optionally one. */
-  tools(target: Target, tool?: string, signal?: AbortSignal) { return this.serialized(() => this.guarded(signal, async () => {
+  async tools(target: Target, tool?: string, signal?: AbortSignal) {
     const e = this.current();
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (!e.staged) throw new Error('Use relay_stage before relay_tools');
@@ -823,7 +1123,7 @@ export class RelayManager {
     if (tool !== undefined && !selected.length) throw new Error(`${target} has no tool named ${tool}; it has: ${tools.map(item => item.name).join(', ')}`);
     await this.log('tools', undefined, { target, tool, count: selected.length });
     return { target, count: selected.length, tools: selected };
-  })); }
+  }
   /** Per-target facts for probe scope=guest, without installing or starting anything. */
   private async targetAvailability(e: Enclosure, checks: Array<{ name: string; ready: boolean }>) {
     const node = checks.find(check => check.name === 'node')?.ready ?? false;
@@ -831,12 +1131,12 @@ export class RelayManager {
     const candidates = e.browserExecutable ? [e.browserExecutable] : e.lease!.image_kind === 'macos' ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'] : ['/opt/google/chrome/chrome', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'];
     let browser: { path: string | null; diagnostic?: string } = { path: null };
     if (node) {
-      try { const r = await this.channel.exec(e.lease!.vm, [e.node ?? 'node', '-e', 'const fs=require("fs");console.log(JSON.stringify({path:process.argv.slice(1).find(p=>{try{fs.accessSync(p,fs.constants.X_OK);return true}catch{return false}})??null}))', ...candidates], 10000); browser = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}'); }
+      try { const r = await this.m.channel.exec(e.lease!.vm, [e.node ?? 'node', '-e', 'const fs=require("fs");console.log(JSON.stringify({path:process.argv.slice(1).find(p=>{try{fs.accessSync(p,fs.constants.X_OK);return true}catch{return false}})??null}))', ...candidates], 10000); browser = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}'); }
       catch (error) { browser = { path: null, diagnostic: String(error) }; }
     }
     let servers: Record<string, unknown> = {};
     if (e.mcpHost && node) {
-      try { const r = await this.channel.exec(e.lease!.vm, [e.node ?? 'node', join(e.guestRoot, 'mcp-host.mjs'), 'status', join(e.guestRoot, 'mcp')], 10000); servers = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}').targets ?? {}; }
+      try { const r = await this.m.channel.exec(e.lease!.vm, [e.node ?? 'node', join(e.guestRoot, 'mcp-host.mjs'), 'status', join(e.guestRoot, 'mcp')], 10000); servers = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}').targets ?? {}; }
       catch (error) { servers = { diagnostic: String(error) }; }
     }
     const browserTarget = (target: Exclude<Target, 'cua'>) => ({
@@ -853,17 +1153,17 @@ export class RelayManager {
   }
   private imageStore() {
     const e = this.current();
-    return new ImageStore({ owner: this.options.sessionId, enclosure: e.purpose, backend: e.backend,
-      catalogRoot: join(this.root, 'image-catalog', e.purpose), hostRoot: e.hostRoot, guestRoot: e.guestRoot,
+    return new ImageStore({ owner: this.m.options.sessionId, enclosure: e.purpose, backend: e.backend,
+      catalogRoot: join(this.m.root, 'image-catalog', e.purpose), hostRoot: e.hostRoot, guestRoot: e.guestRoot,
       sessionId: e.sessionId, previousEvidence: e.previousEvidence, declarations: e.extractions, transfer: this.transfer(),
       ensureGuest: async (signal, deadline) => {
         const options = { signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())) };
-        if (this.environment) {
-          const health = await this.vm.health(options);
-          if (!health.ok || !matchesEnvironment(health.environment, this.environment)) throw Object.assign(new Error('Selected backend identity changed.'), { code: 'unauthorized-reference' });
+        if (this.m.environment) {
+          const health = await this.m.vm.health(options);
+          if (!health.ok || !matchesEnvironment(health.environment, this.m.environment)) throw Object.assign(new Error('Selected backend identity changed.'), { code: 'unauthorized-reference' });
         }
         try {
-          const lease = await this.vm.get(e.lease!.vm, options);
+          const lease = await this.m.vm.get(e.lease!.vm, options);
           if (lease.purpose !== e.purpose) throw Object.assign(new Error('Lease ownership identity changed.'), { code: 'unauthorized-reference' });
         } catch (error) {
           if (error instanceof VmServiceError && error.status === 404) throw Object.assign(new Error('Saved image guest is no longer available.'), { code: 'stale-reference' });
@@ -871,16 +1171,12 @@ export class RelayManager {
         }
       } });
   }
-  image(target: ImageTarget, signal?: AbortSignal): Promise<ImageResult> {
-    const deadline = Date.now() + 90000;
-    const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(90000)]);
-    return this.serialized(async () => {
-    if (bounded.aborted) return { status: 'transfer-failed', diagnostic: 'Image delivery cancelled or deadline exceeded before starting.' };
-    await this.init(true); this.assertBinding();
+  async image(target: ImageTarget, bounded: AbortSignal, deadline: number): Promise<ImageResult> {
     if (bounded.aborted) return { status: 'transfer-failed', diagnostic: 'Image delivery cancelled or deadline exceeded while loading ownership.' };
+    this.assertBinding();
     // Verified local image recovery must not depend on a reachable guest. The
-    // private catalog still requires this manager's owner lock and enclosure.
-    if (!this.enclosure || this.enclosure.released || this.enclosure.delivered) return { status: 'stale-reference', diagnostic: 'Enclosure is closed or sealed; inspect delivered originals with the host read tool.' };
+    // private catalog still requires this guest's owner lock and record.
+    if (!this.enclosure || this.enclosure.released || this.enclosure.delivered) return { status: 'stale-reference', diagnostic: `Guest ${this.name} is closed or sealed; inspect delivered originals with the host read tool.` };
     // AD-3: a background download of this image runs next and is waited for, never transferred twice at once.
     const job = this.downloads.find(target.source === 'reference' ? { imageId: target.imageId } : target.source === 'display' ? { key: downloadKey(target) } : {});
     if (job) {
@@ -898,7 +1194,7 @@ export class RelayManager {
     if (named?.source !== 'display') return result;
     const resolved = await store.get({ source: 'display', sessionId: named.sessionId!, executionId: named.executionId!, phase: named.phase! }, bounded, deadline);
     return resolved.image && resolved.image.imageId !== target.imageId ? { status: 'integrity-failed', diagnostic: 'The display selector no longer names the referenced image.' } : resolved;
-  }); }
+  }
   /** The image a run named with this reference, from the step download records. No guest I/O. */
   private async namedImage(imageId: string): Promise<ImageDescriptor | undefined> {
     const records = join(this.current().hostRoot, 'host', 'evidence-downloads');
@@ -943,7 +1239,7 @@ export class RelayManager {
    * `host/steps/<executionId>/`, then the after-image filed from there.
    */
   private async downloadStep(store: ImageStore, target: DisplayTarget, requested: ArchiveRequest[], afterImage: boolean, signal: AbortSignal): Promise<StepResult> {
-    const e = this.current(), retryDelaysMs = this.options.downloadRetryDelaysMs ?? DOWNLOAD_RETRY_DELAYS_MS;
+    const e = this.current(), retryDelaysMs = this.m.options.downloadRetryDelaysMs ?? DOWNLOAD_RETRY_DELAYS_MS;
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(imageCapability.deadlineMs)]);
     const folder = join(e.hostRoot, 'host', 'steps', target.executionId);
     let files: ArchiveEntry[] | undefined;
@@ -1005,7 +1301,7 @@ export class RelayManager {
     await assertHostPath(recording, steps, true); await rm(steps, { recursive: true, force: true });
   }
   /** A lifecycle operation's gate (AD-5): every download ends before the guest state is touched; the queue opens again after. */
-  private async drained<T>(fn: () => Promise<T>): Promise<T> {
+  async drained<T>(fn: () => Promise<T>): Promise<T> {
     await this.downloads.drain();
     try { return await fn(); } finally { this.downloads.reopen(); }
   }
@@ -1055,10 +1351,10 @@ export class RelayManager {
     await jsonFile(join(e.hostRoot, 'host', 'extractions', `${randomUUID()}.json`), { extractions: results });
     return results;
   }
-  extract(names: string[], signal?: AbortSignal) { return this.serialized(() => this.guarded(signal, async () => {
+  async extract(names: string[]) {
     if (this.current().delivered) throw new Error('Evidence already sealed; no further extractions may modify it');
     await this.log('extract', undefined, { names }); return this.extractInternal(names);
-  })); }
+  }
   /**
    * finish's extraction: a declared output whose source does not exist in the
    * guest (it was never produced) is recorded as incomplete and skipped, so a
@@ -1099,7 +1395,7 @@ export class RelayManager {
    */
   private async assertFreeSpace(hostRoot: string, facts: FileFact[]) {
     const needed = facts.reduce((sum, fact) => sum + BigInt(fact.bytes), 0n);
-    const info = await (this.options.statfs ?? (path => statfs(path, { bigint: true })))(hostRoot);
+    const info = await (this.m.options.statfs ?? (path => statfs(path, { bigint: true })))(hostRoot);
     const free = BigInt(info.bavail) * BigInt(info.bsize);
     if (needed <= free) return;
     const mib = (bytes: bigint) => `${(Number(bytes) / 1048576).toFixed(1)} MiB`;
@@ -1119,7 +1415,7 @@ export class RelayManager {
     const result = await deliverPackage(e.hostRoot, { packageId: `pkg-${e.purpose}`, sessionId: e.sessionId, taskId: e.purpose });
     e.delivered = result; await this.save(); return result;
   }
-  finish(signal?: AbortSignal) { return this.serialized(() => this.guarded(signal, () => this.drained(async () => {
+  async finish() {
     const e = this.current(); await this.log('finish');
     let incomplete: Array<{ name: string; path: string; error: string }> = [];
     if (!e.delivered) {
@@ -1130,9 +1426,9 @@ export class RelayManager {
     const result = e.delivered ?? await this.packageInternal();
     await this.releaseInternal('finished');
     return incomplete.length ? { ...result, incompleteExtractions: incomplete } : result;
-  }))); }
+  }
   private async fail(error: unknown) {
-    const e = this.enclosure; if (!e || !this.bindingMatches(e)) return;
+    const e = this.enclosure; if (!e || !this.m.bindingMatches(e)) return;
     e.lastError = String(error);
     await this.save();
     await this.log('operation-failed', undefined, { error: String(error), leaseRetained: !e.released });
@@ -1141,28 +1437,27 @@ export class RelayManager {
     const e = this.current();
     if (!input.argv?.length || input.snapshots?.group) throw new Error('Diagnostic exec requires argv and cannot join a snapshot group');
     const executionId = `diagnostic-${randomUUID()}`;
-    const request = { executionId, at: new Date().toISOString(), evidenceMode: 'diagnostic', timeoutMs, ...input };
+    const { guest: _guest, ...requested } = input;
+    const request = { executionId, at: new Date().toISOString(), evidenceMode: 'diagnostic', timeoutMs, ...requested };
     await jsonFile(join(e.hostRoot, 'host', 'diagnostics', `${executionId}.request.json`), request);
     let result;
     try {
       const argv = e.staged ? ['/bin/sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'relay-diagnostic', join(e.guestRoot, 'workspace'), ...input.argv] : input.argv;
       // A cancelled command stops waiting for the guest; the outcome is then uncertain.
-      const r = await this.channel.exec(e.lease!.vm, argv, timeoutMs, { signal });
+      const r = await this.m.channel.exec(e.lease!.vm, argv, timeoutMs, { signal });
       // vm-service returns one stream with stdout and stderr interleaved; report it once, as what it is.
       result = { executionId, outcome: { kind: 'completed' as const, exitStatus: { code: r.code, signal: null } }, output: r.stdout, outputStreams: 'stdout and stderr combined' };
     } catch (error) { result = { executionId, outcome: { kind: 'uncertain' as const, diagnostic: String(error) }, output: '', outputStreams: 'stdout and stderr combined' }; }
-    const response = { ...result, timeoutMs, evidenceMode: 'diagnostic', screenshotEvidence: false, imageDelivery: { status: 'not-requested' as const, diagnostic: 'Diagnostic execution has no screenshot evidence.' }, evidencePath: e.hostRoot, leaseReleased: false, owned: this.status() };
+    const response = { guest: this.name, ...result, timeoutMs, evidenceMode: 'diagnostic', screenshotEvidence: false, imageDelivery: { status: 'not-requested' as const, diagnostic: 'Diagnostic execution has no screenshot evidence.' }, evidencePath: e.hostRoot, leaseReleased: false, owned: this.status() };
     await jsonFile(join(e.hostRoot, 'host', 'diagnostics', `${executionId}.receipt.json`), response);
     if (result.outcome.kind !== 'completed' || result.outcome.exitStatus.code !== 0) await this.fail(new Error(JSON.stringify(result.outcome)));
     return response;
   }
-  release() { return this.serialized(async () => {
-    await this.init(); this.assertBinding(); await this.assertBackend();
-    // Never guess at another session's lease: say plainly that nothing was released.
-    if (!this.enclosure) return { active: false as const, ownedLease: false as const, released: false as const, diagnostic: NO_OWNED_LEASE };
-    await this.drained(() => this.releaseDrained());
-    return this.status();
-  }); }
+  async release() {
+    await this.restore(); this.assertBinding(); await this.m.assertBackend();
+    if (this.enclosure) await this.drained(() => this.releaseDrained());
+    return { guest: this.name, active: false as const, released: true as const };
+  }
   private async releaseDrained() {
     try {
       await this.log('release');
@@ -1172,24 +1467,24 @@ export class RelayManager {
     } finally { await this.releaseInternal('released'); }
   }
   private async releaseInternal(reason: 'finished' | 'failed' | 'released') {
-    this.assertBinding(); await this.assertBackend();
+    this.assertBinding(); await this.m.assertBackend();
     const e = this.enclosure; if (!e) return;
-    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    this.stopTimer();
     if (!e.released) {
       if (!e.lease) {
-        const list = await this.vm.list({ timeoutMs: 10000 });
+        const list = await this.m.vm.list({ timeoutMs: 10000 });
         const matches = Object.values(list.vms).filter(lease => lease.purpose === e.purpose);
         if (matches.length > 1) throw new Error('Ambiguous acquisition; refusing to remove ownership record');
-        if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.root}. Reconcile before retrying; never blindly acquire again.`);
+        if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.dir}. Reconcile before retrying; never blindly acquire again.`);
         e.lease = matches[0]; await this.save().catch(() => {});
       }
       if (e.lease) {
         let released = false;
         for (let attempt = 0; attempt < 3; attempt++) {
-          try { const response = await this.vm.release(e.lease.vm, { reason }, { timeoutMs: 120000 }); if (!response.released) throw new Error('vm-service did not confirm destruction'); released = true; break; }
+          try { const response = await this.m.vm.release(e.lease.vm, { reason }, { timeoutMs: 120000 }); if (!response.released) throw new Error('vm-service did not confirm destruction'); released = true; break; }
           catch (error) {
             await this.log('release-error', undefined, { vm: e.lease.vm, cause: reason, attempt: attempt + 1, error: String(error) }).catch(() => {});
-            try { await this.vm.get(e.lease.vm, { timeoutMs: 5000 }); }
+            try { await this.m.vm.get(e.lease.vm, { timeoutMs: 5000 }); }
             catch (getError) { if (getError instanceof VmServiceError && getError.status === 404) { released = true; break; } }
             if (attempt === 2) throw error;
           }
@@ -1199,24 +1494,26 @@ export class RelayManager {
       }
       e.released = true; await this.save().catch(() => {});
     }
-    await this.registry.remove(e.row);
+    await this.m.registry.remove(e.row);
     await this.session?.close(); this.session = undefined; this.transport = undefined;
-    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease?.vm, released: true, reason, failed: e.failed, delivered: e.delivered, finishedAt: new Date().toISOString() }).catch(() => {});
+    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, guest: this.name, vm: e.lease?.vm, released: true, reason, failed: e.failed, delivered: e.delivered, finishedAt: new Date().toISOString() }).catch(() => {});
     this.enclosure = undefined; await this.save();
+    await this.m.forget(this);
   }
   private async destroyed(vm: string): Promise<boolean> {
-    if (this.options.verifyDestroyed) return this.options.verifyDestroyed(vm);
+    if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
     // Read-only host observation, not a second guest/transfer channel. The daemon
     // currently drops its lease even when Tart deletion fails; 404 is not proof.
-    const result = await command([this.tartPath, 'list', '--format', 'json'], { timeoutMs: 15000, maxBytes: 4 * 1024 * 1024, env: { ...process.env, ...(this.environment ? environmentVariables(this.environment) : {}), TART_HOME: this.tartHome } });
+    const environment = this.m.environment;
+    const result = await command([this.m.tartPath, 'list', '--format', 'json'], { timeoutMs: 15000, maxBytes: 4 * 1024 * 1024, env: { ...process.env, ...(environment ? environmentVariables(environment) : {}), TART_HOME: this.m.tartHome } });
     if (result.code !== 0) throw new Error(`Cannot verify VM destruction: ${result.stderr}`);
     const entries: unknown = JSON.parse(result.stdout);
     if (!Array.isArray(entries) || entries.some(entry => !entry || typeof entry.Name !== 'string')) throw new Error('Invalid Tart inventory; destruction not verified');
     return !entries.some(entry => entry.Name === vm);
   }
-  private async pause(reason: string) {
+  async pause(reason: string) {
     this.assertBinding();
-    if (this.timer) { clearInterval(this.timer); this.timer = undefined; }
+    this.stopTimer();
     const e = this.enclosure;
     if (e) {
       await this.finalRenewal(e);
@@ -1235,27 +1532,10 @@ export class RelayManager {
     const remaining = this.remainingMs(e);
     if (remaining < MIN_RENEWAL_MS) return;
     try {
-      const renewed = await this.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 3600000 }, { timeoutMs: 10000 });
+      const renewed = await this.m.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 3600000 }, { timeoutMs: 10000 });
       if (this.enclosure === e && !e.released) { e.expiresAt = renewed.ttl_expires_at; e.guestState = renewed.state; }
     } catch (error) {
       await this.log('final-renewal-failed', undefined, { error: String(error), expiresAt: e.expiresAt ?? e.lease.ttl_expires_at }).catch(() => {});
     }
   }
-  async settle() { return this.serialized(() => this.pause('Agent settled; VM retained until explicit release or backend expiration')); }
-  /**
-   * Shutdown's last resort when an operation does not settle: pause renewal
-   * and release the owner lock without waiting for the queue. The process
-   * exits right after, so the abandoned operation cannot save again.
-   */
-  async pauseNow(reason: string) {
-    this.shuttingDown = true;
-    void this.downloads.close(false);
-    try { await this.pause(`${reason}; an in-flight operation did not settle and was abandoned`); }
-    finally { this.initialized = false; await this.unlock(); }
-  }
-  async cleanup(reason: string) { return this.serialized(async () => {
-    this.shuttingDown = true;
-    try { await this.downloads.close(true); await this.pause(reason); await this.session?.close(); this.session = undefined; this.transport = undefined; }
-    finally { this.initialized = false; await this.unlock(); }
-  }); }
 }

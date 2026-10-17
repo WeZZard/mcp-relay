@@ -45,8 +45,9 @@ async function fixture(t: test.TestContext, kind: 'linux' | 'macos' = 'linux') {
 
 test('closed console schemas preserve legacy acquisition and reject hidden command/URL/snapshot inputs', () => {
   for (const vnc of [undefined, false, true]) validateRelayInput({ action: 'acquire', task: 'test', image: 'linux', extractions: [], ...(vnc === undefined ? {} : { vnc }) });
-  validateRelayInput({ action: 'console-open', ...opening });
-  for (const patch of [{ userRequested: false }, { reason: '' }, { expected: ' ' }, { snapshots: { afterIntervalMs: 0 } }, { url: 'vnc://secret' }, { vm: 'foreign' }, { attempt_id: '../x' }]) assert.throws(() => validateRelayInput({ action: 'console-open', ...opening, ...patch }));
+  validateRelayInput({ action: 'console-open', guest: 'test-1', ...opening });
+  for (const patch of [{ userRequested: false }, { reason: '' }, { expected: ' ' }, { snapshots: { afterIntervalMs: 0 } }, { url: 'vnc://secret' }, { vm: 'foreign' }, { attempt_id: '../x' }]) assert.throws(() => validateRelayInput({ action: 'console-open', guest: 'test-1', ...opening, ...patch }));
+  assert.throws(() => validateRelayInput({ action: 'console-open', ...opening }), 'a console call names its guest (DC-20)');
   for (const action of ['acquisition-capabilities', 'console-resolve', 'console-cancel']) assert.throws(() => validateRelayInput({ action, reason: 'not allowed' }));
 });
 
@@ -73,7 +74,7 @@ test('explicit open and cancel preserve owned VM and separate observations, neve
   await f.manager.consoleOpen(opening);
   assert.equal(f.calls.filter(c => c === 'open').length, 1);
   await f.manager.consoleCancel(opening);
-  assert.equal(f.manager.status().vm, 'vm-1'); assert.equal(f.calls.includes('release'), false);
+  assert.equal(f.manager.guestStatus().vm, 'vm-1'); assert.equal(f.calls.includes('release'), false);
   await f.manager.consoleOpen({ ...opening, attempt_id: 'watch-2' });
   assert.equal(f.calls.filter(c => c === 'open').length, 2);
   await f.manager.consoleCancel({ ...opening, attempt_id: 'watch-2' });
@@ -92,7 +93,7 @@ test('uncertain opening survives restoration without replay; cancellation recove
   await assert.rejects(restored.consoleOpen({ ...opening, attempt_id: 'watch-2' }), /active or uncertain/);
   assert.equal(f.calls.filter(c => c === 'open').length, 1);
   await restored.consoleCancel(opening);
-  assert.equal(restored.status().vm, 'vm-1');
+  assert.equal(restored.guestStatus().vm, 'vm-1');
 });
 
 test('stale console, replaced lease, expiry and remote-viewer responses refuse opening', async t => {
@@ -134,7 +135,7 @@ test('immutable lease replacement refuses console dispatch and leaves ownership 
   await f.manager.acquire({ task: 'test', image: 'linux', extractions: [], vnc: true });
   f.vm.get = async () => ({ ...f.lease, lease_id: 'replacement', actually_running: true, ttl_hours_remaining: 1 });
   await assert.rejects(f.manager.consoleOpen(opening), /Lease ownership identity mismatch/);
-  assert.equal(f.manager.status().lease_id, 'lease-1');
+  assert.equal(f.manager.guestStatus().lease_id, 'lease-1');
   assert.equal(f.calls.includes('open'), false);
 });
 
@@ -154,7 +155,7 @@ test('cancel before open records a terminal attempt without releasing or replayi
   await f.manager.consoleOpen(opening);
   assert.equal(f.calls.includes('open'), false);
   assert.equal(f.calls.includes('release'), false);
-  assert.equal(f.manager.status().consoleAttempt?.status, 'cancelled');
+  assert.equal(f.manager.guestStatus().consoleAttempt?.status, 'cancelled');
 });
 
 // The generator imports the backend's report methods from a vm-service checkout
@@ -187,7 +188,7 @@ test('macOS limitations survive acquisition, resolve, open, duplicate open, canc
   assert.equal(opened.attempt?.authentication, 'required'); assert.equal(opened.attempt?.transport_connected, true);
   const duplicate = await f.manager.consoleOpen(opening); check(duplicate);
   assert.equal(duplicate.attempt?.authentication, 'required');
-  check(await f.manager.consoleCancel(opening)); check(f.manager.status().console);
+  check(await f.manager.consoleCancel(opening)); check(f.manager.guestStatus().console);
   const discovered = (await f.manager.acquisitionCapabilities()).options.vnc.backends.macos;
   assert.equal(discovered.server_enforced_view_only, false); assert.equal(discovered.session_binding, 'viewer-selection-unverified');
 });
@@ -208,7 +209,7 @@ test('restart reports revoked acquisition console and never replays or opens ano
   await f.manager.consoleOpen(opening); await f.manager.cleanup('restart');
   f.lease.console = consoleStatus(wire.reports.linux_revoked); f.setObservation(wire.reports.linux_revoked);
   const restored = new RelayManager(f.options); f.managers.push(restored); await restored.initialize();
-  assert.equal(restored.status().console?.status, 'revoked');
+  assert.equal(restored.guestStatus().console?.status, 'revoked');
   await assert.rejects(restored.consoleOpen({ ...opening, attempt_id: 'watch-2' }), /revoked/);
   assert.equal(f.calls.filter(v => v === 'open').length, 1);
 });
@@ -218,7 +219,7 @@ test('controller loss cannot leave a ready observation or cause automatic recove
   await f.manager.acquire({ task: 'test', image: 'linux', extractions: [], vnc: true });
   f.vm.consoleResolve = async () => { throw new Error('Console unavailable after restart'); };
   await assert.rejects(f.manager.consoleOpen(opening), /restart/);
-  assert.equal(f.manager.status().console?.status, 'unknown'); assert.equal(f.calls.includes('open'), false);
+  assert.equal(f.manager.guestStatus().console?.status, 'unknown'); assert.equal(f.calls.includes('open'), false);
 });
 
 test('console projection discards endpoints, secrets and unrecognized nested observations', () => {

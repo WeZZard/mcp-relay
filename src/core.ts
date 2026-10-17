@@ -4,8 +4,8 @@
  * MCP server (`src/server.ts`) and any other runtime's binding are thin
  * wrappers over these exports.
  */
-export { RelayManager, instructions, RELAY_RUN_OUTPUTS } from './manager.js';
-export type { ManagerOptions, AcquireInput, StageInput, RunInput, RunResult, Extraction, ConsoleAttemptInput, ConsoleOpenInput } from './manager.js';
+export { RelayManager, instructions, RELAY_RUN_OUTPUTS, GUEST_NAME } from './manager.js';
+export type { ManagerOptions, AcquireInput, StageInput, RunInput, RunResult, Extraction, ConsoleAttemptInput, ConsoleOpenInput, GuestSelector, GuestStatus } from './manager.js';
 export { Registry, RegistryError, resolveRegistry, validateRegistryText } from './registry.js';
 export type { RegistryRow, RegistryOptions, RegistryResolution } from './registry.js';
 export { relayContract, relayParameters, relayActions, validateRelayInput, toolInputSchema } from './schema.js';
@@ -19,7 +19,7 @@ export type { DeliverPackageOptions, DeliveryResult } from './package.js';
 export { VmService, VmServiceError, AcquireIndeterminateError } from './vm-service.js';
 export type { VmLease, VmList, VmImages, VmServiceOptions, VmBackend } from './vm-service.js';
 export { probeLocal } from './probe.js';
-export { relayStateRoot, guestNetwork, GUEST_NETWORKS } from './config.js';
+export { relayStateRoot, guestNetwork, GUEST_NETWORKS, maxGuests, DEFAULT_MAX_GUESTS } from './config.js';
 export type { GuestNetwork } from './config.js';
 export { loadEnvironment, selectedEnvironment, environmentVariables, matchesEnvironment, canonicalPath } from './environment.js';
 export type { VmEnvironment, EnvironmentIdentity, SelectedEnvironment } from './environment.js';

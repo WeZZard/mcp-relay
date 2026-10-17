@@ -80,7 +80,8 @@ All pins are in `src/targets.ts`.
   boundary.
 - **Chrome DevTools MCP page routing.** Page-ID routing is meant for several
   agents that share one browser, and it makes `pageId` required on
-  page-scoped tools. It is turned off, because one enclosure has one agent.
+  page-scoped tools. It is turned off, because each guest has its own browser
+  and the calls on one guest keep their order (DC-20).
   Tools such as `navigate_page` keep their usual shape and act on the
   selected page.
 

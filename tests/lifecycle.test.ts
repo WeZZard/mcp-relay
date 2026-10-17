@@ -117,8 +117,8 @@ async function fixture(t: TestContext) {
   };
   const service = async () => { const fake = new FakeService(); await fake.start(); t.after(() => fake.close()); return fake; };
   /** The durable ownership record of a session, and the lifecycle events of its enclosure. */
-  const leaseFile = (relay: Relay) => join(relay.stateRoot, hash(relay.sessionId).slice(0, 32), 'lease.json');
-  const lease = async (relay: Relay) => JSON.parse(await readFile(leaseFile(relay), 'utf8'));
+  const leaseFile = (relay: Relay, guest = 'lifecycle-1') => join(relay.stateRoot, hash(relay.sessionId).slice(0, 32), 'guests', guest, 'lease.json');
+  const lease = async (relay: Relay, guest?: string) => JSON.parse(await readFile(leaseFile(relay, guest), 'utf8'));
   const events = async (hostRoot: string) => {
     const directory = join(hostRoot, 'host', 'events');
     return Promise.all((await readdir(directory)).map(async name => JSON.parse(await readFile(join(directory, name), 'utf8'))));
@@ -133,7 +133,7 @@ const acquireArgs = { task: 'lifecycle', image: 'ubuntu2404', extractions: [] };
 test('R1: the server exits when its client closes stdin after a call that took the owner lock', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const relay = await f.start('http://127.0.0.1:9'); // nothing listens there
-  const probe = await relay.call('relay_probe', { scope: 'guest' });
+  const probe = await relay.call('relay_probe', { scope: 'guest', guest: 'none-1' });
   assert.equal(probe.isError, true, 'no lease is owned, but the call ran manager init and took the owner lock');
   relay.child.stdin.end();
   const exit = await exitWithin(relay, 5000);
@@ -187,7 +187,7 @@ test('R1: closing stdin during an in-flight release lets the release complete be
   assert.equal((await relay.call('relay_acquire', acquireArgs)).isError, false);
   const owned = await f.lease(relay);
   const hold = gate(); f.fake.releaseHook = () => hold.promise;
-  const released = relay.call('relay_release');
+  const released = relay.call('relay_release', { guest: 'lifecycle-1' });
   await f.fake.arrived('/release');
   relay.child.stdin.end();
   await sleep(1000);
@@ -211,7 +211,7 @@ test('R1: shutdown behind an operation that never settles is bounded by the grac
   assert.equal((await relay.call('relay_acquire', acquireArgs)).isError, false);
   const owned = await f.lease(relay);
   f.fake.execHook = () => new Promise(() => {}); // a guest command whose answer never comes
-  void relay.call('relay_exec', { diagnostic: true, argv: ['/bin/true'] });
+  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
   await f.fake.arrived('/exec');
   relay.child.stdin.end();
   const exit = await exitWithin(relay, 10000);
@@ -230,7 +230,7 @@ test('R2: a response written after the client closed its reader ends the session
   assert.equal(owned.active, true);
   const hold = gate();
   f.fake.execHook = async () => { await hold.promise; return { rc: 1, output: 'fixture failure after the client left' }; };
-  void relay.call('relay_exec', { diagnostic: true, argv: ['/bin/false'] });
+  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/false'] });
   await f.fake.arrived('/exec');
   relay.child.stdout.destroy(); // the client's read side is gone; standard input stays open
   await sleep(200);
@@ -249,7 +249,7 @@ test('R2: a response written after the client closed its reader ends the session
 test('R3: relay_release on a session that owns no lease says so instead of looking like a release', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const relay = await f.start('http://127.0.0.1:9');
-  const result = await relay.call('relay_release');
+  const result = await relay.call('relay_release', { guest: 'lifecycle-1' });
   const text = result.content[0].text;
   assert.equal(result.isError, true, `a release that released nothing must not look like success: ${text}`);
   assert.match(text, /owns no lease/);
@@ -264,7 +264,7 @@ test('R3 (session identity): a restarted server with the default random session 
   const [vm] = [...f.fake.leases.keys()];
   first.child.kill('SIGTERM'); await first.exited;
   const second = await f.start(f.fake.url, undefined);
-  await second.call('relay_release');
+  await second.call('relay_release', { guest: 'lifecycle-1' });
   const status = JSON.parse((await second.call('relay_status')).content[0].text);
   assert.equal(status.active, false, 'the new process owns nothing');
   assert.equal(f.fake.releaseCalls, 0, 'nothing was released');

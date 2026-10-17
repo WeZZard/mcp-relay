@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { RelayManager, Registry, guestNetwork, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
+import { RelayManager, Registry, guestNetwork, maxGuests, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
 
 export const SERVER_NAME = 'relay';
 /** The build injects this from package.json (esbuild define); under tsx it falls back to reading the file directly. */
@@ -48,7 +48,7 @@ const readOnlyStatus: RelayToolAnnotations = { readOnlyHint: true, destructiveHi
 const statusToolDefinition = {
   name: STATUS_TOOL,
   title: 'Show relay status',
-  description: 'Show this session\'s owned VM lease (backend binding, guest state, renewal, console observation, last error), staging state and evidence path, plus the project directory, the VM service origin and the selected environment in use; active:false when nothing is owned. Read-only; it does not touch the VM.',
+  description: 'List every guest this session holds, by the name relay_acquire answered, each with its VM lease (backend binding, guest state, renewal, console observation, last error), staging state and evidence path, plus the most guests the session may hold (`maxGuests`), the project directory, the VM service origin and the selected environment in use; active:false when no guest\'s lease is being renewed. Read-only; it does not touch the VMs.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   annotations: readOnlyStatus,
 };
@@ -90,7 +90,7 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   const statusPayload = () => {
     const environment = selectedEnvironment();
     const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? 'http://localhost:6240';
-    return { ...(manager ? manager.status() : { active: false }), project, service, environment: environment?.identity };
+    return { ...(manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() }), project, service, environment: environment?.identity };
   };
   // Cancels every in-flight tool call when shutdown gives up waiting for it.
   // Closing the transport would do the same at once, so shutdown never closes it first.
@@ -113,15 +113,15 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   const cancel = (reason: string) => { shutdownController.abort(new Error(`Cancelled: ${reason}`)); };
   /** Pause renewal and release the owner lock without waiting for an in-flight operation; for shutdown only. */
   const pauseNow = async (reason: string) => { await manager?.pauseNow(reason); };
-  return { server, sessionId, project, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false } };
+  return { server, sessionId, project, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() } };
 }
 
 async function main(args: string[]): Promise<void> {
   if (args.includes('--instructions')) { process.stdout.write(`${instructions}\n`); return; }
   if (args.includes('--schema')) { process.stdout.write(`${JSON.stringify(allToolDefinitions(), null, 2)}\n`); return; }
   if (args.length) throw new Error('Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout');
-  // A guest network the relay cannot honour refuses the server at startup (DC-17).
-  guestNetwork();
+  // A guest network the relay cannot honour refuses the server at startup (DC-17), as does a guest limit that is not a positive integer (DC-20).
+  guestNetwork(); maxGuests();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');
@@ -144,19 +144,19 @@ async function main(args: string[]): Promise<void> {
     catch (error) { process.stderr.write(`mcp-relay: cleanup failed: ${message(error)}\n`); code = 1; }
     finally { process.exit(code); }
   })();
-  relay.server.onclose = () => { void shutdown('Enclosure session ended', 0); };
+  relay.server.onclose = () => { void shutdown('Relay session ended', 0); };
   // The SDK's stdio transport never reports end of file on standard input, so
   // a client that exits or closes its side would otherwise leave this process
   // renewing the lease for as long as the owner lock helper keeps it alive.
-  process.stdin.once('end', () => { void shutdown('Enclosure session ended: the client closed standard input', 0); });
-  process.stdin.once('close', () => { void shutdown('Enclosure session ended: the client closed standard input', 0); });
+  process.stdin.once('end', () => { void shutdown('Relay session ended: the client closed standard input', 0); });
+  process.stdin.once('close', () => { void shutdown('Relay session ended: the client closed standard input', 0); });
   // The SDK writes responses without an error handler. A write to a client
   // that has gone (EPIPE) would otherwise be an unhandled error that ends the
   // process before cleanup, leaving the lease recorded as active. Every later
   // error on the same stream lands here too.
   process.stdout.on('error', error => { void shutdown(`Enclosure session ended: standard output failed (${(error as NodeJS.ErrnoException).code ?? message(error)})`, 0); });
-  process.once('SIGTERM', () => { void shutdown('Enclosure session terminated', 0); });
-  process.once('SIGINT', () => { void shutdown('Enclosure session interrupted', 0); });
+  process.once('SIGTERM', () => { void shutdown('Relay session terminated', 0); });
+  process.once('SIGINT', () => { void shutdown('Relay session interrupted', 0); });
   await relay.server.connect(new StdioServerTransport());
 }
 

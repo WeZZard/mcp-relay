@@ -30,7 +30,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_probe', action: 'probe', title: 'Probe host and guest readiness', annotations: readOnly,
-    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and this session\'s owned lifecycle state, not guest readiness. `scope: "guest"` (on an already-owned VM) reports whether Node.js, which staging requires, is available, and, as facts, whether cua-driver and each relay_run target (`cua`, `playwright`, `chrome-devtools`) are available and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Continue in order: relay_acquire, relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release, called explicitly before you return.',
+    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether cua-driver and each relay_run target (`cua`, `playwright`, `chrome-devtools`) are available and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.',
   },
   {
     name: 'relay_acquisition_capabilities', action: 'acquisition-capabilities', title: 'Read acquisition capabilities', annotations: readOnly,
@@ -38,11 +38,11 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_acquire', action: 'acquire', title: 'Acquire a VM', annotations: acts(false),
-    description: 'Acquire one fresh VM for this task and start its ownership heartbeat. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). One task per enclosure: call this once per task, not again for another task. Continue with relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input.',
+    description: 'Acquire one fresh VM, a guest, and start its ownership heartbeat. The result\'s `guest` is the guest\'s name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session\'s limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held, and the backend\'s own refusals, such as its limit on macOS VMs, pass through. Continue with relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input.',
   },
   {
     name: 'relay_stage', action: 'stage', title: 'Stage the guest runtime', annotations: acts(false),
-    description: 'Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result\'s `snapshots` says which. `cuaDriver` names the guest cua-driver for snapshots and the `cua` target. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording\'s evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held.',
+    description: 'Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto the acquired guest that `guest` names. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result\'s `snapshots` says which. `cuaDriver` names the guest cua-driver for snapshots and the `cua` target. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording\'s evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held.',
   },
   {
     name: 'relay_exec', action: 'run', kind: 'exec', title: 'Run a guest command', annotations: acts(true),
@@ -62,7 +62,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_gate', action: 'gate', title: 'Release or cancel a held call', annotations: acts(false),
-    description: 'Decide a relay_run call made with `hold`, while that call is still waiting for its answer: `go` lets its input be sent; `cancel` refuses it with nothing sent. The first decision wins, including the guest\'s own `expired` when the hold\'s limit passes, and the result\'s `decision` and `applied` say which decision stands. Send relay_run first; this tool does not wait for the queue.',
+    description: 'Decide a relay_run call made with `hold` on the same `guest`, while that call is still waiting for its answer: `go` lets its input be sent; `cancel` refuses it with nothing sent. The first decision wins, including the guest\'s own `expired` when the hold\'s limit passes, and the result\'s `decision` and `applied` say which decision stands. Send relay_run first; this tool does not wait for the queue.',
   },
   {
     name: 'relay_tools', action: 'tools', title: 'List a target\'s tools', annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -70,7 +70,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_image', action: 'image', title: 'Retrieve a saved image', annotations: readOnly,
-    description: 'Retrieve one already-saved image; never a new capture, input or directory export, and it never acquires a VM. `target` selects a display phase (`sessionId`/`executionId`/`phase`: `before`/`after`), a declared application file (`name`, plus a relative `path` for a directory declaration), or an immutable `reference` (`imageId`). PNG, JPEG and WebP only; originals up to 64 MiB and 40,000,000 decoded pixels; the delivered preview is at most 2000x2000 px and 4 MiB of base64 (PNG originals are resampled in-process; JPEG/WebP pass through only within bounds). Each delivery has a 90-second deadline and up to three transfer attempts. A relay_run tool image is the application file `name: "relay-run"` at the `path` its result gives. A run\'s after-snapshot is `pending` in its result; retrieve it here with its `imageId` or display selector, which waits for its background download within the same deadline. If an image did not arrive, recover it here the same way, never by repeating the input or capturing again, and stop after at most two such recovery calls if it still cannot be inspected. A closed enclosure returns `stale-reference` for a display or reference target; its delivered originals stay readable with host file tools. An attached image proves only that the block was included, not that anyone inspected or reviewed it.',
+    description: 'Retrieve one already-saved image; never a new capture, input or directory export, and it never acquires a VM. `target` selects a display phase (`sessionId`/`executionId`/`phase`: `before`/`after`), a declared application file (`name`, plus a relative `path` for a directory declaration), or an immutable `reference` (`imageId`). PNG, JPEG and WebP only; originals up to 64 MiB and 40,000,000 decoded pixels; the delivered preview is at most 2000x2000 px and 4 MiB of base64 (PNG originals are resampled in-process; JPEG/WebP pass through only within bounds). Each delivery has a 90-second deadline and up to three transfer attempts. A relay_run tool image is the application file `name: "relay-run"` at the `path` its result gives. A run\'s after-snapshot is `pending` in its result; retrieve it here with its `imageId` or display selector, which waits for its background download within the same deadline. If an image did not arrive, recover it here the same way, never by repeating the input or capturing again, and stop after at most two such recovery calls if it still cannot be inspected. A closed guest returns `stale-reference` for a display or reference target; its delivered originals stay readable with host file tools. An attached image proves only that the block was included, not that anyone inspected or reviewed it.',
   },
   {
     name: 'relay_extract', action: 'extract', title: 'Extract declared outputs', annotations: acts(false),
@@ -78,19 +78,19 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_finish', action: 'finish', title: 'Finish and deliver evidence', annotations: acts(false, true),
-    description: 'Complete the task: extract every declared output, deliver and verify a portable evidence package, then destroy the VM and unregister it. The result reports delivery, snapshot completeness, execution outcome and human review as separate facts; a verified package is not a passing test, and a delivered package is not itself human approval. Call this, or relay_release, explicitly before you return, since ending the session does not do it for you. A declared output that was never produced is listed in `incompleteExtractions` and does not stop the delivery; any other failed extraction or delivery keeps the VM for a corrected attempt.',
+    description: 'Complete one guest\'s work: extract every declared output, deliver and verify a portable evidence package, then destroy the guest\'s VM and unregister it; the session\'s other guests keep running. The result reports delivery, snapshot completeness, execution outcome and human review as separate facts; a verified package is not a passing test, and a delivered package is not itself human approval. Call this, or relay_release, explicitly for every guest before you return, since ending the session does not do it for you. A declared output that was never produced is listed in `incompleteExtractions` and does not stop the delivery; any other failed extraction or delivery keeps the VM for a corrected attempt.',
   },
   {
     name: 'relay_release', action: 'release', title: 'Release the VM', annotations: acts(false, true),
-    description: 'Abandon the task: destroy the owned VM and unregister it, retaining whatever evidence already exists, without claiming the task succeeded. Use this instead of relay_finish when the task is not being completed. Safe to retry if a previous release attempt failed; a failed release keeps ownership until destruction is verified. When this session owns no lease, the result is an error saying that nothing was released; a lease acquired under another session identity is never guessed at.',
+    description: 'Abandon one guest\'s work: destroy the VM of the guest that `guest` names and unregister it, retaining whatever evidence already exists, without claiming the task succeeded; the session\'s other guests keep running. Use this instead of relay_finish when the task is not being completed. Safe to retry if a previous release attempt failed; a failed release keeps ownership until destruction is verified. When this session holds no guest, the result is an error saying that nothing was released; a lease acquired under another session identity is never guessed at.',
   },
   {
     name: 'relay_console_resolve', action: 'console-resolve', title: 'Resolve console status', annotations: readOnly,
-    description: 'Refresh this session\'s non-secret console-viewing status for the owned lease. Read-only, and it never recovers ownership. A `ready` status means guest preflight only, not that a viewer launched: console operations carry no screenshots and never establish authentication, displayed pixels or a human\'s confirmation. On macOS, viewing requires the human to choose Standard sharing of the existing console, not a new Log In session or a High Performance display, and the relay never auto-confirms that choice; `server_enforced_view_only: false` and an unverified viewer selection remain limitations even once transport connects. Never replay an uncertain attempt: resolve it here, or close it with relay_console_cancel.',
+    description: 'Refresh this session\'s non-secret console-viewing status for the lease of the guest that `guest` names. Read-only, and it never recovers ownership. A `ready` status means guest preflight only, not that a viewer launched: console operations carry no screenshots and never establish authentication, displayed pixels or a human\'s confirmation. On macOS, viewing requires the human to choose Standard sharing of the existing console, not a new Log In session or a High Performance display, and the relay never auto-confirms that choice; `server_enforced_view_only: false` and an unverified viewer selection remain limitations even once transport connects. Never replay an uncertain attempt: resolve it here, or close it with relay_console_cancel.',
   },
   {
     name: 'relay_console_open', action: 'console-open', title: 'Open console viewing', annotations: acts(false),
-    description: 'Open console viewing for the owned lease, only following an explicit user request to watch. Requires `console_id` and `attempt_id` from relay_console_resolve, `userRequested: true`, `reason` (intent) and `expected` (what the human should expect to see); it opens on the declared service host, never a remote client, and is never triggered automatically by relay_acquire\'s `vnc` option. See relay_console_resolve for what a `ready` status does and does not prove. A failed or uncertain open keeps the attempt: resolve or cancel it rather than opening again with a new attempt.',
+    description: 'Open console viewing for the lease of the guest that `guest` names, only following an explicit user request to watch. Requires `console_id` and `attempt_id` from relay_console_resolve, `userRequested: true`, `reason` (intent) and `expected` (what the human should expect to see); it opens on the declared service host, never a remote client, and is never triggered automatically by relay_acquire\'s `vnc` option. See relay_console_resolve for what a `ready` status does and does not prove. A failed or uncertain open keeps the attempt: resolve or cancel it rather than opening again with a new attempt.',
   },
   {
     name: 'relay_console_cancel', action: 'console-cancel', title: 'Cancel console viewing', annotations: acts(false),
@@ -176,11 +176,11 @@ export async function relayCall(host: RelayManager | (() => RelayManager), raw: 
   let value: unknown;
   switch (raw.action) {
     case 'acquisition-capabilities': value = await manager.acquisitionCapabilities(signal); break;
-    case 'console-resolve': value = await manager.consoleResolve(signal); break;
+    case 'console-resolve': value = await manager.consoleResolve(signal, raw.guest); break;
     case 'console-open': value = await manager.consoleOpen(raw, signal); break;
     case 'console-cancel': value = await manager.consoleCancel(raw, signal); break;
     case 'search': value = await manager.search({ name: raw.name, os: raw.os }, signal, toolCallId); break;
-    case 'probe': value = await manager.probe(raw.scope); break;
+    case 'probe': value = await manager.probe(raw.scope, raw.guest); break;
     case 'acquire': {
       const { action: _, ...input } = raw;
       value = await manager.acquire(input, signal); break;
@@ -197,18 +197,18 @@ export async function relayCall(host: RelayManager | (() => RelayManager), raw: 
       const rendered = await renderRelayResult(execution);
       return { ...rendered, isError: failed };
     }
-    case 'gate': value = await manager.gate(raw.hold, raw.decision, signal); break;
+    case 'gate': value = await manager.gate(raw.hold, raw.decision, signal, raw.guest); break;
     case 'tools': {
       // Compact JSON keeps a long tool list within the text bound; a larger one is kept whole in a file the result names.
-      const listed = await manager.tools(raw.target, raw.tool, signal);
+      const listed = await manager.tools(raw.target, raw.tool, signal, raw.guest);
       return { ...(await renderRelayResult(listed, undefined, undefined)), isError: false };
     }
-    case 'image': return imageResult({}, await manager.image(raw.target, signal));
-    case 'extract': value = await manager.extract(raw.names, signal); break;
-    case 'finish': value = await manager.finish(signal); break;
+    case 'image': return imageResult({}, await manager.image(raw.target, signal, raw.guest));
+    case 'extract': value = await manager.extract(raw.names, signal, raw.guest); break;
+    case 'finish': value = await manager.finish(signal, raw.guest); break;
     case 'release': {
       // Releasing nothing is an error result, so it never reads as a completed release.
-      const released = await manager.release();
+      const released = await manager.release(raw.guest);
       return { ...(await renderRelayResult(released)), isError: 'ownedLease' in released && released.ownedLease === false };
     }
   }

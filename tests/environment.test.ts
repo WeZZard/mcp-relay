@@ -95,13 +95,13 @@ test('service mismatch refuses allocation and foreign persisted binding before m
   } finally { if (old === undefined) delete process.env.TART_HOME; else process.env.TART_HOME = old; }
   await manager.acquire({ task: 'retained', image: 'linux', extractions: [] });
   await manager.cleanup('pause retained lease');
-  const before = await readFile(join(manager.root, 'lease.json'), 'utf8');
+  const before = await readFile(join(manager.root, 'guests', 'retained-1', 'lease.json'), 'utf8');
   await writeFile(f.path, JSON.stringify({ ...f.profile, id: 'different-environment' }));
   const other = new RelayManager({ sessionId: 'shared-session', project: f.root, environment: loadEnvironment(f.path) });
   const priorCalls = calls.length;
   await assert.rejects(other.initialize(), /different or unknown VM environment/);
   assert.equal(calls.length, priorCalls);
-  assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), before);
+  assert.equal(await readFile(join(manager.root, 'guests', 'retained-1', 'lease.json'), 'utf8'), before);
   await assert.rejects(other.release(), /different or unknown VM environment/);
   await other.cleanup('failed restoration').catch(() => {});
 });

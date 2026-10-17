@@ -104,9 +104,10 @@ test('lifecycle: acquire, stage, run one exec, finish; the verified package and 
   const f = await fixture(t);
   const steps: Array<[string, unknown]> = [
     ['relay_acquire', { task: 'e2e-exec', image: 'ubuntu2404', extractions: [{ path: 'artifact.txt', name: 'artifact' }] }],
-    ['relay_stage', { nodePath: f.info.node, cuaDriver: f.info.driver }],
-    ['relay_exec', { reason: 'End-to-end fixture run; no real desktop is touched', argv: [f.info.node, '-e', "require('fs').writeFileSync('artifact.txt','headless package')"], step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
-    ['relay_finish', {}],
+    // relay_acquire names the guest after its task and a counter (DC-20).
+    ['relay_stage', { guest: 'e2e-exec-1', nodePath: f.info.node, cuaDriver: f.info.driver }],
+    ['relay_exec', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', argv: [f.info.node, '-e', "require('fs').writeFileSync('artifact.txt','headless package')"], step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
+    ['relay_finish', { guest: 'e2e-exec-1' }],
   ];
   const prompt = `You are exercising the relay plugin against a fixture service. Make exactly these four tool calls, in this order, one at a time, passing each JSON object as the arguments verbatim:\n${steps.map(([name, args], i) => `${i + 1}. ${name} with ${stepJson(args)}`).join('\n')}\nDo not call any other tool and do not change the arguments. When the fourth call has returned, reply with the single word DONE.`;
   const run = await claude(f.project, prompt, f.env, 12);

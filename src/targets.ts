@@ -15,7 +15,8 @@ import { randomUUID } from 'node:crypto';
  * - `playwright` is Playwright MCP (`@playwright/mcp`), headed (its default).
  * - `chrome-devtools` is Chrome DevTools MCP (`chrome-devtools-mcp`), headed
  *   (its default). Page-ID routing, meant for several agents sharing one
- *   browser, is off: one enclosure has one agent, so page-scoped tools keep
+ *   browser, is off: each guest has its own browser, whose calls keep their
+ *   order (DC-20), so page-scoped tools keep
  *   their classic shape (the selected page, no required `pageId`).
  *
  * The two browser servers are staged, not fetched in the guest: the host

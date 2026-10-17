@@ -65,9 +65,9 @@ test('the eighteen action-backed relay_* tools each derive a plain-object schema
   for (const t of runTools) assert.equal(t.name, t.kind === 'mcp' ? 'relay_run' : `relay_${t.kind}`);
   assert.ok(!relayTools.some(t => ['relay_cua', 'relay_browser'].includes(t.name)), 'the old per-kind tools are gone');
   const runSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_run')!);
-  assert.deepEqual(runSchema.required, ['target', 'tool']);
+  assert.deepEqual(runSchema.required, ['guest', 'target', 'tool']);
   assert.deepEqual((runSchema.properties as any).target.enum, ['cua', 'playwright', 'chrome-devtools']);
-  assert.deepEqual(Object.keys(runSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
+  assert.deepEqual(Object.keys(runSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'guest', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
   for (const name of ['relay_exec', 'relay_script', 'relay_code']) {
     const required = relayToolInputSchema(relayTools.find(t => t.name === name)!).required as string[];
     assert.ok(!required.some(key => ['reason', 'step', 'snapshots'].includes(key)), `${name} no longer requires the evidence fields`);
@@ -87,12 +87,12 @@ test('relayToolInput maps each tool name back to the action shape relayCall disp
 function fakeManager(run: unknown, image?: unknown): RelayManager {
   const calls: unknown[] = [];
   const record = (name: string) => async (...args: unknown[]) => { calls.push({ [name]: args }); return { [name]: true }; };
-  return { calls, probe: async (scope?: string) => ({ probed: true, ...(scope ? { scope } : {}) }), release: async () => ({ active: false }),
+  return { calls, probe: async (scope?: string, guest?: string) => ({ probed: true, ...(scope ? { scope } : {}), ...(guest ? { guest } : {}) }), release: async () => ({ active: false }),
     run: async (input: unknown) => { calls.push(input); return run; }, image: async (target: unknown) => { calls.push({ image: target }); return image; },
     acquisitionCapabilities: record('acquisitionCapabilities'), consoleResolve: record('consoleResolve'), consoleOpen: record('consoleOpen'), consoleCancel: record('consoleCancel') } as unknown as RelayManager;
 }
 const step = { id: 'step', title: 'Fixture', expected: 'Completes', inputMode: 'ordinary' };
-const run = { action: 'run', reason: 'Exercise dispatch without a VM', kind: 'exec', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } };
+const run = { action: 'run', guest: 'core-1', reason: 'Exercise dispatch without a VM', kind: 'exec', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } };
 
 test('relayCall validates, dispatches by action, and flags a refused, uncertain or nonzero run as an error result', async () => {
   let obtained = 0;
@@ -100,10 +100,11 @@ test('relayCall validates, dispatches by action, and flags a refused, uncertain 
   assert.equal(obtained, 0); // invalid input never obtains a manager
   // The evidence fields are optional now; a bare exec is valid and the manager derives the record.
   const bare = fakeManager({ executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } });
-  assert.equal((await relayCall(bare, { action: 'run', kind: 'exec', argv: ['true'] })).isError, false);
-  assert.deepEqual((bare as any).calls[0], { kind: 'exec', argv: ['true'] });
+  assert.equal((await relayCall(bare, { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'] })).isError, false);
+  assert.deepEqual((bare as any).calls[0], { kind: 'exec', guest: 'core-1', argv: ['true'] });
+  await assert.rejects(relayCall(bare, { action: 'run', kind: 'exec', argv: ['true'] }), /Invalid relay input/, 'a run names its guest (DC-20)');
   await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'mcp', target: 'firefox', tool: 'x' }), /Invalid relay input/);
-  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'exec', argv: ['true'], diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic commands cannot join/);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'], diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic commands cannot join/);
   const probe = await relayCall(fakeManager({}), { action: 'probe' });
   assert.deepEqual(probe, { text: JSON.stringify({ probed: true }, null, 2), details: { probed: true }, isError: false });
   const completed = await relayCall(fakeManager({ executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } }), run);
@@ -113,7 +114,7 @@ test('relayCall validates, dispatches by action, and flags a refused, uncertain 
     const result = await relayCall(manager, run);
     assert.equal(result.isError, true, JSON.stringify(outcome));
     assert.match(result.text, new RegExp(outcome.kind));
-    assert.deepEqual(Object.keys((manager as any).calls[0]).sort(), ['argv', 'because', 'kind', 'snapshots', 'step']); // reason travels as because
+    assert.deepEqual(Object.keys((manager as any).calls[0]).sort(), ['argv', 'because', 'guest', 'kind', 'snapshots', 'step']); // reason travels as because
   }
 });
 
@@ -125,7 +126,7 @@ const descriptor = { imageId: `image-${'a'.repeat(64)}`, source: 'display', encl
 test('a relay_run result keeps the tool\'s own blocks out of the relay text and returns them as passthrough content', async () => {
   const attached = { status: 'attached', image: descriptor, content: image, presentation: { width: 1, height: 1 } };
   const passthrough = [{ type: 'text' as const, text: 'tool says hi' }, { type: 'image' as const, data: 'QUJD', mimeType: 'image/jpeg' }];
-  const result = await relayCall(fakeManager({ ...completed, relayOutcome: 'completed', imageDelivery: attached, passthrough }), { action: 'run', kind: 'mcp', target: 'playwright', tool: 'browser_snapshot' });
+  const result = await relayCall(fakeManager({ ...completed, relayOutcome: 'completed', imageDelivery: attached, passthrough }), { action: 'run', kind: 'mcp', guest: 'core-1', target: 'playwright', tool: 'browser_snapshot' });
   assert.deepEqual(result.content, passthrough);
   assert.deepEqual(result.image, image, 'the after-snapshot stays the separate image');
   assert.equal(result.text.includes('tool says hi'), false);
@@ -165,11 +166,11 @@ test('an image-bearing run carries the image as its own block with its identity 
 test('the image action retrieves one saved image through a closed selector and is an error when the delivery is not an attachment', async () => {
   const target = { source: 'reference', imageId: descriptor.imageId };
   const manager = fakeManager({}, { status: 'attached', image: descriptor, content: image });
-  const result = await relayCall(manager, { action: 'image', target });
+  const result = await relayCall(manager, { action: 'image', guest: 'core-1', target });
   assert.equal(result.isError, false); assert.deepEqual(result.image, image);
   assert.deepEqual((manager as any).calls, [{ image: target }]);
   assert.match(result.text, /"executionFailed":false/);
-  const stale = await relayCall(fakeManager({}, { status: 'stale-reference', diagnostic: 'closed' }), { action: 'image', target: { source: 'display', sessionId: 's', executionId: 'e', phase: 'after' } });
+  const stale = await relayCall(fakeManager({}, { status: 'stale-reference', diagnostic: 'closed' }), { action: 'image', guest: 'core-1', target: { source: 'display', sessionId: 's', executionId: 'e', phase: 'after' } });
   assert.equal(stale.isError, true); assert.equal(stale.image, undefined); assert.equal(stale.imageDelivery!.status, 'stale-reference');
   for (const bad of [{ action: 'image' }, { action: 'image', target: { source: 'reference', imageId: 'image-short' } }, { action: 'image', target: { source: 'display', sessionId: 's', executionId: 'e' } }, { action: 'image', target: { source: 'application', name: 'x', extra: true } }, { action: 'image', target, reason: 'rejected' }]) {
     await assert.rejects(relayCall(fakeManager({}), bad), /Invalid relay input/);
@@ -179,14 +180,14 @@ test('the image action retrieves one saved image through a closed selector and i
 test('console and capability actions dispatch with their fields, and console-open requires an explicit user request with reason and expected', async () => {
   const manager = fakeManager({});
   assert.deepEqual((await relayCall(manager, { action: 'acquisition-capabilities' })).details, { acquisitionCapabilities: true });
-  assert.deepEqual((await relayCall(manager, { action: 'console-resolve' })).details, { consoleResolve: true });
-  const open = { action: 'console-open', console_id: 'console-1', attempt_id: 'watch-1', userRequested: true, reason: 'The user asked to watch', expected: 'The viewer opens on the service host' };
+  assert.deepEqual((await relayCall(manager, { action: 'console-resolve', guest: 'core-1' })).details, { consoleResolve: true });
+  const open = { action: 'console-open', guest: 'core-1', console_id: 'console-1', attempt_id: 'watch-1', userRequested: true, reason: 'The user asked to watch', expected: 'The viewer opens on the service host' };
   assert.deepEqual((await relayCall(manager, open)).details, { consoleOpen: true });
-  assert.deepEqual((await relayCall(manager, { action: 'console-cancel', console_id: 'console-1', attempt_id: 'watch-1' })).details, { consoleCancel: true });
-  assert.deepEqual((await relayCall(manager, { action: 'probe', scope: 'guest' })).details, { probed: true, scope: 'guest' });
+  assert.deepEqual((await relayCall(manager, { action: 'console-cancel', guest: 'core-1', console_id: 'console-1', attempt_id: 'watch-1' })).details, { consoleCancel: true });
+  assert.deepEqual((await relayCall(manager, { action: 'probe', scope: 'guest', guest: 'core-1' })).details, { probed: true, scope: 'guest', guest: 'core-1' });
   const calls = (manager as any).calls;
   assert.deepEqual(calls[2].consoleOpen[0], open);
-  assert.deepEqual(calls[3].consoleCancel[0], { action: 'console-cancel', console_id: 'console-1', attempt_id: 'watch-1' });
+  assert.deepEqual(calls[3].consoleCancel[0], { action: 'console-cancel', guest: 'core-1', console_id: 'console-1', attempt_id: 'watch-1' });
   for (const bad of [{ ...open, userRequested: false }, { ...open, userRequested: undefined }, { ...open, expected: ' ' }, { ...open, reason: undefined }, { action: 'console-resolve', reason: 'rejected' }, { action: 'acquisition-capabilities', vnc: true }, { action: 'probe', scope: 'vm' }]) {
     await assert.rejects(relayCall(manager, bad), /Invalid relay input/);
   }

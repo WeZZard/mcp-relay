@@ -2,7 +2,7 @@ import { imageFailure, type ImageDescriptor, type ImageResult } from './images.j
 import type { ArchiveEntry } from './archive.js';
 
 /**
- * The background download queue of one enclosure (docs/screenshot-delivery.md
+ * The background download queue of one guest (docs/screenshot-delivery.md
  * §10, AD-2 to AD-5). One worker takes the step downloads in order,
  * outside the manager's serialized section and inside the process that holds
  * the owner lock. Lifecycle operations drain it; shutdown closes it.

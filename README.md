@@ -51,7 +51,7 @@ adds nothing Claude-Code-specific beyond the marketplace packaging and the
 | a registered `relay` tool with thirteen actions | nineteen `relay_*` MCP tools from the server `relay`, each with its own schema, title and annotations |
 | doctrine injected before each agent turn | the server's MCP `instructions`, plus a compact version in the `relay_probe` and `relay_acquire` descriptions for clients that do not surface `instructions` |
 | `/relay-status` command | `/mcp-relay-status` in pi, `/mcp-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
-| prompt-composed enclosure | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
+| prompt-composed guest operator | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
 | typed image blocks in a run result, with pi's `tool_result` hook keeping the error flag | MCP image content blocks in the tool result, with the MCP `isError` flag set beside them |
 | session shutdown pauses lease renewal | the same when the server's stdio closes or it is signalled: renewal pauses after one final renewal for the rest of the lease's TTL, the recording detaches, the VM is retained until that TTL for an explicit `relay_finish` or `relay_release`, and the vm-service TTL is the backstop |
 | the settled agent pauses renewal | none: MCP has no such hook, so the instructions and each run tool's description say "finish or release before you return" |
@@ -137,9 +137,9 @@ Evidence is automatic for all four: see "relay_run" below.
 | Tool | Title | Replaces (`action`, `kind`) | Purpose |
 |---|---|---|---|
 | `relay_search` | Search installed applications | `search` | Find installed applications from image inventories by name and optional OS. |
-| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and owned state. `scope: "guest"` checks Node.js, which staging requires, and reports as facts the cua-driver executable, each `relay_run` target's availability and whether runs take snapshots, on the owned guest, without installing, starting or claiming capture readiness. |
+| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and every guest the session holds, with its state. `scope: "guest"` with `guest` checks Node.js, which staging requires, and reports as facts the cua-driver executable, each `relay_run` target's availability and whether runs take snapshots, on that guest, without installing, starting or claiming capture readiness. |
 | `relay_acquisition_capabilities` | Read acquisition capabilities | `acquisition-capabilities` | Read versioned acquisition options (VNC backends) without allocation or ownership recovery. |
-| `relay_acquire` | Acquire a VM | `acquire` | Register the task, acquire a fresh VM on the network `MCP_RELAY_GUEST_NETWORK` names and start its heartbeat; declare outputs before work. Optional `vnc` prepares sharing without opening a viewer. |
+| `relay_acquire` | Acquire a VM | `acquire` | Register the task, acquire a fresh VM, a guest, on the network `MCP_RELAY_GUEST_NETWORK` names and start its heartbeat; declare outputs before work. Answers `guest`, the guest's name in the session, which every later call on it names. Optional `vnc` prepares sharing without opening a viewer. |
 | `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace, all from the project folder. Needs only Node.js in the guest, and reports whether runs take snapshots (only when the image lists cua-driver); `browserExecutable` names the guest browser for the browser targets. Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
 | `relay_exec` | Run a guest command | `run`, `exec` | One recorded guest command. `diagnostic: true` records command diagnosis or repair without screenshot evidence, including before staging. |
 | `relay_script` | Run a guest script | `run`, `script` | One recorded guest script file (`localPath`, in the project folder, and `language`). |
@@ -148,17 +148,17 @@ Evidence is automatic for all four: see "relay_run" below.
 | `relay_tools` | List a target's tools | `tools` | The target's real `tools/list` from its in-guest server: names, descriptions and input schemas; `tool` narrows to one. |
 | `relay_image` | Retrieve a saved image | `image` | Retrieve one saved display image, declared application image or immutable image reference without input, capture, directory export or acquisition. |
 | `relay_extract` | Extract declared outputs | `extract` | Pull only declared files or directories with source and host checksum verification. |
-| `relay_finish` | Finish and deliver evidence | `finish` | Extract declared outputs, deliver and verify the snapshot package, destroy the VM and unregister. |
-| `relay_release` | Release the VM | `release` | Retain available evidence and abandon or destroy the VM. When this session owns no lease, the result is an error that says nothing was released. |
-| `relay_console_resolve` | Resolve console status | `console-resolve` | Resolve non-secret console status for the owned lease and environment. |
+| `relay_finish` | Finish and deliver evidence | `finish` | Extract the guest's declared outputs, deliver and verify its snapshot package, destroy its VM and unregister it; the session's other guests keep running. |
+| `relay_release` | Release the VM | `release` | Retain the guest's available evidence and abandon or destroy its VM; the other guests keep running. When this session holds no guest, the result is an error that says nothing was released. |
+| `relay_console_resolve` | Resolve console status | `console-resolve` | Resolve non-secret console status for the guest's lease and environment. |
 | `relay_console_open` | Open console viewing | `console-open` | Open explicitly user-requested viewing on the service host, with `console_id`, `attempt_id`, `userRequested: true`, `reason` and `expected`. |
 | `relay_console_cancel` | Cancel console viewing | `console-cancel` | Cancel the identified viewing attempt without releasing the VM. |
-| `relay_status` | Show relay status | (unchanged) | This session's owned lease: backend binding, guest state, renewal state, console observation, last error, staging state and evidence path, plus the project directory, the VM service origin and the selected environment; `{"active": false}` when nothing is owned. |
+| `relay_status` | Show relay status | (unchanged) | Every guest this session holds, by name, each with its lease: backend binding, guest state, renewal state, console observation, last error, staging state and evidence path; plus `maxGuests`, the project directory, the VM service origin and the selected environment. `active` is false when no guest's lease is being renewed. |
 
 `readOnlyHint`/`idempotentHint` are true for `relay_search`, `relay_probe`,
 `relay_acquisition_capabilities`, `relay_console_resolve`, `relay_image` and
 `relay_status`; `destructiveHint` is true only for `relay_finish` and
-`relay_release`, which destroy the VM; `openWorldHint` is true only for the
+`relay_release`, which destroy a guest's VM; `openWorldHint` is true only for the
 four run tools, whose guest code may reach the network.
 
 A run's result carries the execution identity and outcome, the derived step
@@ -175,7 +175,7 @@ It changes nothing itself.
 
 | Command in pi | Command in Claude Code | Arguments | Purpose |
 |---|---|---|---|
-| `/mcp-relay-status` | `/mcp-relay:status` | none | Calls `relay_status` and reports this session's owned lease as is. Read-only. |
+| `/mcp-relay-status` | `/mcp-relay:status` | none | Calls `relay_status` and reports this session's guests and their leases as they are. Read-only. |
 
 It is not an MCP prompt. pi's MCP adapter can only name a prompt
 `/mcp__<package>__<server>__<prompt>`, so each host gets its own command file
@@ -190,12 +190,12 @@ tarball it checked.
 
 ## Ownership, failure and recovery
 
-- One server session owns at most one VM. Another task needs a separate acquisition.
+- One server session holds several guests at once, up to `MCP_RELAY_MAX_GUESTS` (4 by default). `relay_acquire` names each guest, such as `login-test-1`, and every tool that acts on a guest takes that name as `guest`. Each guest keeps its own lease and heartbeat, its own evidence folder under `relay-evidence/`, its own background downloads, owner lock and registry row, and its own finish or release; finishing or releasing one leaves the others running. Calls on different guests run at the same time; calls on one guest keep their order. An acquisition beyond the limit is refused with the names of the guests held; the backend's own limits, such as two macOS VMs per host, still hold and their refusals pass through.
 - An operation failure retains the VM so the agent can inspect, repair and submit a new operation. Failed and uncertain operations are never automatically replayed.
 - Use `finish` to deliver evidence and release, or `release` to abandon explicitly. A declared output that was never produced is recorded as incomplete (`incompleteExtractions`) rather than failing `finish`. A failed delivery retains the VM; a release failure retains ownership until destruction is verified.
-- When the session ends (the client closes the server's standard input, a write to its standard output fails, or it is signalled), the relay renews the lease once for the rest of its TTL, then renewal pauses and the recording detaches; the VM is not destroyed and is retained until its TTL for an explicit finish or release. A `finish` or `release` already in flight completes first, for up to the shutdown grace period; after that the operation is cancelled and renewal pauses without it. The backend TTL and grace period handle abandoned leases. Status reports the last confirmed expiration time.
+- When the session ends (the client closes the server's standard input, a write to its standard output fails, or it is signalled), the relay renews each guest's lease once for the rest of its TTL, then renewal pauses and the recording detaches; no VM is destroyed and is retained until its TTL for an explicit finish or release. A `finish` or `release` already in flight completes first, for up to the shutdown grace period; after that the operation is cancelled and renewal pauses without it. The backend TTL and grace period handle abandoned leases. Status reports the last confirmed expiration time.
 - While the session is live, the relay tracks the lease's own deadline (its start plus `ttlHours`) and renews vm-service only 15 minutes ahead at a time, never past that deadline, and stops renewing at it. A client that crashes without ending its session therefore leaves its VM leased for at most about 15 minutes, plus the backend's grace period, rather than its whole TTL.
-- A restarted server with the same `MCP_RELAY_SESSION` reconciles its durable ownership and reattaches the recording session without replaying prior work. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
+- A restarted server with the same `MCP_RELAY_SESSION` reconciles each guest's durable ownership and reattaches its recording session without replaying prior work; every guest keeps its name. A session state written by a relay before several guests is restored as one guest named from its task. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
 - A run tool's `timeoutMs` defaults to 120,000 ms and accepts integers up to 3,600,000 ms. It bounds command execution, not the snapshot delay or the lease lifetime. A timeout reports confirmed termination or uncertainty and keeps the VM available.
 - `relay_exec` with `diagnostic: true` records command diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. Before staging it runs through vm-service in the guest's default directory; after staging in the recording workspace. It cannot join a snapshot group and is not visual verification.
 - After diagnosing damaged recording state, `relay_stage` with `resetRecording: true` archives the old recording and starts a new recording session in the same VM. An existing receiver lock refuses the reset until its operation is reconciled. Prior evidence paths remain in the owned status.
@@ -280,7 +280,7 @@ consumer directory or acquires a VM:
 - Display selection needs `before` or `after`; a phase the plan did not request returns `not-requested`. Application selection needs an acquisition-time declaration: a directory declaration takes one relative file path, a file declaration omits `path`. A reference resolves to the same original bytes or an explicit failure.
 - Originals are limited to 64 MiB, 40,000,000 decoded pixels and 32,768 pixels per dimension; PNG, JPEG and WebP are accepted. The preview is at most 2,000 × 2,000 pixels and 4 MiB of base64. **Presentation differs from pi here:** pi resizes through its own image helper, while this core has no codec dependency. A PNG original is decoded and, when it exceeds the preview bounds, resampled in-process (area averaging, `node:zlib`); a JPEG or WebP original has its container validated and passes through unchanged when within bounds, and is reported `presentation-unavailable` otherwise. No EXIF orientation is applied; dimensions are those stored. The presentation receipt records the policy, the original and preview dimensions, the MIME type, hash, size and whether bytes were transformed, beside the untouched original.
 - Each delivery has a 90-second deadline and a shared budget of three byte-transfer attempts. Only transient transfer failures are retried; authorization, unsafe-path, capture, format and integrity failures are not. Recommend at most two explicit recovery calls for the same reference; if a required image still cannot be inspected, stop exploratory input and finish or release.
-- Immutable catalog entries bind each reference to the owner, enclosure, backend and original identity. Closed or sealed enclosures return `stale-reference`; delivered originals remain readable with the host's file tools. Finalization materializes verified originals at canonical snapshot paths and preserves prior state when merging guest evidence.
+- Immutable catalog entries bind each reference to the owner, enclosure, backend and original identity. A closed or sealed guest returns `stale-reference`; delivered originals remain readable with the host's file tools. Finalization materializes verified originals at canonical snapshot paths and preserves prior state when merging guest evidence.
 - Attachment means the block was included in the result; it does not prove the model inspected it or that a human reviewed it.
 
 ## Live console viewing
@@ -352,10 +352,11 @@ keeps the VM for a retry after space is freed.
 ## Configuration
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
-- `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the enclosure of the same identity.
+- `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
 - `MCP_RELAY_URL`: the loopback vm-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, vm-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a vm-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
-- `MCP_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-relay` or `~/.local/state/mcp-relay`, one subdirectory per session.
+- `MCP_RELAY_MAX_GUESTS`: the most guests one session holds at once, a positive integer, default 4. Any other value stops the server at startup.
+- `MCP_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-relay` or `~/.local/state/mcp-relay`, one subdirectory per session, with one `guests/<guest>/` folder per guest holding its ownership record and owner lock.
 - `MCP_RELAY_REGISTRY`: an explicit task registry file; otherwise an existing compatible `~/AGENTS.md` VM table, or a private managed `registry.md` in the state directory.
 - `MCP_RELAY_SHUTDOWN_GRACE_MS`: how long a session end waits for an in-flight operation before cancelling it; default 120000.
 - `MCP_RELAY_PYTHON`: the Python 3 used for the registry lock; default `python3` on PATH.
