@@ -248,6 +248,7 @@ export class ImageStore {
     const request = await optional(() => readMetadata(recording.path, join(recording.path, 'host', 'requests', `${target.executionId}.json`), options.signal));
     if (!request) fail('unauthorized-reference', 'Execution does not belong to this enclosure.');
     if (request.sessionId !== target.sessionId || request.executionId !== target.executionId) fail('integrity-failed', 'Execution identity does not match its recording.');
+    if (request.capture === false) return { status: 'not-requested', diagnostic: 'The image lists no capture software (cua-driver), so this run took no snapshots.' };
     const group = request.snapshots?.group;
     const requested = !request.diagnostic && (target.phase === 'before' ? !group || group.phase === 'first' : !group || group.phase === 'last');
     if (!requested) return { status: 'not-requested', diagnostic: 'The declared snapshot plan does not capture this phase.' };

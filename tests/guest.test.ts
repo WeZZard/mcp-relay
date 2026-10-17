@@ -609,3 +609,24 @@ test("hold validation refuses before the wait", async t => {
     assert.match(result.outcome.kind === "refused" ? result.outcome.diagnostic : "", /invalid hold/);
   }
 });
+
+test("a run on an image without capture software takes no snapshots, owes none and completes (DC-13)", async t => {
+  const { root, options } = await setup(t);
+  let captures = 0;
+  options.capture = async (out) => { captures++; await writeFile(out, png); };
+  const result = await receive(request("uncaptured", { capture: false, argv: ["program"] }), options);
+  assert.deepEqual(result.outcome, { kind: "completed", exitStatus: { code: 0, signal: null } });
+  assert.deepEqual(result.imageEvidence, { status: "not-requested", snapshots: [] });
+  assert.equal(captures, 0, "nothing was captured");
+  const events = await journal(root);
+  assert.equal(events.some(event => event.kind === "snapshot-captured"), false);
+  assert.equal(events.find(event => event.kind === "action-start")?.snapshotPlan, undefined, "no snapshot plan is declared");
+  assert.equal(events.find(event => event.kind === "execution-start")?.capture, false, "the record says the run took no snapshots by design");
+  // A coalescing group needs capture; without it the group is not opened, so a later run is not refused.
+  assert.equal((await receive(request("uncaptured-group", { capture: false, argv: ["program"], snapshots: { group: { groupId: "g1", phase: "first" } } }), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("uncaptured-next", { capture: false, argv: ["program"] }), options)).outcome.kind, "completed");
+  assert.equal(captures, 0);
+  // Saved image evidence that claims a snapshot for such a run is invalid.
+  assert.throws(() => validateImageEvidence({ status: "available", snapshots: [] }, request("x", { capture: false })), /invalid image evidence/);
+  assert.equal((await receive(request("bad-capture", { capture: "no" as never, argv: ["program"] }), options)).outcome.kind, "refused");
+});

@@ -830,7 +830,7 @@ function describe(value) {
 // src/guest/image-evidence.ts
 var safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 function afterRequested(request) {
-  return !(request?.kind === "exec" && request.diagnostic === true) && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
+  return !(request?.kind === "exec" && request.diagnostic === true) && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
 }
 function validateImageEvidence(value, request, authoritativeSnapshots) {
   const fail = () => {
@@ -843,7 +843,7 @@ function validateImageEvidence(value, request, authoritativeSnapshots) {
   const phases = /* @__PURE__ */ new Set();
   let actionId;
   for (const s of evidence.snapshots) {
-    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail();
+    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || request.capture === false || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail();
     phases.add(s.phase);
     actionId = s.actionId;
   }
@@ -922,6 +922,7 @@ function validate(request) {
   if (request.kind === "code" && (typeof request.code !== "string" || !/^[a-f0-9]{64}$/.test(request.codeSha256 ?? ""))) throw new Error("code and its SHA-256 are required");
   if (request.hold !== void 0 && (!request.hold || typeof request.hold !== "object" || !safeId(request.hold.id) || !Number.isInteger(request.hold.timeoutMs) || request.hold.timeoutMs < 1 || request.hold.timeoutMs > MAX_HOLD_MS)) throw new Error(`invalid hold: a safe id and timeoutMs from 1 to ${MAX_HOLD_MS} are required`);
   if (request.hold !== void 0 && request.diagnostic === true) throw new Error("a diagnostic request cannot be held");
+  if (request.capture !== void 0 && typeof request.capture !== "boolean") throw new Error("capture must be boolean");
   if (request.kind === "script" && (!text(request.remotePath) || !isAbsolute(request.remotePath) || !/^[a-f0-9]{64}$/.test(request.scriptSha256 ?? ""))) throw new Error("absolute remotePath and script SHA-256 are required");
 }
 function groupAbsentFromProcessTable(group, table) {
@@ -1066,6 +1067,7 @@ async function receive(input, options = {}) {
   const request = input;
   const executionId = request && safeId(request.executionId) ? request.executionId : "unknown";
   const evidenceMode = request?.kind === "exec" && request.diagnostic === true ? "diagnostic" : void 0;
+  const uncaptured = request?.capture === false;
   const timeoutMs = request?.timeoutMs ?? 12e4;
   let imageEvidence = { status: afterRequested(request) ? "capture-unknown" : "not-requested", snapshots: [] };
   const response = (kind, diagnostic) => ({ executionId, evidenceMode, timeoutMs, imageEvidence, outcome: { kind, diagnostic: bounded(diagnostic) } });
@@ -1149,7 +1151,7 @@ async function receive(input, options = {}) {
     if (history.damagedTail) throw new Error("damaged journal; execution requires recording recovery without modifying prior evidence");
     await durableJson(startedPath, { executionId, requestSha256: hash(encoded) });
     const ids = { sessionId: request.sessionId, attemptId: request.attemptId };
-    await store.appendJournal({ kind: "annotation", annotationType: "routing-decision", ...ids, executionId, state: "pending", because: request.because, step: request.step, evidenceMode, timeoutMs }, { durable: true });
+    await store.appendJournal({ kind: "annotation", annotationType: "routing-decision", ...ids, executionId, state: "pending", because: request.because, step: request.step, evidenceMode, timeoutMs, ...uncaptured ? { capture: false } : {} }, { durable: true });
     const gate = new CaptureGate();
     let captureFailure;
     const capture = async (out) => {
@@ -1172,7 +1174,7 @@ async function receive(input, options = {}) {
     const snapshots = new SnapshotStore(capture, store, state);
     snapshots.setSeq(history.records.length + 1);
     const engine = new AdmissionEngine(store, gate, ids, snapshots);
-    const params = { parentExecutionId: executionId, stepId: request.step?.id, title: request.step?.title, inputMode: request.step?.inputMode ?? "ordinary", snapshots: evidenceMode ? void 0 : request.snapshots, dispatchIdentity: executionId };
+    const params = { parentExecutionId: executionId, stepId: request.step?.id, title: request.step?.title, inputMode: request.step?.inputMode ?? "ordinary", snapshots: evidenceMode || uncaptured ? void 0 : request.snapshots, dispatchIdentity: executionId };
     const actionId = engine.allocateAction(params);
     const retain = async (result) => {
       const retained = await store.journalHistory();
@@ -1216,7 +1218,7 @@ async function receive(input, options = {}) {
       return await refuse(message(error));
     }
     const groups = await optionalJson(groupPath) ?? { used: [] };
-    const group = evidenceMode ? void 0 : request.snapshots.group;
+    const group = evidenceMode || uncaptured ? void 0 : request.snapshots.group;
     const abandonGroup = async (diagnostic) => {
       if (!groups.active) return;
       await store.appendJournal({ kind: "annotation", annotationType: "group-incomplete", ...ids, executionId, groupId: groups.active.groupId, priorSessionId: groups.active.sessionId, priorAttemptId: groups.active.attemptId, diagnostic, state: "incomplete" }, { durable: true });
@@ -1260,7 +1262,7 @@ async function receive(input, options = {}) {
       await store.appendJournal({ kind: "annotation", annotationType: "input-hold-decided", ...ids, executionId, state: hold.decision === "go" ? "released" : "withheld", hold: { ...request.hold, ...hold } }, { durable: true });
       if (hold.decision !== "go") return await refuse(`input held and not released (${hold.decision}); nothing was sent`);
     }
-    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, scriptIdentity: request.kind === "exec" ? void 0 : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
+    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...uncaptured ? { capture: false } : {}, scriptIdentity: request.kind === "exec" ? void 0 : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
     if (group?.phase === "first") {
       groups.active = { groupId: group.groupId, ...ids };
       groups.used.push(group.groupId);
@@ -1295,7 +1297,7 @@ async function receive(input, options = {}) {
         }
       });
       const expectedCount = !group ? 2 : group.phase === "member" ? 0 : 1;
-      if (captureFailure || engine.evidenceFailure || !evidenceMode && engine.actionSnapshots?.length !== expectedCount) {
+      if (captureFailure || engine.evidenceFailure || !evidenceMode && !uncaptured && engine.actionSnapshots?.length !== expectedCount) {
         const diagnostic = captureFailure ?? engine.evidenceFailure ?? "missing required snapshot evidence";
         return await retain(response("uncertain", diagnostic));
       }

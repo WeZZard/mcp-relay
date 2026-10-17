@@ -239,7 +239,9 @@ async function analyze(root, options, files) {
     if (pair.filter((s) => s.role === "before").length > 1 || pair.filter((s) => s.role === "after").length > 1) throw new Error(`duplicate action snapshot role: ${id}`);
     const before = pair.find((s) => s.role === "before"), after = pair.find((s) => s.role === "after");
     if (before && after && (snapshots.indexOf(before) >= snapshots.indexOf(after) || Date.parse(before.capturedAt) > Date.parse(after.capturedAt))) throw new Error(`reversed causal pair: ${id}`);
-    const missingPair = !!start && (!plan || !before || !after || groupId && incompleteGroups.has(groupId));
+    const runId = source.executionId ?? record?.executionId;
+    const uncaptured = !!start && !plan && events.some((e) => e.kind === "execution-start" && e.executionId === runId && e.capture === false);
+    const missingPair = !!start && !uncaptured && (!plan || !before || !after || groupId && incompleteGroups.has(groupId));
     if (missingPair) findings.push(`action ${id} lacks its declared causal pair`);
     if (start && !record) findings.push(`action ${id} has no materialized action record`);
     if (pair.length && (!record?.snapshots || !events.some((e) => e.kind === "snapshot-evidence" && e.actionId === id))) findings.push(`action ${id} lacks durable reverse snapshot references`);

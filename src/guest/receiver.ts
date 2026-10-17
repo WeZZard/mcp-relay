@@ -108,6 +108,7 @@ function validate(request: GuestRequest): void {
   if (request.kind === "code" && (typeof request.code !== "string" || !/^[a-f0-9]{64}$/.test(request.codeSha256 ?? ""))) throw new Error("code and its SHA-256 are required");
   if (request.hold !== undefined && (!request.hold || typeof request.hold !== "object" || !safeId(request.hold.id) || !Number.isInteger(request.hold.timeoutMs) || request.hold.timeoutMs < 1 || request.hold.timeoutMs > MAX_HOLD_MS)) throw new Error(`invalid hold: a safe id and timeoutMs from 1 to ${MAX_HOLD_MS} are required`);
   if (request.hold !== undefined && request.diagnostic === true) throw new Error("a diagnostic request cannot be held");
+  if (request.capture !== undefined && typeof request.capture !== "boolean") throw new Error("capture must be boolean");
   if (request.kind === "script" && (!text(request.remotePath) || !isAbsolute(request.remotePath) || !/^[a-f0-9]{64}$/.test(request.scriptSha256 ?? ""))) throw new Error("absolute remotePath and script SHA-256 are required");
 }
 
@@ -248,6 +249,8 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
   const request = input as GuestRequest;
   const executionId = request && safeId(request.executionId) ? request.executionId : "unknown";
   const evidenceMode = request?.kind === "exec" && request.diagnostic === true ? "diagnostic" as const : undefined;
+  // The image lists no capture software: no snapshots are taken or owed.
+  const uncaptured = request?.capture === false;
   const timeoutMs = request?.timeoutMs ?? 120_000;
   let imageEvidence: GuestImageEvidence = { status: afterRequested(request) ? "capture-unknown" : "not-requested", snapshots: [] };
   const response = (kind: "refused" | "uncertain", diagnostic: string): GuestResponse => ({ executionId, evidenceMode, timeoutMs, imageEvidence, outcome: { kind, diagnostic: bounded(diagnostic) } });
@@ -314,7 +317,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
     await durableJson(startedPath, { executionId, requestSha256: hash(encoded) });
     const ids = { sessionId: request.sessionId!, attemptId: request.attemptId! };
     // This fsynced event precedes capture and dispatch, including refusals.
-    await store.appendJournal({ kind: "annotation", annotationType: "routing-decision", ...ids, executionId, state: "pending", because: request.because, step: request.step, evidenceMode, timeoutMs }, { durable: true });
+    await store.appendJournal({ kind: "annotation", annotationType: "routing-decision", ...ids, executionId, state: "pending", because: request.because, step: request.step, evidenceMode, timeoutMs, ...(uncaptured ? { capture: false } : {}) }, { durable: true });
     const gate = new CaptureGate();
     let captureFailure: string | undefined;
     const capture: SnapshotCaptureFn = async (out) => {
@@ -330,7 +333,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
     const snapshots = new SnapshotStore(capture, store, state);
     snapshots.setSeq(history.records.length + 1);
     const engine = new AdmissionEngine(store, gate, ids, snapshots);
-    const params: ActionParams = { parentExecutionId: executionId, stepId: request.step?.id, title: request.step?.title, inputMode: request.step?.inputMode ?? "ordinary", snapshots: evidenceMode ? undefined : request.snapshots, dispatchIdentity: executionId };
+    const params: ActionParams = { parentExecutionId: executionId, stepId: request.step?.id, title: request.step?.title, inputMode: request.step?.inputMode ?? "ordinary", snapshots: evidenceMode || uncaptured ? undefined : request.snapshots, dispatchIdentity: executionId };
     const actionId = engine.allocateAction(params);
     const retain = async (result: GuestResponse): Promise<GuestResponse> => {
       // The SDK's actionSnapshots can be unset on a partial pair or journal
@@ -369,7 +372,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
     };
     try { validate(request); } catch (error) { return await refuse(message(error)); }
     const groups = await optionalJson<GroupState>(groupPath) ?? { used: [] };
-    const group = evidenceMode ? undefined : request.snapshots!.group;
+    const group = evidenceMode || uncaptured ? undefined : request.snapshots!.group;
     const abandonGroup = async (diagnostic: string): Promise<void> => {
       if (!groups.active) return;
       await store!.appendJournal({ kind: "annotation", annotationType: "group-incomplete", ...ids, executionId, groupId: groups.active.groupId, priorSessionId: groups.active.sessionId, priorAttemptId: groups.active.attemptId, diagnostic, state: "incomplete" }, { durable: true });
@@ -410,7 +413,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
       await store.appendJournal({ kind: "annotation", annotationType: "input-hold-decided", ...ids, executionId, state: hold.decision === "go" ? "released" : "withheld", hold: { ...request.hold, ...hold } }, { durable: true });
       if (hold.decision !== "go") return await refuse(`input held and not released (${hold.decision}); nothing was sent`);
     }
-    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, scriptIdentity: request.kind === "exec" ? undefined : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
+    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...(uncaptured ? { capture: false } : {}), scriptIdentity: request.kind === "exec" ? undefined : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
     if (group?.phase === "first") {
       groups.active = { groupId: group.groupId, ...ids }; groups.used.push(group.groupId);
       await durableJson(groupPath, groups);
@@ -441,7 +444,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
         }
       });
       const expectedCount = !group ? 2 : group.phase === "member" ? 0 : 1;
-      if (captureFailure || engine.evidenceFailure || (!evidenceMode && engine.actionSnapshots?.length !== expectedCount)) {
+      if (captureFailure || engine.evidenceFailure || (!evidenceMode && !uncaptured && engine.actionSnapshots?.length !== expectedCount)) {
         const diagnostic = captureFailure ?? engine.evidenceFailure ?? "missing required snapshot evidence";
         return await retain(response("uncertain", diagnostic));
       }

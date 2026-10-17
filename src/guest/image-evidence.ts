@@ -6,7 +6,12 @@ import type { FramedRequest } from "@wezzard/relay-driver-host-sdk";
  * as a path. It lives apart from the receiver so the host bundles carry none
  * of the guest program, in particular not its command-line entry.
  */
-export type GuestRequest = FramedRequest & { readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly hold?: InputHold };
+/**
+ * `capture: false` is a run on an image that lists no capture software
+ * (cua-driver): it takes no snapshots, and their absence is not a gap
+ * (docs/guest-code-runs.md §3). Absent means capture, as before.
+ */
+export type GuestRequest = FramedRequest & { readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly hold?: InputHold; readonly capture?: boolean };
 /** A delivered request whose input waits, before its before snapshot, until the host releases it (docs/relay-run.md, Held input). */
 export interface InputHold { readonly id: string; readonly timeoutMs: number }
 
@@ -34,7 +39,7 @@ export interface GuestImageEvidence {
 }
 
 export function afterRequested(request: GuestRequest): boolean {
-  return !(request?.kind === "exec" && request.diagnostic === true) &&
+  return !(request?.kind === "exec" && request.diagnostic === true) && request?.capture !== false &&
     !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
 }
 
@@ -58,7 +63,7 @@ export function validateImageEvidence(value: unknown, request: GuestRequest, aut
         !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 ||
         s.mimeType !== "image/png" || typeof s.fileName !== "string" ||
         !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 ||
-        (request.diagnostic === true) ||
+        (request.diagnostic === true) || request.capture === false ||
         (s.phase === "before" && group && group.phase !== "first") ||
         (s.phase === "after" && !afterRequested(request)) ||
         s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : undefined)) fail();

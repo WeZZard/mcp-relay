@@ -107,6 +107,12 @@ class FixtureService {
   /** Fails the next archive pulls, as a lost session link would (AD-4). */
   archivePullFailures = 0;
   acquireHook?: () => Promise<void>;
+  /** The image catalog `/applications` serves: by default ubuntu2404 lists cua-driver, so runs take snapshots as before (DC-13). */
+  catalog: unknown = { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'dpkg:cua-driver', name: 'cua-driver', aliases: [], version: '1.0' }, { id: 'dpkg:nodejs', name: 'Node.js', aliases: ['node'], version: '22.0.0' }] }] };
+  /** Fails `/applications`, as an unreachable or older catalog would. */
+  catalogFails = false;
+  /** The guest has no Node.js on PATH: `node --version` exits 127, as a shell would. */
+  noNode = false;
   /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
   acquireRefusal?: { status: number; body: unknown };
   receiverHook?: () => Promise<void>;
@@ -130,6 +136,7 @@ class FixtureService {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     const path = req.url!; this.requests.push({ method: req.method!, path, body });
     if (path === '/health') return this.respond(res, 200, { ok: true, service: 'fixture-only' });
+    if (path === '/applications') return this.catalogFails ? this.respond(res, 503, { error: 'fixture catalog unavailable' }) : this.respond(res, 200, this.catalog);
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true }, missing: { base_available: false } }, capacity: { macos_running: 0, macos_limit: 2 } });
     if (path === '/vms') return this.respond(res, 200, { vms: this.hideLeases ? {} : Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: this.root, port: 0 });
     if (path === '/acquire') {
@@ -175,6 +182,7 @@ class FixtureService {
     }
     const argv: string[] = body.argv;
     if (argv[0] === 'cua-driver' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 127, output: 'fixture cua-driver not installed' });
+    if (this.noNode && argv[0] === 'node') return this.respond(res, 200, { vm, rc: 127, output: 'env: node: No such file or directory' });
     assert.ok(['node', process.execPath, '/bin/mkdir', '/bin/sh', '/usr/bin/env', join(this.root, 'fake-cua')].includes(argv[0]), `Unexpected fixture executable: ${argv[0]}`);
     if (argv[0] === '/bin/sh') { assert.equal(argv[2], 'cd "$1" || exit; shift; exec "$@"'); assert.ok(argv[4].startsWith('/var/tmp/')); }
     if (argv[0] === '/bin/mkdir') {
@@ -900,6 +908,91 @@ test('vm-service refusing internet passes through, and the relay never falls bac
   await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 400: .*Softnet is not usable on this host/);
   assert.deepEqual(f.service.requests.filter(r => r.path === '/acquire').map(r => r.body.network), ['internet'], 'one acquisition, never retried on nat');
   assert.equal(f.service.leases.size, 0);
+});
+
+const nodeOnly = { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'dpkg:nodejs', name: 'Node.js', aliases: ['node'], version: '22.0.0' }, { id: 'dpkg:python3', name: 'Python', aliases: [], version: '3.12' }] }] };
+
+test('an image that lists no capture software stages, runs relay_code and finishes with no snapshots and a passed outcome (DC-13)', { timeout: 30000 }, async t => {
+  const f = await fixture(t); f.service.catalog = nodeOnly;
+  await f.manager.acquire(acquireInput({ extractions: [{ name: 'out', path: 'out.txt' }] }));
+  const before = await f.manager.probe('guest') as any;
+  assert.equal(before.snapshots.taken, null, 'decided at relay_stage');
+  // No cua-driver is named or present: staging assumes Node.js only.
+  const staged = await f.manager.stage({ nodePath: process.execPath }) as any;
+  assert.equal(staged.snapshots.taken, false); assert.match(staged.snapshots.reason, /lists no capture software \(cua-driver\)/);
+  const probe = await f.manager.probe('guest') as any;
+  assert.deepEqual(probe.checks.map((check: any) => [check.name, check.required]), [['node', true], ['cuaDriver', false]]);
+  assert.equal(probe.checks.find((check: any) => check.name === 'cuaDriver').ready, false, 'cua-driver is reported as a fact');
+  assert.equal(probe.snapshots.taken, false);
+  const run = await f.manager.run(operation('code', { kind: 'code', language: 'javascript', code: "require('node:fs').writeFileSync('out.txt','no capture');console.log('ran')" }));
+  assert.deepEqual(run.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
+  assert.match(run.stdout, /ran/);
+  assert.equal(run.imageDelivery.status, 'not-requested'); assert.match(run.imageDelivery.diagnostic!, /no capture software/);
+  const image = await f.manager.image({ source: 'display', sessionId: (f.manager as any).current().sessionId, executionId: run.executionId!, phase: 'after' });
+  assert.equal(image.status, 'not-requested');
+  assert.equal(await exists(join(f.root, 'captures.jsonl')), false, 'nothing was captured');
+  const output = f.manager.status().output!;
+  const delivered = await f.manager.finish();
+  assert.equal(delivered.deliveryVerified, true, JSON.stringify(delivered));
+  assert.equal(delivered.execution, 'passed', JSON.stringify(delivered));
+  assert.equal(delivered.snapshots, 'complete', JSON.stringify(delivered));
+  const verified = await verifyDeliveredPackage(output);
+  assert.equal(verified.execution, 'passed'); assert.equal(verified.snapshots, 'complete');
+  assert.deepEqual(verified.findings, []);
+  assert.equal(await exists(join(output, 'state', 'snapshots')) ? (await readdir(join(output, 'state', 'snapshots'), { recursive: true })).some(name => String(name).endsWith('.png')) : false, false, 'the package holds no snapshots');
+  const receipt = await json(join(output, 'host', 'receipts', `${run.executionId}.json`));
+  assert.equal(receipt.outcome.kind, 'completed');
+  const request = await json(join(output, 'host', 'requests', `${run.executionId}.json`));
+  assert.equal(request.capture, false, 'the host told the receiver');
+  await f.assertClean();
+});
+
+test('an image that lists cua-driver keeps its snapshots (DC-13)', { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  await f.manager.acquire(acquireInput());
+  const staged = await f.stage() as any;
+  assert.equal(staged.snapshots.taken, true);
+  const run = await f.manager.run(operation('code', { kind: 'code', language: 'javascript', code: "console.log('ran')" }));
+  assert.deepEqual(run.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
+  await shown(f.manager, run);
+  const captures = (await readFile(join(f.root, 'captures.jsonl'), 'utf8')).trim().split('\n');
+  assert.equal(captures.length, 2, 'before and after');
+  const output = f.manager.status().output!;
+  const request = await json(join(output, 'host', 'requests', `${run.executionId}.json`));
+  assert.equal(Object.hasOwn(request, 'capture'), false, 'the request is as before');
+  const delivered = await f.manager.finish();
+  assert.equal(delivered.execution, 'passed'); assert.equal(delivered.snapshots, 'complete');
+  await f.assertClean();
+});
+
+test('on an image that lists cua-driver, a run whose snapshot cannot be taken is still not a success (DC-13)', { timeout: 30000 }, async t => {
+  // The image lists cua-driver, but the driver cannot capture: as before, the run is refused before any input.
+  const f = await fixture(t);
+  await f.manager.acquire(acquireInput());
+  await f.manager.stage({ nodePath: process.execPath, cuaDriver: join(f.root, 'no-such-driver') });
+  const run = await f.manager.run(operation('uncaptured-but-owed'));
+  assert.equal(run.outcome.kind, 'refused', JSON.stringify(run.outcome));
+  await f.manager.release(); await f.assertClean();
+});
+
+test('relay_stage refuses an image without Node.js and says so; nothing is pushed (DC-13)', async t => {
+  const f = await fixture(t); f.service.noNode = true;
+  await f.manager.acquire(acquireInput());
+  await assert.rejects(f.manager.stage({}), /relay_stage needs Node\.js in the guest .*an image without Node\.js cannot be staged/s);
+  assert.equal(pushes(f), 0); assert.equal(f.manager.status().staged, false);
+  await f.assertRetained();
+  await f.manager.release(); await f.assertClean();
+});
+
+test('relay_stage refuses when the image catalog cannot be read, so no run loses its snapshots by mistake (DC-13)', async t => {
+  const f = await fixture(t); f.service.catalogFails = true;
+  await f.manager.acquire(acquireInput());
+  await assert.rejects(f.stage(), /could not read the image catalog .*capture software \(cua-driver\)/s);
+  assert.equal(pushes(f), 0);
+  f.service.catalogFails = false;
+  const staged = await f.stage() as any;
+  assert.equal(staged.snapshots.taken, true);
+  await f.manager.release(); await f.assertClean();
 });
 
 test('lost acquire response reconciles by pre-recorded purpose without allocating twice', async t => {

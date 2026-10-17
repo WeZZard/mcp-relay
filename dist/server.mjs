@@ -20340,6 +20340,8 @@ var VmTransport = class {
   because = "";
   timeoutMs = 12e4;
   diagnostic = false;
+  /** False when the lease's image lists no capture software: the receiver takes no snapshots (docs/guest-code-runs.md §3). */
+  capture = true;
   /** The current run's hold: the guest waits for relay_gate before its before snapshot and any input. */
   hold;
   /** The current run's cancellation: a cancelled dispatch stops waiting for the receiver and is reported as uncertain. */
@@ -20349,7 +20351,7 @@ var VmTransport = class {
     if (!this.because.trim()) throw new Error("Run execution intent is required");
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(request.executionId)) throw new Error("Invalid execution identity");
     this.response = void 0;
-    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...this.diagnostic ? { diagnostic: true } : {}, ...this.hold ? { hold: this.hold } : {} };
+    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...this.diagnostic ? { diagnostic: true } : {}, ...this.capture ? {} : { capture: false }, ...this.hold ? { hold: this.hold } : {} };
     const local = join8(this.hostRoot, "requests", `${request.executionId}.json`);
     const remote = join8(this.guestRoot, "requests", `${request.executionId}.json`);
     await assertHostPath(this.hostRoot, local, true);
@@ -20623,7 +20625,9 @@ async function analyze(root, options2, files) {
     if (pair.filter((s) => s.role === "before").length > 1 || pair.filter((s) => s.role === "after").length > 1) throw new Error(`duplicate action snapshot role: ${id2}`);
     const before = pair.find((s) => s.role === "before"), after = pair.find((s) => s.role === "after");
     if (before && after && (snapshots2.indexOf(before) >= snapshots2.indexOf(after) || Date.parse(before.capturedAt) > Date.parse(after.capturedAt))) throw new Error(`reversed causal pair: ${id2}`);
-    const missingPair = !!start && (!plan || !before || !after || groupId && incompleteGroups.has(groupId));
+    const runId = source.executionId ?? record3?.executionId;
+    const uncaptured = !!start && !plan && events.some((e) => e.kind === "execution-start" && e.executionId === runId && e.capture === false);
+    const missingPair = !!start && !uncaptured && (!plan || !before || !after || groupId && incompleteGroups.has(groupId));
     if (missingPair) findings.push(`action ${id2} lacks its declared causal pair`);
     if (start && !record3) findings.push(`action ${id2} has no materialized action record`);
     if (pair.length && (!record3?.snapshots || !events.some((e) => e.kind === "snapshot-evidence" && e.actionId === id2))) findings.push(`action ${id2} lacks durable reverse snapshot references`);
@@ -29237,7 +29241,7 @@ async function prepareImage(bytes, mimeType) {
 // src/guest/image-evidence.ts
 var safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 function afterRequested(request) {
-  return !(request?.kind === "exec" && request.diagnostic === true) && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
+  return !(request?.kind === "exec" && request.diagnostic === true) && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
 }
 function validateImageEvidence(value, request, authoritativeSnapshots) {
   const fail2 = () => {
@@ -29250,7 +29254,7 @@ function validateImageEvidence(value, request, authoritativeSnapshots) {
   const phases = /* @__PURE__ */ new Set();
   let actionId;
   for (const s of evidence.snapshots) {
-    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail2();
+    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || request.capture === false || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail2();
     phases.add(s.phase);
     actionId = s.actionId;
   }
@@ -29539,6 +29543,7 @@ var ImageStore = class {
     const request = await optional2(() => readMetadata(recording.path, join11(recording.path, "host", "requests", `${target2.executionId}.json`), options2.signal));
     if (!request) fail("unauthorized-reference", "Execution does not belong to this enclosure.");
     if (request.sessionId !== target2.sessionId || request.executionId !== target2.executionId) fail("integrity-failed", "Execution identity does not match its recording.");
+    if (request.capture === false) return { status: "not-requested", diagnostic: "The image lists no capture software (cua-driver), so this run took no snapshots." };
     const group = request.snapshots?.group;
     const requested = !request.diagnostic && (target2.phase === "before" ? !group || group.phase === "first" : !group || group.phase === "last");
     if (!requested) return { status: "not-requested", diagnostic: "The declared snapshot plan does not capture this phase." };
@@ -30105,12 +30110,13 @@ var RELAY_RUN_OUTPUTS = "relay-run";
 var MCP_START_ALLOWANCE_MS = 6e4;
 var DEFAULT_HOLD_MS = 6e4;
 var DECIDE = `const fs=require('fs'),p=require('path');const [dir,id,want]=process.argv.slice(1);fs.mkdirSync(dir,{recursive:true});const f=p.join(dir,id),t=f+'.'+process.pid+'.'+Date.now()+'.tmp';fs.writeFileSync(t,want,{mode:0o600});try{fs.linkSync(t,f)}catch(e){if(e.code!=='EEXIST')throw e}finally{fs.rmSync(t,{force:true})}console.log(fs.readFileSync(f,'utf8').trim());`;
+var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
 var MAX_TOOL_IMAGES = 4;
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
 var downloadKey = (target2) => `${target2.sessionId}/${target2.executionId}`;
 var stepId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
-var instructions = "This server offers nineteen tools for one enclosure, a guest VM that runs the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM; evidence is automatic, and its after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. One task gets one enclosure: call relay_acquire once per task, never reused for a second task. Work an enclosure in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release. Always call relay_finish or relay_release explicitly before you return an answer; ending the session only pauses lease renewal, it does not destroy the VM, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
+var instructions = "This server offers nineteen tools for one enclosure, a guest VM that runs the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. One task gets one enclosure: call relay_acquire once per task, never reused for a second task. Work an enclosure in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release. Always call relay_finish or relay_release explicitly before you return an answer; ending the session only pauses lease renewal, it does not destroy the VM, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
   constructor(options2) {
@@ -30273,6 +30279,7 @@ var RelayManager = class {
     if (!e.sessionId || !e.node) throw new Error("Persisted staged session lacks runtime identity");
     const relay = Relay.open(join14(e.hostRoot, "host", "submissions"));
     this.transport = new VmTransport(this.transfer(), e.guestRoot, join14(e.hostRoot, "host"), e.cuaDriver);
+    this.transport.capture = e.capture !== false;
     this.session = await relay.attach(e.sessionId, this.transport);
   }
   search(query, signal, toolCallId) {
@@ -30297,15 +30304,17 @@ var RelayManager = class {
           const e = this.current();
           const checks = [];
           for (const [name, argv2] of [["node", [e.node ?? "node", "--version"]], ["cuaDriver", [e.cuaDriver ?? (e.lease.image_kind === "macos" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver"), "--version"]]]) {
+            const required2 = name === "node";
             try {
               const r = await this.channel.exec(e.lease.vm, [...argv2], 1e4);
-              checks.push({ name, ...r, ready: r.code === 0 });
+              checks.push({ name, required: required2, ...r, ready: r.code === 0 });
             } catch (error2) {
-              checks.push({ name, ready: false, diagnostic: String(error2) });
+              checks.push({ name, required: required2, ready: false, diagnostic: String(error2) });
             }
           }
           const targets = await this.targetAvailability(e, checks);
-          const facts2 = { scope, observedAt: (/* @__PURE__ */ new Date()).toISOString(), owned: this.status(), checks, targets, captureVerified: false, browserVerified: false };
+          const snapshots2 = e.capture === void 0 && !e.staged ? { taken: null, reason: "Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver)." } : this.snapshotFacts(e);
+          const facts2 = { scope, observedAt: (/* @__PURE__ */ new Date()).toISOString(), owned: this.status(), checks, targets, snapshots: snapshots2, captureVerified: false, browserVerified: false };
           await this.log("guest-readiness", void 0, facts2);
           return facts2;
         });
@@ -30623,9 +30632,17 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       const workspace = input.workspace === void 0 ? void 0 : await this.projectPath(input.workspace, "workspace");
       const bundle = this.options.runtimeBundle ?? fileURLToPath(new URL("../dist/receiver.mjs", import.meta.url));
       await access(bundle);
+      if (e.capture === void 0 && !e.staged) {
+        e.capture = await this.captureSoftware(e, signal);
+        await this.save();
+      }
       const node2 = input.nodePath ?? e.node ?? "node";
       const transfer = new Transfer(this.channel, e.lease.vm, node2, { guestRoot: e.guestRoot, hostTempRoot: join14(this.root, "transfer-tmp"), onRetry: (event) => this.log("transfer-retry", void 0, event), onArchiveFallback: (event) => this.log("archive-fallback", void 0, event) });
-      await transfer.checked([node2, "--version"]);
+      try {
+        await transfer.checked([node2, "--version"]);
+      } catch (error2) {
+        throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node2} --version\` failed: ${error2 instanceof Error ? error2.message : String(error2)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error2 });
+      }
       const launchChanged = e.mcpHost && (input.nodePath !== void 0 && input.nodePath !== e.node || input.cuaDriver !== void 0 && input.cuaDriver !== e.cuaDriver || input.browserExecutable !== void 0 && input.browserExecutable !== e.browserExecutable);
       e.node = node2;
       e.cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease.image_kind === "macos" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver");
@@ -30635,7 +30652,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       if (e.staged) {
         await this.session?.close();
         await this.attach();
-        return { staged: true, workspace: join14(e.guestRoot, "workspace"), owned: this.status(), files: [], extractions: e.extractions };
+        return { staged: true, workspace: join14(e.guestRoot, "workspace"), owned: this.status(), files: [], extractions: e.extractions, snapshots: this.snapshotFacts(e) };
       }
       await transfer.checked(["/bin/mkdir", "-p", join14(e.guestRoot, "workspace"), join14(e.guestRoot, "state")]);
       const staged = [await transfer.pushFile(bundle, join14(e.guestRoot, "receiver.mjs"))];
@@ -30644,13 +30661,35 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       await this.log("stage", void 0, { files: staged, extractions: e.extractions });
       const relay = Relay.open(join14(e.hostRoot, "host", "submissions"));
       this.transport = new VmTransport(transfer, e.guestRoot, join14(e.hostRoot, "host"), e.cuaDriver);
+      this.transport.capture = e.capture !== false;
       relay.useTransport(() => this.transport);
       this.session = await relay.start({ taskId: e.purpose, target: `vm-service:${e.lease.vm}` });
       e.sessionId = this.session.sessionId;
       e.staged = true;
       await this.save();
-      return { staged: true, workspace: join14(e.guestRoot, "workspace"), files: staged, extractions: e.extractions, capabilities: { image: imageCapability } };
+      return { staged: true, workspace: join14(e.guestRoot, "workspace"), files: staged, extractions: e.extractions, snapshots: this.snapshotFacts(e), capabilities: { image: imageCapability } };
     }));
+  }
+  /**
+   * Whether the lease's image lists capture software, from the image catalog.
+   * A catalog that cannot be read refuses the stage, so a run never loses its
+   * snapshots by mistake.
+   */
+  async captureSoftware(e, signal) {
+    let catalog;
+    try {
+      catalog = await this.vm.applications({ timeoutMs: 1e4, signal });
+      validateCatalog(catalog);
+    } catch (error2) {
+      throw new Error(`relay_stage could not read the image catalog to learn whether ${e.image} lists capture software (cua-driver), so nothing was staged: ${error2 instanceof Error ? error2.message : String(error2)}`, { cause: error2 });
+    }
+    const capture = catalog.images.some((image) => image.image === e.image && image.applications.some((app) => CAPTURE_SOFTWARE.includes(app.id)));
+    await this.log("capture-software", void 0, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
+    return capture;
+  }
+  /** What a lease's runs record: snapshots when its image lists cua-driver, none otherwise. */
+  snapshotFacts(e) {
+    return e.capture === false ? { taken: false, reason: `${e.image} lists no capture software (cua-driver), so runs take no snapshots and their records have none.` } : { taken: true, reason: e.capture ? `${e.image} lists cua-driver, so each run takes before and after snapshots.` : "This lease predates the capture decision, so each run takes before and after snapshots." };
   }
   run(input, signal) {
     const hold2 = input.kind === "mcp" ? input.hold : void 0;
@@ -30947,7 +30986,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       cua: { available: driver, launch: [e.cuaDriver ?? "cua-driver", "mcp"], ...e.lease.image_kind === "macos" ? {} : { requires: "cua-driver serve --no-overlay running on native X11" }, server: servers.cua ?? { state: "not-started" } },
       playwright: browserTarget("playwright"),
       "chrome-devtools": browserTarget("chrome-devtools"),
-      note: "Availability means the executables exist; it never proves a browser renders on the display or that capture works."
+      note: "Availability means the executables exist; it never proves a browser renders on the display or that capture works. Staging requires only Node.js; cua-driver and the browser are facts about the image, needed only by the targets that use them."
     };
   }
   imageStore() {
@@ -31611,7 +31650,7 @@ var relayTools = [
     action: "probe",
     title: "Probe host and guest readiness",
     annotations: readOnly,
-    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and this session\'s owned lifecycle state, not guest readiness. `scope: "guest"` (on an already-owned VM) reports whether Node, CuaDriver and each relay_run target (`cua`, `playwright`, `chrome-devtools`) are available, without installing or starting anything, and never claims capture readiness. Continue in order: relay_acquire, relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release, called explicitly before you return.'
+    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and this session\'s owned lifecycle state, not guest readiness. `scope: "guest"` (on an already-owned VM) reports whether Node.js, which staging requires, is available, and, as facts, whether cua-driver and each relay_run target (`cua`, `playwright`, `chrome-devtools`) are available and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Continue in order: relay_acquire, relay_stage, relay_run (or a command tool), relay_image/relay_extract, then relay_finish or relay_release, called explicitly before you return.'
   },
   {
     name: "relay_acquisition_capabilities",
@@ -31632,7 +31671,7 @@ var relayTools = [
     action: "stage",
     title: "Stage the guest runtime",
     annotations: acts(false),
-    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. The guest Node and CuaDriver executables must already exist (`nodePath`, `cuaDriver`); Linux guests need native X11 and `cua-driver serve --no-overlay`. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
+    description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto an acquired VM. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result's `snapshots` says which. `cuaDriver` names the guest cua-driver for snapshots and the `cua` target. `browserExecutable` names the guest browser the `playwright` and `chrome-devtools` targets launch (default: installed Google Chrome); their pinned servers are staged on first use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
   },
   {
     name: "relay_exec",
@@ -31640,7 +31679,7 @@ var relayTools = [
     kind: "exec",
     title: "Run a guest command",
     annotations: acts(true),
-    description: "Run one guest command (`argv`) as one recorded operation; never hide several interactions in one call. Evidence is automatic: the relay snapshots the display before and after and records a step derived from the command. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true` records a diagnosis or repair without snapshots, even before relay_stage; it is never visual verification, and its result has one `output` field with stdout and stderr combined."
+    description: "Run one guest command (`argv`) as one recorded operation; never hide several interactions in one call. Evidence is automatic: the relay records a step derived from the command and, when the image lists cua-driver, snapshots the display before and after. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true` records a diagnosis or repair without snapshots, even before relay_stage; it is never visual verification, and its result has one `output` field with stdout and stderr combined."
   },
   {
     name: "relay_script",
@@ -31664,7 +31703,7 @@ var relayTools = [
     kind: "mcp",
     title: "Run an MCP tool call in the VM",
     annotations: acts(true),
-    description: "Send one tool call to an MCP server inside the VM. `target` is `cua` (cua-driver), `playwright` (Playwright MCP) or `chrome-devtools` (Chrome DevTools MCP); `tool` and `args` are that server's own tool name and arguments, forwarded unchanged. Use relay_tools to see a target's exact tools. Evidence is automatic: snapshots before and after, and a step record; `reason`, `expected` and `afterIntervalMs` are optional overrides. The result names the after-snapshot as `pending` with its `imageId` and does not wait for it: the image downloads in the background, relay_image with that `imageId` shows it, and relay_finish and relay_release wait for the downloads. Images the target tool itself returns stay inline. Never replay an uncertain call. With `hold`, the call is delivered but waits in the guest, before its before-snapshot and any input, until relay_gate decides it; a call not released is refused with nothing sent, and the result's `hold` says which decision ended it."
+    description: "Send one tool call to an MCP server inside the VM. `target` is `cua` (cua-driver), `playwright` (Playwright MCP) or `chrome-devtools` (Chrome DevTools MCP); `tool` and `args` are that server's own tool name and arguments, forwarded unchanged. Use relay_tools to see a target's exact tools. Evidence is automatic: a step record, and snapshots before and after when the image lists cua-driver; `reason`, `expected` and `afterIntervalMs` are optional overrides. The result names the after-snapshot as `pending` with its `imageId` and does not wait for it: the image downloads in the background, relay_image with that `imageId` shows it, and relay_finish and relay_release wait for the downloads. Images the target tool itself returns stay inline. Never replay an uncertain call. With `hold`, the call is delivered but waits in the guest, before its before-snapshot and any input, until relay_gate decides it; a call not released is refused with nothing sent, and the result's `hold` says which decision ended it."
   },
   {
     name: "relay_gate",

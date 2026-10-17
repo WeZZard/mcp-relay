@@ -30,6 +30,7 @@ flowchart LR
   - Capture software is cua-driver. The relay knows it by the catalog ids `bundle:com.trycua.driver` (macOS) and `dpkg:cua-driver` (Linux).
   - When the image lists no capture software, the run's record has no snapshots. The missing pair does not make the run `uncertain`.
   - When the image lists capture software, snapshots are taken and checked as today.
+  - The host decides once per lease, at the first `relay_stage`, from the image's applications in the catalog, and tells the receiver with each run. A catalog that cannot be read refuses the stage, so a run never loses its snapshots by mistake.
 - `relay_run`'s targets keep their own requirements, and the relay still stages their pinned servers on first use. They are not changed by this design.
 
 ## 4. Where the relay is used (DC-14)

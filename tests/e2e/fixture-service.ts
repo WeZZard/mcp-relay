@@ -36,7 +36,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   await log({ at: new Date().toISOString(), method: req.method, path, body });
   if (path === '/health') return respond(res, 200, { ok: true, service: 'fixture-only' });
   if (path === '/images') return respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true } }, capacity: { macos_running: 0, macos_limit: 2 } });
-  if (path === '/applications') return respond(res, 200, { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'firefox', name: 'Firefox', aliases: [], version: '128.0' }] }] });
+  if (path === '/applications') return respond(res, 200, { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'firefox', name: 'Firefox', aliases: [], version: '128.0' }, { id: 'dpkg:cua-driver', name: 'cua-driver', aliases: [], version: '1.0' }] }] });
   if (path === '/vms') return respond(res, 200, { vms: Object.fromEntries(leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: root, port: 0 });
   if (path === '/acquire') {
     const vm = `fixture-${randomUUID()}`;

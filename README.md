@@ -108,8 +108,13 @@ Node 22+, Python 3 with `fcntl` for the registry lock, and for VM execution an
 Apple-silicon Mac with Tart, a running
 [vm-service](https://github.com/WeZZard/vm-service) and prepared guest images.
 Check readiness with `node dist/doctor.mjs`. It does not acquire a VM or
-establish guest UI readiness. Guest execution needs Node and CuaDriver with
-capture/input permissions; Linux requires native X11 and `serve --no-overlay`.
+establish guest UI readiness. Staging and runs assume no software in the guest
+but Node.js, which runs the relay's own guest code; `relay_stage` refuses an
+image without it. A run takes before and after snapshots only when the image
+lists capture software, cua-driver (catalog ids `bundle:com.trycua.driver` and
+`dpkg:cua-driver`); otherwise its record has no snapshots, and that is not a
+gap. Snapshots and the `cua` target need cua-driver with capture and input
+permissions; on Linux, native X11 and `serve --no-overlay`.
 The `playwright` and `chrome-devtools` targets of `relay_run` need a browser in
 the guest (installed Google Chrome, or a path given as `browserExecutable`);
 their pinned servers are downloaded once on the host and staged, so the guest
@@ -132,10 +137,10 @@ Evidence is automatic for all four: see "relay_run" below.
 | Tool | Title | Replaces (`action`, `kind`) | Purpose |
 |---|---|---|---|
 | `relay_search` | Search installed applications | `search` | Find installed applications from image inventories by name and optional OS. |
-| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and owned state. `scope: "guest"` checks the Node and CuaDriver executables and each `relay_run` target's availability on the owned guest without installing, starting or claiming capture readiness. |
+| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and owned state. `scope: "guest"` checks Node.js, which staging requires, and reports as facts the cua-driver executable, each `relay_run` target's availability and whether runs take snapshots, on the owned guest, without installing, starting or claiming capture readiness. |
 | `relay_acquisition_capabilities` | Read acquisition capabilities | `acquisition-capabilities` | Read versioned acquisition options (VNC backends) without allocation or ownership recovery. |
 | `relay_acquire` | Acquire a VM | `acquire` | Register the task, acquire a fresh VM on the network `MCP_RELAY_GUEST_NETWORK` names and start its heartbeat; declare outputs before work. Optional `vnc` prepares sharing without opening a viewer. |
-| `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace, all from the project folder; `browserExecutable` names the guest browser for the browser targets. Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
+| `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace, all from the project folder. Needs only Node.js in the guest, and reports whether runs take snapshots (only when the image lists cua-driver); `browserExecutable` names the guest browser for the browser targets. Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
 | `relay_exec` | Run a guest command | `run`, `exec` | One recorded guest command. `diagnostic: true` records command diagnosis or repair without screenshot evidence, including before staging. |
 | `relay_script` | Run a guest script | `run`, `script` | One recorded guest script file (`localPath`, in the project folder, and `language`). |
 | `relay_code` | Run guest code | `run`, `code` | One recorded inline guest code snippet (`code`, `language`). |

@@ -20,6 +20,8 @@ export class VmTransport implements SessionTransport {
   because = '';
   timeoutMs = 120000;
   diagnostic = false;
+  /** False when the lease's image lists no capture software: the receiver takes no snapshots (docs/guest-code-runs.md §3). */
+  capture = true;
   /** The current run's hold: the guest waits for relay_gate before its before snapshot and any input. */
   hold?: { id: string; timeoutMs: number };
   /** The current run's cancellation: a cancelled dispatch stops waiting for the receiver and is reported as uncertain. */
@@ -30,7 +32,7 @@ export class VmTransport implements SessionTransport {
     if (!this.because.trim()) throw new Error('Run execution intent is required');
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(request.executionId)) throw new Error('Invalid execution identity');
     this.response = undefined;
-    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...(this.diagnostic ? { diagnostic: true } : {}), ...(this.hold ? { hold: this.hold } : {}) };
+    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...(this.diagnostic ? { diagnostic: true } : {}), ...(this.capture ? {} : { capture: false }), ...(this.hold ? { hold: this.hold } : {}) };
     const local = join(this.hostRoot, 'requests', `${request.executionId}.json`);
     const remote = join(this.guestRoot, 'requests', `${request.executionId}.json`);
     await assertHostPath(this.hostRoot, local, true);
