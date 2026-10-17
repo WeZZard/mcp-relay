@@ -33,6 +33,16 @@ test('the server refuses to start on a guest network other than nat or internet 
   });
 });
 
+test('the server refuses to start on an exit behaviour other than pause or release (DC-21)', async () => {
+  for (const value of ['', 'destroy', 'Release']) {
+    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_ON_EXIT: value } }), (error: any) => {
+      assert.equal(error.code, 1, value);
+      assert.match(error.stderr, /MCP_RELAY_ON_EXIT must be pause or release/, value);
+      return true;
+    });
+  }
+});
+
 test('the server refuses to start on a guest limit that is not a positive integer (DC-20)', async () => {
   for (const value of ['0', '-1', '2.5', 'four', '']) {
     await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_MAX_GUESTS: value } }), (error: any) => {

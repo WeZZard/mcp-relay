@@ -60,6 +60,21 @@ export function maxGuests(env: NodeJS.ProcessEnv = process.env): number {
   return count;
 }
 
+/** What the end of a session does to its guests (DC-21). */
+export const ON_EXIT = ['pause', 'release'] as const;
+export type OnExit = typeof ON_EXIT[number];
+/**
+ * What the end of a session does to its guests, from MCP_RELAY_ON_EXIT:
+ * `pause`, when it is unset, pauses each guest's renewal and keeps its VM;
+ * `release` releases every guest. Any other value is refused (DC-21).
+ */
+export function onExit(env: NodeJS.ProcessEnv = process.env): OnExit {
+  const value = env.MCP_RELAY_ON_EXIT;
+  if (value === undefined) return 'pause';
+  if (!(ON_EXIT as readonly string[]).includes(value)) throw new TypeError(`MCP_RELAY_ON_EXIT must be pause or release, not ${JSON.stringify(value)}; the relay does not start until it names one of them`);
+  return value as OnExit;
+}
+
 /** Resolve a Python executable name through PATH unless explicitly overridden. */
 export function pythonExecutable(env: NodeJS.ProcessEnv = process.env): string {
   return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");

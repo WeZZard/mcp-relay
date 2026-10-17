@@ -31,7 +31,7 @@ console viewing (relay_console_open) unless the user explicitly asked to
 watch.
 
 Call relay_finish or relay_release explicitly for every guest before you
-return; the session ending does not destroy the VMs. Report the verified package path, the
+return; the session ending never finishes a guest. Report the verified package path, the
 delivery result, the snapshot completeness and the execution outcome as
 separate facts. Do not claim human review. Do not use vm-service or
 relay-driver directly.

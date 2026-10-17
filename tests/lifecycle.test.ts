@@ -76,7 +76,14 @@ interface Relay {
   alive: () => boolean;
   stateRoot: string;
   sessionId: string;
+  /** The server's own process: the child itself, or the one a wrapper started. */
+  serverPid: () => number | undefined;
 }
+
+/** A parent that starts the server on its own standard streams and then just waits, so the test can make the server's parent go away while its standard input stays open. */
+const WRAPPER = "const c=require('child_process').spawn(process.execPath,[process.argv[1]],{stdio:'inherit'});process.stderr.write('server-pid '+c.pid+'\\n');setInterval(()=>{},1e6);";
+/** Whether a process is still running. */
+const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 async function fixture(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-lifecycle-')));
@@ -85,14 +92,16 @@ async function fixture(t: TestContext) {
   const tart = join(bin, 'tart'); await writeFile(tart, '#!/bin/sh\nprintf "[]"\n'); await chmod(tart, 0o700);
   const registry = join(root, 'registry.md'); await writeFile(registry, registryText);
   const children: ChildProcessWithoutNullStreams[] = [];
+  const servers: number[] = [];
   t.after(async () => {
     for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    for (const pid of servers) if (running(pid)) process.kill(pid, 'SIGKILL');
     await rm(root, { recursive: true, force: true });
   });
   /** Start the shipped server with only the variables this test sets: no inherited environment selection, state or registry. */
-  const start = async (url: string, sessionId: string | undefined = `lifecycle-${randomUUID()}`, extra: Record<string, string> = {}): Promise<Relay> => {
+  const start = async (url: string, sessionId: string | undefined = `lifecycle-${randomUUID()}`, extra: Record<string, string> = {}, { wrapped = false } = {}): Promise<Relay> => {
     const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TART: tart, MCP_RELAY_URL: url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registry, MCP_RELAY_PROJECT: project, ...(sessionId ? { MCP_RELAY_SESSION: sessionId } : {}), ...extra };
-    const child = spawn(process.execPath, [server], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, wrapped ? ['-e', WRAPPER, server] : [server], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     children.push(child);
     let stdout = '', stderr = '', nextId = 1;
     const waiting = new Map<number, (message: any) => void>();
@@ -104,7 +113,7 @@ async function fixture(t: TestContext) {
         try { const message = JSON.parse(line); waiting.get(message.id)?.(message); } catch { /* not a JSON-RPC line */ }
       }
     });
-    child.stderr.on('data', data => { stderr += data; });
+    child.stderr.on('data', data => { stderr += data; const pid = /server-pid (\d+)/.exec(stderr)?.[1]; if (pid && !servers.includes(Number(pid))) servers.push(Number(pid)); });
     child.stdin.on('error', () => {});
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(done => child.on('exit', (code, signal) => done({ code, signal })));
     const send = (message: Record<string, unknown>) => { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`); };
@@ -113,7 +122,8 @@ async function fixture(t: TestContext) {
     send({ method: 'notifications/initialized' });
     const call = async (name: string, args: Record<string, unknown> = {}) => (await request('tools/call', { name, arguments: args })).result;
     const alive = () => child.exitCode === null && child.signalCode === null;
-    return { child, stderr: () => stderr, exited, call, send, alive, stateRoot: join(root, 'state'), sessionId: sessionId ?? '' };
+    const serverPid = () => wrapped ? Number(/server-pid (\d+)/.exec(stderr)?.[1]) || undefined : child.pid;
+    return { child, stderr: () => stderr, exited, call, send, alive, stateRoot: join(root, 'state'), sessionId: sessionId ?? '', serverPid };
   };
   const service = async () => { const fake = new FakeService(); await fake.start(); t.after(() => fake.close()); return fake; };
   /** The durable ownership record of a session, and the lifecycle events of its enclosure. */
@@ -270,4 +280,91 @@ test('R3 (session identity): a restarted server with the default random session 
   assert.equal(f.fake.releaseCalls, 0, 'nothing was released');
   assert.equal(f.fake.leases.has(vm!), true, 'the earlier lease is still held at the backend, reachable only through its TTL or its old session identity');
   second.child.stdin.end(); await second.exited;
+});
+
+/** Two guests in one session, acquired over the shipped server. */
+async function twoGuests(f: Awaited<ReturnType<typeof withService>>, relay: Relay) {
+  for (const guest of ['lifecycle-1', 'lifecycle-2']) {
+    const acquired = await relay.call('relay_acquire', acquireArgs);
+    assert.equal(acquired.isError, false, acquired.content[0].text);
+    assert.equal(JSON.parse(acquired.content[0].text).guest, guest);
+  }
+  assert.equal(f.fake.leases.size, 2);
+  return [await f.lease(relay, 'lifecycle-1'), await f.lease(relay, 'lifecycle-2')];
+}
+/** Both guests were released through their release path: VMs gone, records emptied, registry rows removed, and each guest's evidence says why. */
+async function assertReleased(f: Awaited<ReturnType<typeof withService>>, relay: Relay, owned: any[]) {
+  assert.equal(f.fake.releaseCalls, 2, 'each guest was released once');
+  assert.equal(f.fake.leases.size, 0);
+  for (const guest of ['lifecycle-1', 'lifecycle-2']) assert.equal(await readFile(f.leaseFile(relay, guest), 'utf8'), 'null\n', `${guest} holds no record`);
+  assert.equal(await readFile(f.registry, 'utf8'), registryText, 'both registry rows were removed');
+  for (const record of owned) {
+    const lifecycle = JSON.parse(await readFile(`${record.hostRoot}.lifecycle.json`, 'utf8'));
+    assert.equal(lifecycle.released, true); assert.equal(lifecycle.reason, 'released');
+    assert.ok((await f.events(record.hostRoot)).some(event => event.kind === 'exit-release'), 'the release says the session ended');
+  }
+}
+
+test('DC-21: with MCP_RELAY_ON_EXIT=release, closing stdin releases both guests the session holds, then the server exits', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release' });
+  const owned = await twoGuests(f, relay);
+  relay.child.stdin.end();
+  const exit = await exitWithin(relay, 15000);
+  assert.ok(exit, 'the server exits once the guests are released');
+  assert.equal(exit.code, 0, relay.stderr());
+  await assertReleased(f, relay, owned);
+});
+
+test('DC-21: with MCP_RELAY_ON_EXIT=release, SIGTERM releases both guests, then the server exits', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release' });
+  const owned = await twoGuests(f, relay);
+  relay.child.kill('SIGTERM');
+  const exit = await exitWithin(relay, 15000);
+  assert.ok(exit, 'the server exits once the guests are released');
+  assert.equal(exit.code, 0, relay.stderr());
+  await assertReleased(f, relay, owned);
+});
+
+test('DC-21: with MCP_RELAY_ON_EXIT=release, the parent process going away releases both guests even while stdin stays open', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release' }, { wrapped: true });
+  const owned = await twoGuests(f, relay);
+  const pid = relay.serverPid(); assert.ok(pid, relay.stderr());
+  relay.child.kill('SIGKILL'); // the parent goes away; the test still holds the server's standard input open
+  const deadline = Date.now() + 15000;
+  while (running(pid) && Date.now() < deadline) await sleep(100);
+  assert.equal(running(pid), false, 'the server ends its session when its parent goes away');
+  await assertReleased(f, relay, owned);
+});
+
+test('DC-21: by default (pause) closing stdin keeps both guests and pauses their renewal', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url);
+  const owned = await twoGuests(f, relay);
+  relay.child.stdin.end();
+  const exit = await exitWithin(relay, 10000);
+  assert.ok(exit); assert.equal(exit.code, 0, relay.stderr());
+  assert.equal(f.fake.releaseCalls, 0, 'session end never releases a VM by default');
+  for (const [index, guest] of ['lifecycle-1', 'lifecycle-2'].entries()) {
+    const after = await f.lease(relay, guest);
+    assert.equal(after.active, false, `${guest} renewal paused`); assert.equal(after.lease.vm, owned[index].lease.vm);
+    assert.equal(f.fake.leases.has(after.lease.vm), true);
+    assert.ok((await f.events(after.hostRoot)).some(event => event.kind === 'renewal-paused'));
+  }
+  assert.notEqual(await readFile(f.registry, 'utf8'), registryText, 'both guests stay registered');
+});
+
+test('DC-21: with MCP_RELAY_ON_EXIT=release, a guest operation that never answers delays the release only for the grace period', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release', MCP_RELAY_SHUTDOWN_GRACE_MS: '500' });
+  const owned = await twoGuests(f, relay);
+  f.fake.execHook = () => new Promise(() => {}); // a guest command whose answer never comes
+  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
+  await f.fake.arrived('/exec');
+  relay.child.stdin.end();
+  const exit = await exitWithin(relay, 20000);
+  assert.ok(exit, 'the release is bounded'); assert.equal(exit.code, 0, relay.stderr());
+  await assertReleased(f, relay, owned);
 });

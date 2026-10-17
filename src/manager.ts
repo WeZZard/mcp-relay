@@ -162,7 +162,7 @@ async function settleEach(work: Array<Promise<unknown>>) {
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session only pauses lease renewal, it does not destroy the VMs, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
 export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
@@ -506,6 +506,31 @@ export class RelayManager {
       })));
     } finally { this.shuttingDown = true; await this.unload(guests); }
   }); }
+  /**
+   * The session ends with MCP_RELAY_ON_EXIT=release (DC-21): release every
+   * guest it holds, those an earlier process of the session left included,
+   * each through its own release path after the operation its queue already
+   * holds. A guest whose release fails keeps its record; its renewal stops
+   * without a final renewal, so its lease ends within its last window.
+   */
+  async releaseAll(reason: string) { return this.serialized(async () => {
+    this.shuttingDown = true;
+    await this.load();
+    const guests = [...this.guests.values()];
+    try { await settleEach(guests.map(guest => guest.serialized(() => guest.releaseOnExit(reason)))); }
+    finally { await this.unload(guests); }
+  }); }
+  /**
+   * releaseAll's last resort when it does not settle in time: release each
+   * guest still held at once, without waiting for its queue or pulling more
+   * evidence, in one bounded attempt. The process exits right after.
+   */
+  async releaseNow(reason: string) {
+    this.shuttingDown = true;
+    const guests = [...this.guests.values()];
+    try { await settleEach(guests.map(guest => guest.releaseDirect(`${reason}; an in-flight operation did not settle and was abandoned`))); }
+    finally { await this.unload(guests); }
+  }
   /** Give up the owner locks. The guests stay listed for status; a later call loads the state again. */
   private async unload(guests: Guest[]) {
     for (const guest of guests) { guest.stopTimer(); await guest.unlock().catch(() => {}); }
@@ -1453,6 +1478,27 @@ class Guest {
     if (result.outcome.kind !== 'completed' || result.outcome.exitStatus.code !== 0) await this.fail(new Error(JSON.stringify(result.outcome)));
     return response;
   }
+  /** The session ended with MCP_RELAY_ON_EXIT=release (DC-21): this guest's own release path. */
+  async releaseOnExit(reason: string) {
+    this.closed = true;
+    if (!this.enclosure) return;
+    try { await this.log('exit-release', undefined, { reason }); await this.release(); }
+    catch (error) { await this.stopOnExit(reason, error); throw error; }
+  }
+  /** releaseNow's part for this guest: destroy its VM without its queue or more evidence, in one bounded attempt. */
+  async releaseDirect(reason: string) {
+    this.closed = true; this.stopTimer(); void this.downloads.close(false);
+    if (!this.enclosure) return;
+    try { await this.log('exit-release', undefined, { reason, direct: true }); await this.releaseInternal('released', { attempts: 1, timeoutMs: 20000 }); }
+    catch (error) { await this.stopOnExit(reason, error); throw error; }
+  }
+  /** A release on exit failed: the record stays, and renewal stops without a final renewal, so the lease ends within its last window. */
+  private async stopOnExit(reason: string, error: unknown) {
+    this.stopTimer();
+    const e = this.enclosure; if (!e) return;
+    e.active = false; await this.save().catch(() => {});
+    await this.log('exit-release-failed', undefined, { reason, error: String(error), expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at }).catch(() => {});
+  }
   async release() {
     await this.restore(); this.assertBinding(); await this.m.assertBackend();
     if (this.enclosure) await this.drained(() => this.releaseDrained());
@@ -1466,7 +1512,7 @@ class Guest {
       if (this.enclosure) await jsonFile(`${this.enclosure.hostRoot}.delivery-error.json`, { error: String(error) }).catch(() => {});
     } finally { await this.releaseInternal('released'); }
   }
-  private async releaseInternal(reason: 'finished' | 'failed' | 'released') {
+  private async releaseInternal(reason: 'finished' | 'failed' | 'released', { attempts = 3, timeoutMs = 120000 } = {}) {
     this.assertBinding(); await this.m.assertBackend();
     const e = this.enclosure; if (!e) return;
     this.stopTimer();
@@ -1480,13 +1526,13 @@ class Guest {
       }
       if (e.lease) {
         let released = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try { const response = await this.m.vm.release(e.lease.vm, { reason }, { timeoutMs: 120000 }); if (!response.released) throw new Error('vm-service did not confirm destruction'); released = true; break; }
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          try { const response = await this.m.vm.release(e.lease.vm, { reason }, { timeoutMs }); if (!response.released) throw new Error('vm-service did not confirm destruction'); released = true; break; }
           catch (error) {
             await this.log('release-error', undefined, { vm: e.lease.vm, cause: reason, attempt: attempt + 1, error: String(error) }).catch(() => {});
             try { await this.m.vm.get(e.lease.vm, { timeoutMs: 5000 }); }
             catch (getError) { if (getError instanceof VmServiceError && getError.status === 404) { released = true; break; } }
-            if (attempt === 2) throw error;
+            if (attempt === attempts - 1) throw error;
           }
         }
         if (!released) throw new Error('Lease release unconfirmed');

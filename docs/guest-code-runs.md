@@ -1,6 +1,6 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15, DC-17 and DC-20 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15, DC-17, DC-20 and DC-21 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
@@ -64,7 +64,18 @@ flowchart LR
 - A guest's name is its task and a counter, such as `login-test-2`, and is never reused in the session. Its ownership record and owner lock live in `guests/<guest>/` in the session's state directory, so a restarted session restores every guest by name. The record of a relay from before DC-20 is restored as one guest named from its task.
 - An acquisition that vm-service refuses acquires nothing: once vm-service lists no VM for it, its registry row goes and the guest leaves the session. An acquisition whose outcome is unknown keeps its guest for reconciliation, as before.
 
-## 8. Verification
+## 8. What the end of a session does (DC-21)
+
+- A session ends when the client closes the relay's standard input, a write to its standard output fails, the relay is signalled (SIGTERM, SIGINT or SIGHUP), or the process that started it goes away, which the relay notices within two seconds even while its standard input stays open.
+- `MCP_RELAY_ON_EXIT` says what the end does to the session's guests. Any value but `pause` or `release` stops the relay at startup.
+- `pause`, the default, is the behaviour before DC-21: each guest's lease is renewed once for the rest of its TTL, renewal pauses, and the VM is kept for an explicit finish or release.
+- `release` releases every guest the session holds, the guests a previous process of the same session left included, each through its own release path: the guest keeps the evidence the host can still pull, its VM is destroyed and verified gone, and its registry row and ownership record go. An operation the client already sent completes first, as with `pause`. Nothing waits for an agent: no result is delivered, and queued image downloads are folded into the release's own evidence pull.
+- The release is bounded. The guests' releases share the shutdown grace period, `MCP_RELAY_SHUTDOWN_GRACE_MS`, 120 s by default; past it the operations in flight are cancelled, and a guest whose release has not ended within 5 s more is released directly, without pulling more evidence, in one attempt bounded at 60 s. Then the relay exits.
+- A guest whose release fails keeps its ownership record and registry row, so a later session with the same `MCP_RELAY_SESSION` can release it. Its renewal stops without the final renewal `pause` makes, so its lease ends within its last renewal window, 15 minutes, plus the backend's grace period.
+- An application that owns its tasks' machines, such as The Desk, sets `release`.
+
+## 9. Verification
 
 - Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
 - Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
+- Lifecycle tests cover DC-21 with the shipped server and a fake vm-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.

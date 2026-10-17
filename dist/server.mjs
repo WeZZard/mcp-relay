@@ -18633,6 +18633,13 @@ function maxGuests(env = process.env) {
   if (!Number.isSafeInteger(count)) throw new TypeError(`MCP_RELAY_MAX_GUESTS must be a positive integer, not ${JSON.stringify(value)}; no guest is acquired until it names one`);
   return count;
 }
+var ON_EXIT = ["pause", "release"];
+function onExit(env = process.env) {
+  const value = env.MCP_RELAY_ON_EXIT;
+  if (value === void 0) return "pause";
+  if (!ON_EXIT.includes(value)) throw new TypeError(`MCP_RELAY_ON_EXIT must be pause or release, not ${JSON.stringify(value)}; the relay does not start until it names one of them`);
+  return value;
+}
 function pythonExecutable(env = process.env) {
   return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
 }
@@ -30131,7 +30138,7 @@ async function settleEach(work) {
   const failed = (await Promise.allSettled(work)).find((result2) => result2.status === "rejected");
   if (failed) throw failed.reason;
 }
-var instructions = "This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session only pauses lease renewal, it does not destroy the VMs, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
+var instructions = "This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
   constructor(options2) {
@@ -30545,6 +30552,39 @@ var RelayManager = class {
         await this.unload(guests);
       }
     });
+  }
+  /**
+   * The session ends with MCP_RELAY_ON_EXIT=release (DC-21): release every
+   * guest it holds, those an earlier process of the session left included,
+   * each through its own release path after the operation its queue already
+   * holds. A guest whose release fails keeps its record; its renewal stops
+   * without a final renewal, so its lease ends within its last window.
+   */
+  async releaseAll(reason2) {
+    return this.serialized(async () => {
+      this.shuttingDown = true;
+      await this.load();
+      const guests = [...this.guests.values()];
+      try {
+        await settleEach(guests.map((guest2) => guest2.serialized(() => guest2.releaseOnExit(reason2))));
+      } finally {
+        await this.unload(guests);
+      }
+    });
+  }
+  /**
+   * releaseAll's last resort when it does not settle in time: release each
+   * guest still held at once, without waiting for its queue or pulling more
+   * evidence, in one bounded attempt. The process exits right after.
+   */
+  async releaseNow(reason2) {
+    this.shuttingDown = true;
+    const guests = [...this.guests.values()];
+    try {
+      await settleEach(guests.map((guest2) => guest2.releaseDirect(`${reason2}; an in-flight operation did not settle and was abandoned`)));
+    } finally {
+      await this.unload(guests);
+    }
   }
   /** Give up the owner locks. The guests stay listed for status; a later call loads the state again. */
   async unload(guests) {
@@ -31689,6 +31729,43 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     if (result2.outcome.kind !== "completed" || result2.outcome.exitStatus.code !== 0) await this.fail(new Error(JSON.stringify(result2.outcome)));
     return response;
   }
+  /** The session ended with MCP_RELAY_ON_EXIT=release (DC-21): this guest's own release path. */
+  async releaseOnExit(reason2) {
+    this.closed = true;
+    if (!this.enclosure) return;
+    try {
+      await this.log("exit-release", void 0, { reason: reason2 });
+      await this.release();
+    } catch (error2) {
+      await this.stopOnExit(reason2, error2);
+      throw error2;
+    }
+  }
+  /** releaseNow's part for this guest: destroy its VM without its queue or more evidence, in one bounded attempt. */
+  async releaseDirect(reason2) {
+    this.closed = true;
+    this.stopTimer();
+    void this.downloads.close(false);
+    if (!this.enclosure) return;
+    try {
+      await this.log("exit-release", void 0, { reason: reason2, direct: true });
+      await this.releaseInternal("released", { attempts: 1, timeoutMs: 2e4 });
+    } catch (error2) {
+      await this.stopOnExit(reason2, error2);
+      throw error2;
+    }
+  }
+  /** A release on exit failed: the record stays, and renewal stops without a final renewal, so the lease ends within its last window. */
+  async stopOnExit(reason2, error2) {
+    this.stopTimer();
+    const e = this.enclosure;
+    if (!e) return;
+    e.active = false;
+    await this.save().catch(() => {
+    });
+    await this.log("exit-release-failed", void 0, { reason: reason2, error: String(error2), expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at }).catch(() => {
+    });
+  }
   async release() {
     await this.restore();
     this.assertBinding();
@@ -31711,7 +31788,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       await this.releaseInternal("released");
     }
   }
-  async releaseInternal(reason2) {
+  async releaseInternal(reason2, { attempts = 3, timeoutMs: timeoutMs2 = 12e4 } = {}) {
     this.assertBinding();
     await this.m.assertBackend();
     const e = this.enclosure;
@@ -31729,9 +31806,9 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       }
       if (e.lease) {
         let released = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < attempts; attempt++) {
           try {
-            const response = await this.m.vm.release(e.lease.vm, { reason: reason2 }, { timeoutMs: 12e4 });
+            const response = await this.m.vm.release(e.lease.vm, { reason: reason2 }, { timeoutMs: timeoutMs2 });
             if (!response.released) throw new Error("vm-service did not confirm destruction");
             released = true;
             break;
@@ -31746,7 +31823,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
                 break;
               }
             }
-            if (attempt === 2) throw error2;
+            if (attempt === attempts - 1) throw error2;
           }
         }
         if (!released) throw new Error("Lease release unconfirmed");
@@ -32193,8 +32270,11 @@ function allToolDefinitions() {
 }
 var SHUTDOWN_GRACE_MS = 12e4;
 var SHUTDOWN_CANCEL_MS = 5e3;
+var RELEASE_NOW_MS = 6e4;
+var PARENT_CHECK_MS = 2e3;
 function createRelayServer(options2 = {}) {
   const sessionId = options2.sessionId ?? process.env.MCP_RELAY_SESSION ?? randomUUID9();
+  const exit = options2.onExit ?? onExit();
   const project = options2.project ?? projectDirectory();
   let manager;
   const get = options2.manager ?? (() => {
@@ -32224,7 +32304,8 @@ function createRelayServer(options2 = {}) {
   });
   const cleanup = async (reason2) => {
     try {
-      await manager?.cleanup(reason2);
+      if (exit === "release") await (manager ?? get()).releaseAll(reason2);
+      else await manager?.cleanup(reason2);
     } finally {
       manager = void 0;
     }
@@ -32233,9 +32314,9 @@ function createRelayServer(options2 = {}) {
     shutdownController.abort(new Error(`Cancelled: ${reason2}`));
   };
   const pauseNow = async (reason2) => {
-    await manager?.pauseNow(reason2);
+    await (exit === "release" ? manager?.releaseNow(reason2) : manager?.pauseNow(reason2));
   };
-  return { server, sessionId, project, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() } };
+  return { server, sessionId, project, onExit: exit, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() } };
 }
 async function main(args) {
   if (args.includes("--instructions")) {
@@ -32251,6 +32332,7 @@ async function main(args) {
   if (args.length) throw new Error("Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout");
   guestNetwork();
   maxGuests();
+  onExit();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");
@@ -32264,8 +32346,13 @@ async function main(args) {
 `);
       relay.cancel(reason2);
       if (await settledWithin(cleanup, SHUTDOWN_CANCEL_MS)) return;
-      process.stderr.write("mcp-relay: the cancelled operation did not stop; pausing renewal without it\n");
-      await relay.pauseNow(reason2);
+      if (relay.onExit === "release") {
+        process.stderr.write("mcp-relay: the cancelled operation did not stop; releasing the guests without it\n");
+        if (!await settledWithin(relay.pauseNow(reason2), RELEASE_NOW_MS)) process.stderr.write("mcp-relay: releasing the guests did not end in time; exiting\n");
+      } else {
+        process.stderr.write("mcp-relay: the cancelled operation did not stop; pausing renewal without it\n");
+        await relay.pauseNow(reason2);
+      }
     } catch (error2) {
       process.stderr.write(`mcp-relay: cleanup failed: ${message2(error2)}
 `);
@@ -32292,6 +32379,13 @@ async function main(args) {
   process.once("SIGINT", () => {
     void shutdown("Relay session interrupted", 0);
   });
+  process.once("SIGHUP", () => {
+    void shutdown("Relay session hung up", 0);
+  });
+  const parent = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== parent) void shutdown("Relay session ended: the process that started it went away", 0);
+  }, PARENT_CHECK_MS).unref();
   await relay.server.connect(new StdioServerTransport());
 }
 if (process.argv[1] && await realpath2(process.argv[1]).catch(() => "") === await realpath2(new URL(import.meta.url)).catch(() => "")) {
@@ -32302,7 +32396,9 @@ if (process.argv[1] && await realpath2(process.argv[1]).catch(() => "") === awai
   });
 }
 export {
+  PARENT_CHECK_MS,
   PLUGIN_TOOL_PREFIX,
+  RELEASE_NOW_MS,
   SERVER_NAME,
   SERVER_VERSION,
   SHUTDOWN_CANCEL_MS,

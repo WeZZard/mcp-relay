@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { RelayManager, Registry, guestNetwork, maxGuests, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
+import { RelayManager, Registry, guestNetwork, maxGuests, onExit, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
 
 export const SERVER_NAME = 'relay';
 /** The build injects this from package.json (esbuild define); under tsx it falls back to reading the file directly. */
@@ -68,11 +68,16 @@ export function allToolDefinitions() {
 export const SHUTDOWN_GRACE_MS = 120000;
 /** How long shutdown waits for a cancelled operation before it pauses renewal without it. */
 export const SHUTDOWN_CANCEL_MS = 5000;
+/** With MCP_RELAY_ON_EXIT=release, how long the last-resort direct release may take before the process exits anyway (DC-21). */
+export const RELEASE_NOW_MS = 60000;
+/** How often the server checks that the process that started it is still there (DC-21). */
+export const PARENT_CHECK_MS = 2000;
 
-export interface RelayServerOptions { sessionId?: string; project?: string; manager?: () => RelayManager }
+export interface RelayServerOptions { sessionId?: string; project?: string; manager?: () => RelayManager; onExit?: 'pause' | 'release' }
 
 export function createRelayServer(options: RelayServerOptions = {}) {
   const sessionId = options.sessionId ?? process.env.MCP_RELAY_SESSION ?? randomUUID();
+  const exit = options.onExit ?? onExit();
   const project = options.project ?? projectDirectory();
   let manager: RelayManager | undefined;
   // A selected environment (VM_ENVIRONMENT_FILE) binds the backend, the image
@@ -107,21 +112,28 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   });
   // Ending the session pauses lease renewal and detaches the recording; the VM
   // is retained for an explicit finish or release, and the backend TTL is the
-  // safeguard for an abandoned one.
-  const cleanup = async (reason: string) => { try { await manager?.cleanup(reason); } finally { manager = undefined; } };
+  // safeguard for an abandoned one. With MCP_RELAY_ON_EXIT=release it releases
+  // every guest the session holds instead, those an earlier process of the
+  // session left included, so it loads the session even if no call did (DC-21).
+  const cleanup = async (reason: string) => {
+    try {
+      if (exit === 'release') await (manager ?? get()).releaseAll(reason);
+      else await manager?.cleanup(reason);
+    } finally { manager = undefined; }
+  };
   /** Cancel every in-flight tool call. */
   const cancel = (reason: string) => { shutdownController.abort(new Error(`Cancelled: ${reason}`)); };
-  /** Pause renewal and release the owner lock without waiting for an in-flight operation; for shutdown only. */
-  const pauseNow = async (reason: string) => { await manager?.pauseNow(reason); };
-  return { server, sessionId, project, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() } };
+  /** Pause renewal, or with MCP_RELAY_ON_EXIT=release release each guest directly, and release the owner locks without waiting for an in-flight operation; for shutdown only. */
+  const pauseNow = async (reason: string) => { await (exit === 'release' ? manager?.releaseNow(reason) : manager?.pauseNow(reason)); };
+  return { server, sessionId, project, onExit: exit, cleanup, cancel, pauseNow, status: () => manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() } };
 }
 
 async function main(args: string[]): Promise<void> {
   if (args.includes('--instructions')) { process.stdout.write(`${instructions}\n`); return; }
   if (args.includes('--schema')) { process.stdout.write(`${JSON.stringify(allToolDefinitions(), null, 2)}\n`); return; }
   if (args.length) throw new Error('Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout');
-  // A guest network the relay cannot honour refuses the server at startup (DC-17), as does a guest limit that is not a positive integer (DC-20).
-  guestNetwork(); maxGuests();
+  // A guest network the relay cannot honour refuses the server at startup (DC-17), as does a guest limit that is not a positive integer (DC-20) and an exit behaviour other than pause or release (DC-21).
+  guestNetwork(); maxGuests(); onExit();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');
@@ -138,8 +150,13 @@ async function main(args: string[]): Promise<void> {
       process.stderr.write(`mcp-relay: an operation was still running ${grace} ms after the session ended; cancelling it\n`);
       relay.cancel(reason);
       if (await settledWithin(cleanup, SHUTDOWN_CANCEL_MS)) return;
-      process.stderr.write('mcp-relay: the cancelled operation did not stop; pausing renewal without it\n');
-      await relay.pauseNow(reason);
+      if (relay.onExit === 'release') {
+        process.stderr.write('mcp-relay: the cancelled operation did not stop; releasing the guests without it\n');
+        if (!await settledWithin(relay.pauseNow(reason), RELEASE_NOW_MS)) process.stderr.write('mcp-relay: releasing the guests did not end in time; exiting\n');
+      } else {
+        process.stderr.write('mcp-relay: the cancelled operation did not stop; pausing renewal without it\n');
+        await relay.pauseNow(reason);
+      }
     }
     catch (error) { process.stderr.write(`mcp-relay: cleanup failed: ${message(error)}\n`); code = 1; }
     finally { process.exit(code); }
@@ -157,6 +174,12 @@ async function main(args: string[]): Promise<void> {
   process.stdout.on('error', error => { void shutdown(`Enclosure session ended: standard output failed (${(error as NodeJS.ErrnoException).code ?? message(error)})`, 0); });
   process.once('SIGTERM', () => { void shutdown('Relay session terminated', 0); });
   process.once('SIGINT', () => { void shutdown('Relay session interrupted', 0); });
+  process.once('SIGHUP', () => { void shutdown('Relay session hung up', 0); });
+  // The process that started the relay can go away while standard input stays
+  // open, such as when it passed its pipe on: the relay is then reparented, and
+  // the session ends (DC-21).
+  const parent = process.ppid;
+  setInterval(() => { if (process.ppid !== parent) void shutdown('Relay session ended: the process that started it went away', 0); }, PARENT_CHECK_MS).unref();
   await relay.server.connect(new StdioServerTransport());
 }
 

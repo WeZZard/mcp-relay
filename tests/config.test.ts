@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { guestNetwork, maxGuests, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
+import { guestNetwork, maxGuests, onExit, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
 import { acquireOwnerLock } from "../src/owner-lock.js";
 
 const home = join(tmpdir(), "relay-config-home");
@@ -79,4 +79,11 @@ test("the guest limit is MCP_RELAY_MAX_GUESTS, 4 when unset, and anything but a 
   assert.equal(maxGuests({ MCP_RELAY_MAX_GUESTS: "1" }), 1);
   assert.equal(maxGuests({ MCP_RELAY_MAX_GUESTS: "12" }), 12);
   for (const value of ["0", "-2", "1.5", "01", " 3", "3 ", "many", "", "99999999999999999999"]) assert.throws(() => maxGuests({ MCP_RELAY_MAX_GUESTS: value }), /MCP_RELAY_MAX_GUESTS must be a positive integer/, value);
+});
+
+test("the session end pauses by default; MCP_RELAY_ON_EXIT=release releases, and any other value is refused (DC-21)", () => {
+  assert.equal(onExit({}), "pause");
+  assert.equal(onExit({ MCP_RELAY_ON_EXIT: "pause" }), "pause");
+  assert.equal(onExit({ MCP_RELAY_ON_EXIT: "release" }), "release");
+  for (const value of ["", "RELEASE", "destroy", " release"]) assert.throws(() => onExit({ MCP_RELAY_ON_EXIT: value }), /MCP_RELAY_ON_EXIT must be pause or release/, value);
 });
