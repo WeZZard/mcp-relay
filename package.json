@@ -36,7 +36,7 @@
     "pi-prompts/"
   ],
   "bin": {
-    "mcp-relay": "./dist/server.mjs"
+    "mcp-relay": "dist/server.mjs"
   },
   "exports": {
     "./review-data": {
