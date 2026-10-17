@@ -25,6 +25,7 @@ separately, using UX-specification and engineering-RFC sections.
 | [Selected environments](selected-environments.md) | The agreed isolated-store configuration, dependency injection, and backend ownership contract. |
 | [Screenshot delivery](screenshot-delivery.md) | The implemented worktree contract for typed command-result images, owner-scoped recovery, application-image authorization, and presentation failures, with explicit acceptance limits. |
 | [Lifecycle fixes](lifecycle-fixes.md) | Decisions and design for session end, cancelled acquisition, finish extraction and cancellable guest commands, with the two items that wait for the owner's decision. |
+| [Code runs in any guest](guest-code-runs.md) | The backends, the software the relay assumes in a guest, and the host paths it reads (DC-12 to DC-15). |
 | [Verification](verification.md) | Measured implementation evidence, historical gates and environment-specific acceptance—not unimplemented design promises |
 | [README](../README.md) | Installation and operational instructions, with worktree-only features identified separately from deployment. |
 
@@ -34,10 +35,9 @@ not assertions that every described capability is already shipped.
 
 ## Product summary
 
-The operating agent judges whether desktop/browser work would interrupt the
-human. Non-interruptive work uses local tools outside this extension. Interruptive
-work runs in a dedicated VM with recorded actions, declared outputs and accountable
-cleanup. Applications compose VM-use subagents by prompt; pi-vm-relay does not
+The operating agent chooses which work runs in a guest (DC-14). That work runs in a
+dedicated VM with recorded actions, declared outputs
+and accountable cleanup. Applications compose VM-use subagents by prompt; pi-vm-relay does not
 spawn them or record video itself.
 
 The planned discovery flow finds installed applications by name and lets the agent

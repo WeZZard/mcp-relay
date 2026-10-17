@@ -27,14 +27,14 @@ and authorization.
 
 | Actor | Job |
 |---|---|
-| Operating agent | Find an application/image, judge interruption, acquire an isolated environment, execute and deliver evidence |
+| Operating agent | Find an application/image, choose where work runs, acquire an isolated environment, execute and deliver evidence |
 | Parent agent or application | Compose a VM-use subagent through a prompt and receive bounded, verifiable results |
 | Human or agent image maintainer | Provision applications, extract the installed inventory, and maintain naming aliases and operating guidance |
 | Evidence reader | Understand what happened, what was expected, what evidence supports it and what remains unverified |
 
-The agent chooses whether work is interruptive; the extension provides facts and
+The agent chooses which work runs in a guest (DC-14); the extension provides facts and
 enforces ownership/execution guarantees. The extension does not spawn subagents
-or execute non-interruptive work locally on the agent's behalf.
+or execute work locally on the agent's behalf.
 
 ## 3. Goals and non-goals
 
@@ -82,9 +82,9 @@ before guest execution.
 ```mermaid
 flowchart TD
     Need[Need application or headed interaction] --> Discover[Search applications / observe host and service]
-    Discover --> Interrupt{Would local execution interrupt the human?}
-    Interrupt -->|No| Local[Agent uses local tools outside relay]
-    Interrupt -->|Yes| Choose[Agent chooses application, image and OS]
+    Discover --> Guest{Does the agent run this work in a guest?}
+    Guest -->|No| Local[Agent uses local tools outside relay]
+    Guest -->|Yes| Choose[Agent chooses application, image and OS]
     Choose --> Acquire[Acquire dedicated VM]
     Acquire --> Stage[Stage runtime and prepare application]
     Stage --> Run[Run recorded actions with intent and expectations]

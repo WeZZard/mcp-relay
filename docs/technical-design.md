@@ -11,9 +11,9 @@
 
 pi-vm-relay is a thin TypeScript Pi extension over vm-service and relay-driver.
 It exposes one `relay` tool and two commands, enforcing dedicated VM ownership,
-recorded execution, declared extraction and verifiable cleanup. Non-interruptive
-local work stays with the agent's local tools; the extension supplies routing
-facts, not a local CUA implementation.
+recorded execution, declared extraction and verifiable cleanup. The agent chooses
+which work runs in a guest (DC-14); the extension supplies host and image facts,
+not a local CUA implementation.
 
 The interface combines read-only application-name discovery with a dedicated
 VM lifecycle and recorded execution. Search does not create an enclosure.
