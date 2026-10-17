@@ -6,7 +6,7 @@ This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-23 in [dec
 
 - An agent runs on a host. It works on the host with its own tools, and in a guest through the relay.
 - A guest is a VM from vm-service, macOS or Linux.
-- The agent writes code that runs in the guest, with `relay_exec`, `relay_script` or `relay_code`. The code drives the software the image lists, such as cua-driver, Playwright and Chrome DevTools.
+- The agent runs commands and code in the guest, with `relay_command` and `relay_script`. The code drives the software the image lists, such as cua-driver, Playwright and Chrome DevTools.
 - The agent picks the image by the software it lists, with `relay_search`.
 - An application that hosts agents, such as The Desk, starts the relay as a stdio MCP server for each of its agents, and passes the agent's working folder as `MCP_RELAY_PROJECT` and its task as `MCP_RELAY_SESSION`.
 
@@ -31,7 +31,6 @@ flowchart LR
   - When the image lists no capture software, the run's record has no snapshots. The missing pair does not make the run `uncertain`.
   - When the image lists capture software, snapshots are taken and checked as today.
   - The host decides once per lease, at the first `relay_stage`, from the image's applications in the catalog, and tells the receiver with each run. A catalog that cannot be read refuses the stage, so a run never loses its snapshots by mistake.
-- `relay_run`'s targets keep their own requirements, and the relay still stages their pinned servers on first use. They are not changed by this design.
 
 ## 4. Where the relay is used (DC-14)
 
@@ -55,7 +54,7 @@ flowchart LR
 ## 7. Several guests in one session (DC-20)
 
 - One relay session may hold several guests at once. An agent acquires one guest for each machine its work needs, and its subagents, which share its relay, may each work on their own guest at the same time.
-- `relay_acquire` answers the guest's name, `guest`, which is unique in the session. Every tool that acts on a guest takes `guest`: `relay_stage`, the run tools, `relay_gate`, `relay_tools`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release` and the console tools.
+- `relay_acquire` answers the guest's name, `guest`, which is unique in the session. Every tool that acts on a guest takes `guest`: `relay_stage`, the run tools, `relay_image`, `relay_extract`, `relay_finish`, `relay_release` and the console tools.
 - `relay_status` and `relay_probe` list every guest the session holds, with its state.
 - Each guest keeps its own lease and heartbeat, its own evidence folder under `relay-evidence/`, its own background downloads, and its own finish or release. Finishing or releasing one guest leaves the others running.
 - Calls on different guests run at the same time. Calls on one guest keep their order, as today.
@@ -83,15 +82,19 @@ flowchart LR
 - A cancelled call or the end of the session stops the wait at once. Nothing was acquired, so the guest leaves the session as after any refusal, and a session that ends with `MCP_RELAY_ON_EXIT=release` still exits promptly.
 - When the wait runs out, `relay_acquire` refuses with vm-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
 
-## 10. One way to relay an action (DC-23)
+## 10. Two ways to relay an action (DC-23)
 
-- `relay_code` is the only tool that runs anything in a guest. It takes `guest`, `language` (`javascript`, `typescript` or `python`) and `code`, as today.
-- The code does what the other tools did:
-  - a command, through the language's own way of starting a process;
-  - a script, as the code itself, or as a file the agent staged into the workspace with `relay_stage` and the code runs;
-  - cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines, as the image lists them.
-- `relay_code` takes `diagnostic` from `relay_exec`: a diagnostic run records the code and its outcome without snapshots, and may run before `relay_stage`, to diagnose or repair a guest. A diagnostic run needs the language's runtime in the guest, and is never visual verification.
-- Removed: `relay_exec`, `relay_script`, `relay_run`, `relay_gate` and `relay_tools`; `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them; and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
+- Two tools run anything in a guest, `relay_command` and `relay_script`. Each takes `guest`, and the optional `reason`, `step`, `snapshots` and `timeoutMs`.
+- `relay_command` runs one command, `argv`. It is `relay_exec` renamed, with the same behaviour.
+  - With `diagnostic: true`, the run records the command and its outcome without snapshots, and may run before `relay_stage`, to diagnose or repair a guest. The guest runs the command through vm-service directly, not through the receiver. The result has one `output` field with stdout and stderr together. A diagnostic run is never visual verification.
+- `relay_script` runs a script in `language` `javascript`, `typescript` or `python`. `inline` is required:
+  - `inline: true` takes the script itself, `code`, up to 1 MiB. This is what `relay_code` did.
+  - `inline: false` takes `localPath`, a file in the project folder (DC-15). This is what `relay_script` did.
+  - A call gives exactly the one of `code` and `localPath` that `inline` names. Any other call is refused before it reaches the guest.
+  - The guest runs JavaScript with the Node.js that runs the receiver, TypeScript with `tsx`, and Python with `python3`, each from the guest's `PATH`.
+- A script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines.
+- Removed: `relay_exec` and `relay_code`, under their old names; `relay_run`, `relay_gate` and `relay_tools`; `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them; `relay_stage`'s `browserExecutable`, which only those servers used; and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
+- `relay_probe` with `scope: "guest"` reports, as facts, whether each language's runtime runs in the guest, and the software the image lists in the catalog.
 - The tools that manage a guest stay: `relay_search`, `relay_probe`, `relay_acquisition_capabilities`, `relay_acquire`, `relay_stage`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release`, `relay_status` and the console tools.
 
 ## 11. Verification
@@ -100,3 +103,4 @@ flowchart LR
 - Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
 - Lifecycle tests cover DC-21 with the shipped server and a fake vm-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.
 - Unit tests cover DC-22 with the fake vm-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.
+- Unit tests cover DC-23: `tools/list` serves `relay_command` and `relay_script` and none of `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools`; `relay_script` runs inline code and a project file in each language, and refuses a call whose `code` or `localPath` does not match `inline`; `relay_command` runs a command, and a diagnostic command runs before and after `relay_stage` without snapshots.

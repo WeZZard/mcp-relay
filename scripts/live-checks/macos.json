@@ -14,146 +14,70 @@
   "show": 300
  },
  {
+  "tool": "relay_probe",
+  "label": "guest runtimes and listed software",
+  "args": {
+   "guest": "live-check-macos-1",
+   "scope": "guest"
+  },
+  "show": 1200
+ },
+ {
   "tool": "relay_stage",
   "args": {
+   "guest": "live-check-macos-1",
    "nodePath": "/usr/local/bin/node"
   },
   "stopOnError": true,
   "show": 300
  },
  {
-  "tool": "relay_run",
+  "tool": "relay_command",
   "label": "cua get_screen_size",
   "args": {
-   "target": "cua",
-   "tool": "get_screen_size",
-   "args": {}
-  }
+   "guest": "live-check-macos-1",
+   "argv": [
+    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+    "call",
+    "get_screen_size",
+    "--json",
+    "{}"
+   ]
+  },
+  "show": 200
  },
  {
-  "tool": "relay_run",
+  "tool": "relay_command",
   "label": "cua launch Calculator",
   "args": {
-   "target": "cua",
-   "tool": "launch_app",
-   "args": {
-    "bundle_id": "com.apple.calculator"
-   }
+   "guest": "live-check-macos-1",
+   "argv": [
+    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+    "call",
+    "launch_app",
+    "--json",
+    "{\"bundle_id\": \"com.apple.calculator\"}"
+   ]
   },
-  "capture": {
-   "pid": "\"pid\": (\\d+)"
-  },
-  "stopOnError": true,
-  "show": 200
+  "show": 200,
+  "stopOnError": true
  },
  {
-  "tool": "relay_run",
-  "label": "cua list_windows",
+  "tool": "relay_script",
+  "label": "inline javascript",
   "args": {
-   "target": "cua",
-   "tool": "list_windows",
-   "args": {
-    "pid": "${pid:int}"
-   }
-  },
-  "capture": {
-   "window": "\"title\": \"Calculator\",\\s*\"window_id\": (\\d+)"
-  },
-  "stopOnError": true,
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "cua get_window_state",
-  "args": {
-   "target": "cua",
-   "tool": "get_window_state",
-   "args": {
-    "pid": "${pid:int}",
-    "window_id": "${window:int}"
-   }
-  },
-  "capture": {
-   "seven": "\\[(\\d+)\\] AXButton \\(7\\)"
-  },
-  "stopOnError": true,
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "cua click 7",
-  "args": {
-   "target": "cua",
-   "tool": "click",
-   "args": {
-    "pid": "${pid:int}",
-    "window_id": "${window:int}",
-    "element_index": "${seven:int}"
-   }
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "cua click 7 again (after-snapshot shows 77)",
-  "args": {
-   "target": "cua",
-   "tool": "click",
-   "args": {
-    "pid": "${pid:int}",
-    "window_id": "${window:int}",
-    "element_index": "${seven:int}"
-   }
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "playwright navigate",
-  "args": {
-   "target": "playwright",
-   "tool": "browser_navigate",
-   "args": {
-    "url": "https://example.com"
-   }
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "playwright snapshot",
-  "args": {
-   "target": "playwright",
-   "tool": "browser_snapshot",
-   "args": {}
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "chrome-devtools navigate",
-  "args": {
-   "target": "chrome-devtools",
-   "tool": "navigate_page",
-   "args": {
-    "type": "url",
-    "url": "https://example.org"
-   }
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "chrome-devtools screenshot",
-  "args": {
-   "target": "chrome-devtools",
-   "tool": "take_screenshot",
-   "args": {}
+   "guest": "live-check-macos-1",
+   "language": "javascript",
+   "inline": true,
+   "code": "console.log(process.version)"
   },
   "show": 200
  },
  {
   "tool": "relay_finish",
-  "show": 1200
+  "show": 1200,
+  "args": {
+   "guest": "live-check-macos-1"
+  }
  }
 ]

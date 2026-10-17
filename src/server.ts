@@ -4,7 +4,7 @@
  * Everything the relay does lives in mcp-relay's host-agnostic core (the
  * manager, the vm-service client, the registry, the strict contract, the
  * action dispatch and the bounded result rendering). This file binds that
- * core to MCP over standard input and output: nineteen `relay_*` tools, each
+ * core to MCP over standard input and output: fifteen `relay_*` tools, each
  * with its own schema, title and annotations. The user command (status) is not
  * an MCP prompt: pi's adapter can only name those
  * `/mcp__<package>__<server>__<prompt>`, so each host gets its own command file
@@ -32,10 +32,9 @@ export const PLUGIN_TOOL_PREFIX = 'mcp__plugin_mcp-relay_relay__';
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
-/** A relay result as MCP content: the relay's text, then (for relay_run) the target tool's own text and images, then a delivered image as its own typed block when there is one. */
+/** A relay result as MCP content: the relay's text, then a delivered image as its own typed block when there is one. */
 export function relayContent(result: RelayCallResult) {
-  const passthrough = (result.content ?? []).map(block => block.type === 'text' ? { type: 'text' as const, text: block.text } : { type: 'image' as const, data: block.data, mimeType: block.mimeType });
-  return { content: [{ type: 'text' as const, text: result.text }, ...passthrough, ...(result.image ? [{ type: 'image' as const, data: result.image.data, mimeType: result.image.mimeType }] : [])], isError: result.isError };
+  return { content: [{ type: 'text' as const, text: result.text }, ...(result.image ? [{ type: 'image' as const, data: result.image.data, mimeType: result.image.mimeType }] : [])], isError: result.isError };
 }
 
 /** The project directory: the plugin passes Claude Code's; an unexpanded placeholder or nothing means the server's own working directory. */

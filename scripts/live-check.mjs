@@ -44,7 +44,7 @@ try {
     const args = fill(step.args ?? {});
     const started = Date.now();
     let result;
-    // The longest relay_run (3,600,000 ms) plus image delivery and snapshots.
+    // The longest run (3,600,000 ms) plus image delivery and snapshots.
     try { result = await client.callTool({ name: step.tool, arguments: args }, undefined, { timeout: 3_900_000 }); }
     catch (error) { result = { isError: true, content: [{ type: 'text', text: `CLIENT ERROR: ${error.message}` }] }; }
     const ms = Date.now() - started;

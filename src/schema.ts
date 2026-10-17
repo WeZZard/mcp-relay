@@ -1,7 +1,6 @@
 import { Type, StringEnum } from './typebox.js';
 import type { Static, TSchema } from 'typebox';
 import { Check } from 'typebox/value';
-import { TARGETS } from './targets.js';
 
 const closed = { additionalProperties: false };
 const reason = Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', description: 'Intent of this execution. Retained as evidence, never identity, authorization or a retry key.' });
@@ -20,17 +19,10 @@ const imageTarget = Type.Union([
   Type.Object({ source: Type.Literal('application'), name: Type.String({ minLength: 1, maxLength: 101 }), path: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })) }, closed),
   Type.Object({ source: Type.Literal('reference'), imageId: Type.String({ pattern: '^image-[a-f0-9]{64}$' }) }, closed),
 ]);
-const hold = Type.Object({
-  id: Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$', description: 'A new identity for this hold, named again in relay_gate.' }),
-  timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 300000, description: 'How long the guest waits for relay_gate, default 60000. When it passes, the call is refused and nothing is sent.' })),
-}, { ...closed, description: 'Optional. Deliver the call but hold it in the guest, before its before-snapshot and any input, until relay_gate decides it: go sends it, anything else refuses it.' });
 const argv = Type.Array(Type.String(), { minItems: 1, maxItems: 256 });
 const language = StringEnum(['javascript', 'typescript', 'python'] as const);
 const timeoutMs = Type.Optional(Type.Integer({ minimum: 1, maximum: 3600000, description: 'Execution timeout in milliseconds, default 120000, maximum 3600000. Independent of snapshot delay and lease TTL.' }));
 const runBase = { action: Type.Literal('run'), guest, reason: optionalReason, step: Type.Optional(step), snapshots: Type.Optional(snapshots), timeoutMs };
-/** The MCP servers relay_run forwards to, defined once in src/targets.ts. */
-export const runTargets = TARGETS;
-const target = StringEnum(TARGETS, { description: 'cua (cua-driver), playwright (Playwright MCP) or chrome-devtools (Chrome DevTools MCP).' });
 // Authoritative discriminated contract. Even if a provider only exposes the
 // object-shaped projection, every invocation is checked here before dispatch.
 export const relayContract = Type.Union([
@@ -55,22 +47,14 @@ export const relayContract = Type.Union([
     files: Type.Optional(Type.Array(Type.Object({ local: Type.String({ description: 'Host file in the project folder: relative to it, or absolute inside it; no symlinks.' }), path: Type.String({ description: 'Relative destination under guest support/.' }) }, closed))),
     nodePath: Type.Optional(Type.String({ description: 'Guest Node executable, default node; use image nvm path if needed.' })),
     cuaDriver: Type.Optional(Type.String({ description: 'Guest CUA executable; OS default when omitted.' })),
-    browserExecutable: Type.Optional(Type.String({ description: 'Guest browser executable for the playwright and chrome-devtools targets; default is installed Google Chrome.' })),
   }, closed),
   Type.Object({ ...runBase, kind: Type.Literal('exec'), argv, diagnostic: Type.Optional(Type.Boolean({ description: 'Explicit command diagnosis or repair without screenshot evidence, including before staging. Commands and outcomes remain recorded. Never claim visual verification.' })) }, closed),
-  Type.Object({ ...runBase, kind: Type.Literal('script'), localPath: Type.String({ minLength: 1, description: 'Host script file in the project folder: relative to it, or absolute inside it; no symlinks.' }), language }, closed),
-  Type.Object({ ...runBase, kind: Type.Literal('code'), code: Type.String({ maxLength: 1048576 }), language }, closed),
-  Type.Object({ action: Type.Literal('run'), kind: Type.Literal('mcp'), guest, target,
-    tool: Type.String({ minLength: 1, maxLength: 200, description: 'The target server\'s own tool name.' }),
-    args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: 'The tool\'s own arguments, forwarded unchanged.' })),
-    reason: optionalReason,
-    expected: Type.Optional(Type.String({ minLength: 1, maxLength: 4000, description: 'Optional expected result for the step record.' })),
-    afterIntervalMs: Type.Optional(interval),
-    timeoutMs,
-    hold: Type.Optional(hold),
+  // One branch for relay_script: `inline` selects which of `code` and `localPath` the call gives, checked in validateRelayInput.
+  Type.Object({ ...runBase, kind: Type.Literal('script'), language,
+    inline: Type.Boolean({ description: 'true: the script is `code`, given inline. false: the script is the host file `localPath`. Give exactly the one that inline names.' }),
+    code: Type.Optional(Type.String({ maxLength: 1048576, description: 'With inline: true, the script itself, up to 1 MiB.' })),
+    localPath: Type.Optional(Type.String({ minLength: 1, description: 'With inline: false, a host script file in the project folder: relative to it, or absolute inside it; no symlinks.' })),
   }, closed),
-  Type.Object({ action: Type.Literal('gate'), guest, hold: id, decision: StringEnum(['go', 'cancel'] as const, { description: 'go sends the held call; cancel refuses it with nothing sent.' }) }, closed),
-  Type.Object({ action: Type.Literal('tools'), guest, target, tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: 'Optional: return only this tool.' })) }, closed),
   Type.Object({ action: Type.Literal('image'), guest, target: imageTarget }, closed),
   Type.Object({ action: Type.Literal('extract'), guest, names: Type.Array(Type.String()) }, closed),
   Type.Object({ action: Type.Literal('finish'), guest }, closed),
@@ -89,16 +73,16 @@ for (const branch of relayContract.anyOf) {
   }
 }
 const parameterObject = Type.Object({
-  action: StringEnum(['search', 'probe', 'acquire', 'stage', 'run', 'gate', 'tools', 'image', 'extract', 'finish', 'release', 'acquisition-capabilities', 'console-resolve', 'console-open', 'console-cancel'] as const),
+  action: StringEnum(['search', 'probe', 'acquire', 'stage', 'run', 'image', 'extract', 'finish', 'release', 'acquisition-capabilities', 'console-resolve', 'console-open', 'console-cancel'] as const),
   ...projected,
 }, { ...closed, anyOf: relayContract.anyOf, description: 'Select exactly one action. Each closed branch defines allowed fields. Run selects a kind; console-open requires reason, expected and userRequested=true. No default action.' });
 
 export type RelayInput = Static<typeof relayContract>;
 export const relayParameters = Type.Unsafe<RelayInput>(parameterObject);
 export type RelayAction = RelayInput['action'];
-export const relayActions = ['search', 'probe', 'acquire', 'stage', 'run', 'gate', 'tools', 'image', 'extract', 'finish', 'release', 'acquisition-capabilities', 'console-resolve', 'console-open', 'console-cancel'] as const;
-export type RunKind = 'exec' | 'script' | 'code' | 'mcp';
-export type RunTarget = typeof runTargets[number];
+export const relayActions = ['search', 'probe', 'acquire', 'stage', 'run', 'image', 'extract', 'finish', 'release', 'acquisition-capabilities', 'console-resolve', 'console-open', 'console-cancel'] as const;
+/** `exec` is relay_command; `script` is relay_script (DC-23). */
+export type RunKind = 'exec' | 'script';
 
 type Branch = (typeof relayContract)['anyOf'][number];
 function branchFor(action: RelayAction, kind?: RunKind): Branch {
@@ -129,4 +113,10 @@ export function validateRelayInput(value: unknown): asserts value is RelayInput 
   if (!Check(relayContract, value)) throw new Error('Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action and run kind.');
   if (value.action === 'probe' && value.scope === 'guest' && value.guest === undefined) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === 'run' && value.kind === 'exec' && value.diagnostic && value.snapshots?.group) throw new Error('Diagnostic commands cannot join snapshot groups.');
+  if (value.action === 'run' && value.kind === 'script') {
+    const given = value.inline ? value.code : value.localPath, other = value.inline ? value.localPath : value.code;
+    if (given === undefined || other !== undefined) throw new Error(value.inline
+      ? 'Invalid relay input: relay_script with inline: true takes the script as code, and no localPath.'
+      : 'Invalid relay input: relay_script with inline: false takes the script file as localPath, and no code.');
+  }
 }

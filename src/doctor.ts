@@ -19,10 +19,10 @@ export async function installationReport(options: { assetsDir?: string; run?: ty
  await check('python',async()=>{const r=await run([pythonExecutable(),'-c','import fcntl, sys; print(sys.version.split()[0])'],{timeoutMs:5000});if(r.code!==0)throw Error('Install Python 3 with fcntl, or set MCP_RELAY_PYTHON to its executable. '+r.stderr);return r.stdout.trim();});
  await check('runtime-bundles',async()=>{
   const integrity=JSON.parse(await readFile(join(assets,'integrity.json'),'utf8'));
-  for(const name of ['server.mjs','receiver.mjs','mcp-host.mjs','doctor.mjs']){
+  for(const name of ['server.mjs','receiver.mjs','doctor.mjs']){
    const b=await readFile(join(assets,name));if(hash(b)!==integrity[name])throw Error(`Invalid/missing shipped ${name}; reinstall the package.`);
   }
-  return 'Host extension, guest receiver/MCP host and doctor hashes verified';
+  return 'Host extension, guest receiver and doctor hashes verified';
  });
  await check('registry',async()=>{const registry=options.registry??new Registry(environment?{managedRoot:environment.profile.relayStateDir}:{});try{await access(registry.path);validateRegistryText(await readFile(registry.path,'utf8'));return `Existing registry: ${registry.path}`;}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;if(process.env.MCP_RELAY_REGISTRY)throw Error('MCP_RELAY_REGISTRY must point to an existing Using VMs registry table.');return `Managed registry will be created on first acquisition: ${registry.path}`;}});
  await check('tart',async()=>{const r=await run([environment?.profile.tartPath??'tart','list','--format','json'],{timeoutMs:10000,...(environment?{env:{...process.env,...environmentVariables(environment)}}:{})});if(r.code!==0||!Array.isArray(JSON.parse(r.stdout)))throw Error('Install Tart and ensure tart list --format json works; required for independent destruction verification.');return 'Read-only local inventory available';});

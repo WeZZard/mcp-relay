@@ -3,7 +3,7 @@ import { createRequire as __createRequire } from 'node:module'; const require = 
 // src/guest/receiver.ts
 import { spawn, execFile } from "node:child_process";
 import { createHash as createHash2, randomUUID } from "node:crypto";
-import { link, mkdir as mkdir3, open, readFile as readFile2, rename as rename3, rm as rm2, stat as stat2, realpath, writeFile as writeFile2 } from "node:fs/promises";
+import { mkdir as mkdir3, open, readFile as readFile2, rename as rename3, rm as rm2, stat as stat2, realpath } from "node:fs/promises";
 import { dirname as dirname2, isAbsolute, join as join3, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -864,7 +864,6 @@ var MAX_OUTPUT_BYTES = 64 * 1024;
 var MAX_INTERVAL_MS = 3e5;
 var MAX_TIMEOUT_MS = 36e5;
 var MAX_SCRIPT_BYTES = 8 * 1024 * 1024;
-var MAX_HOLD_MS = 3e5;
 var message = (error) => error instanceof Error ? error.message : String(error);
 var hash = (bytes) => createHash2("sha256").update(bytes).digest("hex");
 var text = (value) => typeof value === "string" && value.length > 0 && !value.includes("\0");
@@ -920,8 +919,6 @@ function validate(request) {
   if (request.kind !== "code" && (!Array.isArray(request.argv) || request.argv.length === 0 || request.argv.length > 256 || !request.argv.every((arg, index) => typeof arg === "string" && !arg.includes("\0") && (index > 0 || arg.length > 0)))) throw new Error("argv must be a nonempty string vector without NULs (maximum 256 entries)");
   if (request.kind !== "exec" && !["javascript", "typescript", "python"].includes(request.language ?? "")) throw new Error("script/code language is required");
   if (request.kind === "code" && (typeof request.code !== "string" || !/^[a-f0-9]{64}$/.test(request.codeSha256 ?? ""))) throw new Error("code and its SHA-256 are required");
-  if (request.hold !== void 0 && (!request.hold || typeof request.hold !== "object" || !safeId(request.hold.id) || !Number.isInteger(request.hold.timeoutMs) || request.hold.timeoutMs < 1 || request.hold.timeoutMs > MAX_HOLD_MS)) throw new Error(`invalid hold: a safe id and timeoutMs from 1 to ${MAX_HOLD_MS} are required`);
-  if (request.hold !== void 0 && request.diagnostic === true) throw new Error("a diagnostic request cannot be held");
   if (request.capture !== void 0 && typeof request.capture !== "boolean") throw new Error("capture must be boolean");
   if (request.kind === "script" && (!text(request.remotePath) || !isAbsolute(request.remotePath) || !/^[a-f0-9]{64}$/.test(request.scriptSha256 ?? ""))) throw new Error("absolute remotePath and script SHA-256 are required");
 }
@@ -1028,35 +1025,6 @@ async function runArgv(argv, options, onSpawn) {
     });
   });
 }
-async function decideHold(dir, id, decision) {
-  await mkdir3(dir, { recursive: true });
-  const path = join3(dir, id), temporary = `${path}.${randomUUID()}.tmp`;
-  await writeFile2(temporary, decision, { mode: 384 });
-  try {
-    await link(temporary, path);
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-  } finally {
-    await rm2(temporary, { force: true });
-  }
-  return (await readFile2(path, "utf8")).trim();
-}
-async function awaitHold(dir, id, timeoutMs, options = {}) {
-  const clock = options.clock ?? Date.now;
-  const pause = options.pause ?? ((ms) => new Promise((done) => setTimeout(done, ms)));
-  const started = clock(), path = join3(dir, id);
-  for (; ; ) {
-    let decision;
-    try {
-      decision = (await readFile2(path, "utf8")).trim();
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    if (!decision && clock() - started >= timeoutMs) decision = await decideHold(dir, id, "expired");
-    if (decision) return { decision, waitedMs: clock() - started };
-    await pause(options.pollMs ?? 20);
-  }
-}
 async function captureWithDriver(outFile, driver, dispatch = runArgv) {
   const result = await dispatch([driver, "call", "get_desktop_state", "--json", JSON.stringify({ screenshot_out_file: outFile })], { env: process.env, timeoutMs: 6e4 });
   if (result.exitStatus.code !== 0 || result.timedOut || result.outputTruncated || result.spawnError || result.terminationConfirmed !== true) throw new Error(`display capture unavailable: ${JSON.stringify({ exitStatus: result.exitStatus, timedOut: result.timedOut, outputTruncated: result.outputTruncated, spawnError: result.spawnError, terminationConfirmed: result.terminationConfirmed, terminationDiagnostic: result.terminationDiagnostic, stdout: result.stdout?.slice(0, 1500), stderr: result.stderr?.slice(0, 1500) })}`);
@@ -1104,7 +1072,6 @@ async function receive(input, options = {}) {
     return result;
   };
   let reconcileGroup;
-  let hold;
   let dispatchResult;
   const output = () => dispatchResult ? { stdout: bounded(dispatchResult.stdout), stderr: bounded(dispatchResult.stderr), timedOut: !!dispatchResult.timedOut, outputTruncated: !!dispatchResult.outputTruncated, terminationConfirmed: dispatchResult.terminationConfirmed } : {};
   try {
@@ -1194,7 +1161,7 @@ async function receive(input, options = {}) {
       };
       validateImageEvidence(candidate, request);
       imageEvidence = candidate;
-      result = JSON.parse(JSON.stringify({ ...result, imageEvidence, evidenceMode, timeoutMs, ...output(), ...hold ? { hold } : {} }));
+      result = JSON.parse(JSON.stringify({ ...result, imageEvidence, evidenceMode, timeoutMs, ...output() }));
       if (result.outcome.kind !== "completed" || result.outcome.exitStatus.code !== 0) await reconcileGroup?.("operation failed or incomplete");
       await store.putExecution({ executionId, ...ids, state: result.outcome.kind === "completed" ? "recorded" : result.outcome.kind, argv: request.argv, scriptId: request.scriptId, exitStatus: result.outcome.kind === "completed" ? result.outcome.exitStatus : void 0 });
       await store.appendJournal({ kind: "execution-completion", ...ids, executionId, state: result.outcome.kind === "completed" ? "recorded" : result.outcome.kind, response: result }, { durable: true });
@@ -1256,12 +1223,6 @@ async function receive(input, options = {}) {
     } catch (error) {
       return await refuse(message(error));
     }
-    if (request.hold) {
-      await store.appendJournal({ kind: "annotation", annotationType: "input-hold", ...ids, executionId, state: "pending", hold: request.hold }, { durable: true });
-      hold = await awaitHold(join3(root, "holds"), request.hold.id, request.hold.timeoutMs);
-      await store.appendJournal({ kind: "annotation", annotationType: "input-hold-decided", ...ids, executionId, state: hold.decision === "go" ? "released" : "withheld", hold: { ...request.hold, ...hold } }, { durable: true });
-      if (hold.decision !== "go") return await refuse(`input held and not released (${hold.decision}); nothing was sent`);
-    }
     await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...uncaptured ? { capture: false } : {}, scriptIdentity: request.kind === "exec" ? void 0 : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
     if (group?.phase === "first") {
       groups.active = { groupId: group.groupId, ...ids };
@@ -1312,19 +1273,6 @@ async function receive(input, options = {}) {
           const diagnostic = `CUA structured failure: ${JSON.stringify(value)}`;
           return await retain({ ...response(value.code === "desktop_escalation_required" ? "refused" : "uncertain", diagnostic), stdout: bounded(outcome.stdout), stderr: bounded(outcome.stderr) });
         }
-      }
-      const mcpHost = options.mcpHost ?? process.env.RELAY_MCP_HOST;
-      if (request.kind === "exec" && mcpHost && argv[1] === mcpHost && argv[2] === "call" && !outcome.spawnError && !outcome.timedOut && !outcome.outputTruncated) {
-        let summary;
-        try {
-          summary = JSON.parse((outcome.stdout ?? "").trim().split("\n").at(-1) ?? "");
-        } catch {
-        }
-        const readable = !!summary && typeof summary === "object" && summary.relayRun === 1;
-        const kept = { stdout: bounded(outcome.stdout), stderr: bounded(outcome.stderr) };
-        if (readable && summary.outcome === "not-sent") return await retain({ ...response("refused", `MCP call not sent: ${summary.diagnostic ?? "no diagnostic"}`), ...kept });
-        if (readable && summary.outcome === "uncertain") return await retain({ ...response("uncertain", `MCP call outcome unknown: ${summary.diagnostic ?? "no diagnostic"}`), ...kept });
-        if (!readable && outcome.exitStatus.code !== 0) return await retain({ ...response("uncertain", `MCP call ended without a readable answer (exit ${outcome.exitStatus.code ?? outcome.exitStatus.signal}); it may have reached the server`), ...kept });
       }
       const result = outcome.spawnError || outcome.timedOut || outcome.outputTruncated ? response("uncertain", outcome.spawnError ?? (outcome.timedOut ? "execution timed out" : "execution exceeded output bound")) : { executionId, outcome: { kind: "completed", exitStatus: outcome.exitStatus } };
       if (group?.phase === "last" && result.outcome.kind === "completed" && result.outcome.exitStatus.code === 0) {
@@ -1383,13 +1331,10 @@ async function main() {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(resolve(process.argv[1]))).href) void main();
 export {
-  MAX_HOLD_MS,
   MAX_OUTPUT_BYTES,
   MAX_REQUEST_BYTES,
   afterRequested,
-  awaitHold,
   confirmProcessGroupExit,
-  decideHold,
   groupAbsentFromProcessTable,
   receive,
   validateImageEvidence

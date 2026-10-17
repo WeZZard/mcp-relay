@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { RecordStore } from "@wezzard/relay-driver-remote-runtime";
-import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, awaitHold, decideHold, receive, validateImageEvidence, type DispatchResult, type GuestRequest, type ReceiveOptions } from "../src/guest/receiver.js";
+import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, receive, validateImageEvidence, type DispatchResult, type GuestRequest, type ReceiveOptions } from "../src/guest/receiver.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO/8AAAAASUVORK5CYII=", "base64");
 const success: DispatchResult = { exitStatus: { code: 0, signal: null }, stdout: "done" };
@@ -546,68 +546,6 @@ test("file-argument CLI emits exactly one framed response and captures through c
   await writeFile(path, "a".repeat(MAX_REQUEST_BYTES + 1));
   const oversized = await cli(path, env);
   assert.equal(JSON.parse(oversized.stdout).outcome.kind, "refused");
-});
-
-test("a held request waits before its before snapshot and is sent only after go", async t => {
-  const { root, options } = await setup(t);
-  let captures = 0, dispatched = 0;
-  options.capture = async out => { captures++; await writeFile(out, png); };
-  options.dispatch = async () => { dispatched++; return success; };
-  const pending = receive(request("held-go", { hold: { id: "hold-go", timeoutMs: 5000 } }), options);
-  await new Promise(done => setTimeout(done, 100));
-  assert.equal(captures, 0, "no before snapshot while held");
-  assert.equal(dispatched, 0, "no input while held");
-  assert.ok((await journal(root)).some(event => event.annotationType === "input-hold" && event.hold.id === "hold-go"));
-  assert.equal(await decideHold(join(root, "holds"), "hold-go", "go"), "go");
-  const result = await pending;
-  assert.equal(result.outcome.kind, "completed");
-  assert.equal(result.hold!.decision, "go");
-  assert.ok(result.hold!.waitedMs > 0, "the wait is measured from the start of the hold");
-  assert.equal(dispatched, 1);
-  assert.deepEqual((await journal(root)).filter(event => event.kind === "snapshot-captured").map(event => event.snapshot.role), ["before", "after"]);
-});
-
-test("a held request that is cancelled or expires is refused with no snapshot and no input", async t => {
-  const { root, options } = await setup(t);
-  let captures = 0, dispatched = 0;
-  options.capture = async out => { captures++; await writeFile(out, png); };
-  options.dispatch = async () => { dispatched++; return success; };
-  await decideHold(join(root, "holds"), "hold-cancel", "cancel");
-  const cancelled = await receive(request("held-cancel", { hold: { id: "hold-cancel", timeoutMs: 5000 } }), options);
-  assert.equal(cancelled.outcome.kind, "refused");
-  assert.match(cancelled.outcome.kind === "refused" ? cancelled.outcome.diagnostic : "", /not released \(cancel\); nothing was sent/);
-  assert.equal(cancelled.hold!.decision, "cancel");
-  const expired = await receive(request("held-expired", { hold: { id: "hold-expired", timeoutMs: 50 } }), options);
-  assert.equal(expired.outcome.kind, "refused");
-  assert.equal(expired.hold!.decision, "expired");
-  assert.equal(await decideHold(join(root, "holds"), "hold-expired", "go"), "expired", "a late go does not replace the expiry");
-  assert.equal(captures, 0); assert.equal(dispatched, 0);
-  assert.deepEqual(expired.imageEvidence!.snapshots, []);
-  const next = await receive(request("after-holds"), options);
-  assert.equal(next.outcome.kind, "completed", "a withheld request leaves the receiver free");
-});
-
-test("the first decision on a hold stands, and the wait claims expiry only at its limit", async t => {
-  const { root } = await setup(t);
-  const dir = join(root, "holds");
-  assert.equal(await decideHold(dir, "h1", "go"), "go");
-  assert.equal(await decideHold(dir, "h1", "cancel"), "go");
-  let now = 0;
-  const waited = await awaitHold(dir, "h2", 1000, { clock: () => now, pause: async ms => { now += ms; } });
-  assert.deepEqual(waited, { decision: "expired", waitedMs: 1000 });
-  now = 0;
-  const released = await awaitHold(dir, "h3", 1000, { clock: () => now, pause: async ms => { now += ms; if (now === 200) await decideHold(dir, "h3", "go"); } });
-  assert.deepEqual(released, { decision: "go", waitedMs: 200 });
-  assert.deepEqual((await readdir(dir)).sort(), ["h1", "h2", "h3"], "no temporary files remain");
-});
-
-test("hold validation refuses before the wait", async t => {
-  const { options } = await setup(t);
-  for (const [id, hold] of [["bad-hold-id", { id: "../x", timeoutMs: 10 }], ["bad-hold-limit", { id: "h", timeoutMs: 300001 }]] as const) {
-    const result = await receive(request(id, { hold: hold as any }), options);
-    assert.equal(result.outcome.kind, "refused");
-    assert.match(result.outcome.kind === "refused" ? result.outcome.diagnostic : "", /invalid hold/);
-  }
 });
 
 test("a run on an image without capture software takes no snapshots, owes none and completes (DC-13)", async t => {

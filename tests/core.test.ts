@@ -29,7 +29,7 @@ test('nothing reachable from the core imports an agent runtime: the relay is pla
 
 test('the built bundles carry no agent-runtime dependency and are all listed with their hashes', async () => {
   const integrity = JSON.parse(await readFile('dist/integrity.json', 'utf8'));
-  assert.deepEqual(Object.keys(integrity).sort(), ['doctor.mjs', 'mcp-host.mjs', 'receiver.mjs', 'review-data.mjs', 'server.mjs']);
+  assert.deepEqual(Object.keys(integrity).sort(), ['doctor.mjs', 'receiver.mjs', 'review-data.mjs', 'server.mjs']);
   for (const name of Object.keys(integrity)) {
     const bundle = await readFile(join('dist', name), 'utf8');
     assert.doesNotMatch(bundle, /@earendil-works/, name);
@@ -42,12 +42,12 @@ test('the JSON schema names every action and carries the strict branches; symbol
   const schema = relayJsonSchema();
   assert.equal(schema.type, 'object');
   assert.deepEqual((schema.properties as any).action.enum, [...relayActions]);
-  assert.equal((schema.anyOf as unknown[]).length, 18); // fifteen actions, run in four kinds
+  assert.equal((schema.anyOf as unknown[]).length, 14); // thirteen actions, run in two kinds
   assert.equal(Object.getOwnPropertySymbols(schema).length, 0);
 });
 
-test('the eighteen action-backed relay_* tools each derive a plain-object schema with no action, no kind and no root combinator', () => {
-  assert.equal(relayTools.length, 18);
+test('the fourteen action-backed relay_* tools each derive a plain-object schema with no action, no kind and no root combinator', () => {
+  assert.equal(relayTools.length, 14);
   assert.deepEqual(relayTools.map(t => t.name), [...new Set(relayTools.map(t => t.name))], 'tool names are unique');
   for (const tool of relayTools) {
     assert.match(tool.name, /^relay_[a-z_]+$/);
@@ -61,25 +61,27 @@ test('the eighteen action-backed relay_* tools each derive a plain-object schema
     if (tool.kind) assert.ok(!('kind' in (schema.properties as object)), `${tool.name} exposes kind`);
   }
   const runTools = relayTools.filter(t => t.action === 'run');
-  assert.deepEqual(runTools.map(t => t.kind).sort(), ['code', 'exec', 'mcp', 'script']);
-  for (const t of runTools) assert.equal(t.name, t.kind === 'mcp' ? 'relay_run' : `relay_${t.kind}`);
-  assert.ok(!relayTools.some(t => ['relay_cua', 'relay_browser'].includes(t.name)), 'the old per-kind tools are gone');
-  const runSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_run')!);
-  assert.deepEqual(runSchema.required, ['guest', 'target', 'tool']);
-  assert.deepEqual((runSchema.properties as any).target.enum, ['cua', 'playwright', 'chrome-devtools']);
-  assert.deepEqual(Object.keys(runSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'guest', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
-  for (const name of ['relay_exec', 'relay_script', 'relay_code']) {
+  assert.deepEqual(runTools.map(t => [t.name, t.kind]), [['relay_command', 'exec'], ['relay_script', 'script']]);
+  for (const name of ['relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools', 'relay_cua', 'relay_browser']) assert.ok(!relayTools.some(t => t.name === name), `${name} is gone (DC-23)`);
+  const scriptSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_script')!);
+  assert.deepEqual(scriptSchema.required, ['guest', 'language', 'inline']);
+  assert.deepEqual(Object.keys(scriptSchema.properties as object).sort(), ['code', 'guest', 'inline', 'language', 'localPath', 'reason', 'snapshots', 'step', 'timeoutMs']);
+  const commandSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_command')!);
+  assert.deepEqual(commandSchema.required, ['guest', 'argv']);
+  assert.ok('diagnostic' in (commandSchema.properties as object), 'relay_command keeps diagnostic');
+  assert.ok(!('diagnostic' in (scriptSchema.properties as object)), 'relay_script has no diagnostic');
+  for (const name of ['relay_command', 'relay_script']) {
     const required = relayToolInputSchema(relayTools.find(t => t.name === name)!).required as string[];
     assert.ok(!required.some(key => ['reason', 'step', 'snapshots'].includes(key)), `${name} no longer requires the evidence fields`);
   }
 });
 
-test('relayToolInput maps each tool name back to the action shape relayCall dispatches, e.g. relay_exec becomes action=run kind=exec', () => {
+test('relayToolInput maps each tool name back to the action shape relayCall dispatches, e.g. relay_command becomes action=run kind=exec', () => {
   assert.deepEqual(relayToolInput('relay_search', { name: 'Firefox' }), { action: 'search', name: 'Firefox' });
   assert.deepEqual(relayToolInput('relay_probe', { scope: 'guest' }), { action: 'probe', scope: 'guest' });
-  assert.deepEqual(relayToolInput('relay_exec', { argv: ['true'] }), { action: 'run', kind: 'exec', argv: ['true'] });
-  assert.deepEqual(relayToolInput('relay_run', { target: 'playwright', tool: 'browser_click', args: { ref: 'e3' } }), { action: 'run', kind: 'mcp', target: 'playwright', tool: 'browser_click', args: { ref: 'e3' } });
-  assert.deepEqual(relayToolInput('relay_tools', { target: 'cua' }), { action: 'tools', target: 'cua' });
+  assert.deepEqual(relayToolInput('relay_command', { argv: ['true'] }), { action: 'run', kind: 'exec', argv: ['true'] });
+  assert.deepEqual(relayToolInput('relay_script', { language: 'python', inline: true, code: 'print(1)' }), { action: 'run', kind: 'script', language: 'python', inline: true, code: 'print(1)' });
+  for (const name of ['relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools']) assert.throws(() => relayToolInput(name, {}), /Unknown relay tool/, name);
   assert.deepEqual(relayToolInput('relay_finish', {}), { action: 'finish' });
   assert.throws(() => relayToolInput('relay_dance', {}), /Unknown relay tool/);
 });
@@ -103,7 +105,9 @@ test('relayCall validates, dispatches by action, and flags a refused, uncertain 
   assert.equal((await relayCall(bare, { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'] })).isError, false);
   assert.deepEqual((bare as any).calls[0], { kind: 'exec', guest: 'core-1', argv: ['true'] });
   await assert.rejects(relayCall(bare, { action: 'run', kind: 'exec', argv: ['true'] }), /Invalid relay input/, 'a run names its guest (DC-20)');
-  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'mcp', target: 'firefox', tool: 'x' }), /Invalid relay input/);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'mcp', guest: 'core-1', target: 'cua', tool: 'x' }), /Invalid relay input/);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'gate', guest: 'core-1', hold: 'h', decision: 'go' }), /Invalid relay input/);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'code', guest: 'core-1', language: 'python', code: 'print(1)' }), /Invalid relay input/);
   await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'], diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic commands cannot join/);
   const probe = await relayCall(fakeManager({}), { action: 'probe' });
   assert.deepEqual(probe, { text: JSON.stringify({ probed: true }, null, 2), details: { probed: true }, isError: false });
@@ -123,14 +127,23 @@ const image = { type: 'image' as const, data, mimeType: 'image/png' };
 const completed = { executionId: 'execution-offline', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
 const descriptor = { imageId: `image-${'a'.repeat(64)}`, source: 'display', enclosure: 'relay-x', sha256: 'b'.repeat(64), bytes: 68, mimeType: 'image/png' };
 
-test('a relay_run result keeps the tool\'s own blocks out of the relay text and returns them as passthrough content', async () => {
-  const attached = { status: 'attached', image: descriptor, content: image, presentation: { width: 1, height: 1 } };
-  const passthrough = [{ type: 'text' as const, text: 'tool says hi' }, { type: 'image' as const, data: 'QUJD', mimeType: 'image/jpeg' }];
-  const result = await relayCall(fakeManager({ ...completed, relayOutcome: 'completed', imageDelivery: attached, passthrough }), { action: 'run', kind: 'mcp', guest: 'core-1', target: 'playwright', tool: 'browser_snapshot' });
-  assert.deepEqual(result.content, passthrough);
-  assert.deepEqual(result.image, image, 'the after-snapshot stays the separate image');
-  assert.equal(result.text.includes('tool says hi'), false);
-  assert.equal(JSON.parse(result.text.split('\n').slice(1).join('\n')).relayOutcome, 'completed');
+test('relay_script takes exactly the one of code and localPath that inline names; any other call is refused before the manager runs it', async () => {
+  const ok = { executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
+  const inline = fakeManager(ok);
+  assert.equal((await relayCall(inline, { action: 'run', kind: 'script', guest: 'core-1', language: 'python', inline: true, code: 'print(1)' })).isError, false);
+  assert.deepEqual((inline as any).calls[0], { kind: 'script', guest: 'core-1', language: 'python', inline: true, code: 'print(1)' });
+  const file = fakeManager(ok);
+  assert.equal((await relayCall(file, { action: 'run', kind: 'script', guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' })).isError, false);
+  assert.deepEqual((file as any).calls[0], { kind: 'script', guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' });
+  const base = { action: 'run', kind: 'script', guest: 'core-1', language: 'javascript' };
+  for (const bad of [{ ...base, inline: true }, { ...base, inline: true, localPath: 'a.js' }, { ...base, inline: true, code: '1', localPath: 'a.js' }, { ...base, inline: false }, { ...base, inline: false, code: '1' }, { ...base, inline: false, code: '1', localPath: 'a.js' }]) {
+    const manager = fakeManager(ok);
+    await assert.rejects(relayCall(manager, bad), /Invalid relay input: relay_script with inline/, JSON.stringify(bad));
+    assert.deepEqual((manager as any).calls, [], 'a refused call never reaches the manager');
+  }
+  for (const bad of [{ ...base, code: '1' }, { ...base, localPath: 'a.js' }, { ...base, inline: 'yes', code: '1' }, { ...base, inline: true, code: '1', language: 'ruby' }, { ...base, inline: true, code: '1', diagnostic: true }]) {
+    await assert.rejects(relayCall(fakeManager(ok), bad), /Invalid relay input/, JSON.stringify(bad));
+  }
 });
 
 test('an image-bearing run carries the image as its own block with its identity leading the text; execution and delivery failures each flag an error without discarding it', async () => {

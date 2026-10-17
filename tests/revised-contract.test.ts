@@ -12,9 +12,10 @@ test('execution timeout is bounded independently from screenshot timing and TTL'
   assert.doesNotThrow(() => validateRelayInput(run));
 });
 
-test('diagnostic execution is explicit, exec-only, and cannot join a screenshot group', () => {
+test('diagnostic execution is explicit, relay_command-only, and cannot join a screenshot group', () => {
   assert.doesNotThrow(() => validateRelayInput({ ...run, diagnostic: true }));
-  assert.throws(() => validateRelayInput({ ...run, diagnostic: true, kind: 'code', code: '1', language: 'javascript' }));
+  assert.throws(() => validateRelayInput({ ...run, argv: undefined, diagnostic: true, kind: 'script', inline: true, code: '1', language: 'javascript' }), /Invalid relay input/, 'relay_script takes no diagnostic (DC-23)');
+  assert.throws(() => validateRelayInput({ ...run, argv: undefined, diagnostic: true, kind: 'code', code: '1', language: 'javascript' }), /Invalid relay input/, 'relay_code is gone (DC-23)');
   assert.throws(() => validateRelayInput({ ...run, diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }));
   assert.throws(() => validateRelayInput({ action: 'stage', diagnostic: true }));
 });

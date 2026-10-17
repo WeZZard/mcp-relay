@@ -15,7 +15,9 @@ import { PLUGIN_TOOL_PREFIX, STATUS_TOOL, createRelayServer, projectDirectory, r
 const run = promisify(execFile);
 const server = resolve('dist/server.mjs');
 const allToolNames = [...relayTools.map(tool => tool.name), STATUS_TOOL];
-const runTools = ['relay_exec', 'relay_script', 'relay_code', 'relay_run'];
+const runTools = ['relay_command', 'relay_script'];
+/** The tools DC-23 removed: none is served. */
+const removedTools = ['relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools'];
 
 test('the project directory comes from the plugin, unless the placeholder was never expanded', () => {
   assert.equal(projectDirectory({ MCP_RELAY_PROJECT: '/tmp/project' }, '/elsewhere'), '/tmp/project');
@@ -104,11 +106,16 @@ async function fixture(t: { after(fn: () => Promise<unknown>): void }) {
   return { root, project, client };
 }
 
-test('over stdio the server offers exactly the nineteen tools, each with a title, annotations and a plain-object schema with no root combinator', async t => {
+test('over stdio the server offers exactly the fifteen tools, each with a title, annotations and a plain-object schema with no root combinator', async t => {
   const { client } = await fixture(t);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 19);
+  assert.equal(tools.length, 15);
   assert.deepEqual(tools.map(tool => tool.name).sort(), [...allToolNames].sort());
+  assert.deepEqual(tools.map(tool => tool.name).filter(name => runTools.includes(name)), runTools, 'relay_command and relay_script run things in a guest (DC-23)');
+  for (const name of removedTools) assert.ok(!tools.some(tool => tool.name === name), `${name} is not served (DC-23)`);
+  for (const tool of tools) for (const name of removedTools) assert.doesNotMatch(tool.description ?? '', new RegExp(`\\b${name}\\b`), `${tool.name}'s description names ${name}`);
+  for (const name of removedTools) assert.doesNotMatch(instructions, new RegExp(`\\b${name}\\b`), `the instructions name ${name}`);
+  assert.match(instructions, /^This server offers fifteen tools/);
   for (const tool of tools) {
     assert.ok(tool.title && tool.title.length > 0, tool.name);
     assert.ok(tool.annotations, tool.name);
@@ -131,21 +138,19 @@ test('over stdio the server offers exactly the nineteen tools, each with a title
 test('each run tool maps to its own kind in the derived schema, without a kind field', async t => {
   const { client } = await fixture(t);
   const { tools } = await client.listTools();
-  for (const [name, argField] of [['relay_exec', 'argv'], ['relay_script', 'localPath'], ['relay_code', 'code']] as const) {
+  for (const [name, argFields] of [['relay_command', ['argv', 'diagnostic']], ['relay_script', ['language', 'inline', 'code', 'localPath']]] as const) {
     const tool = tools.find(t2 => t2.name === name)!;
     const properties = tool.inputSchema.properties as Record<string, unknown>;
-    assert.ok(argField in properties, `${name} carries its own field ${argField}`);
+    for (const argField of argFields) assert.ok(argField in properties, `${name} carries its own field ${argField}`);
     assert.ok(!('kind' in properties), `${name} does not expose kind`);
     assert.ok('reason' in properties && 'step' in properties && 'snapshots' in properties, `${name} carries the shared run fields`);
     assert.ok(!(tool.inputSchema.required ?? []).some(key => ['reason', 'step', 'snapshots'].includes(key)), `${name} requires no evidence field`);
   }
-  const relayRun = tools.find(t2 => t2.name === 'relay_run')!;
-  assert.deepEqual(Object.keys(relayRun.inputSchema.properties as object).sort(), ['afterIntervalMs', 'args', 'expected', 'guest', 'hold', 'reason', 'target', 'timeoutMs', 'tool']);
-  assert.deepEqual(relayRun.inputSchema.required, ['guest', 'target', 'tool']);
-  const relayToolsTool = tools.find(t2 => t2.name === 'relay_tools')!;
-  assert.deepEqual(relayToolsTool.inputSchema.required, ['guest', 'target']);
+  assert.deepEqual(tools.find(t2 => t2.name === 'relay_command')!.inputSchema.required, ['guest', 'argv']);
+  assert.deepEqual(tools.find(t2 => t2.name === 'relay_script')!.inputSchema.required, ['guest', 'language', 'inline']);
+  assert.ok(!('browserExecutable' in (tools.find(t2 => t2.name === 'relay_stage')!.inputSchema.properties as object)), 'relay_stage names no browser for removed targets');
   // Every tool that acts on a guest requires its name (DC-20).
-  for (const name of ['relay_stage', 'relay_exec', 'relay_script', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools', 'relay_image', 'relay_extract', 'relay_finish', 'relay_release', 'relay_console_resolve', 'relay_console_open', 'relay_console_cancel']) assert.ok((tools.find(t2 => t2.name === name)!.inputSchema.required ?? []).includes('guest'), name);
+  for (const name of ['relay_stage', 'relay_command', 'relay_script', 'relay_image', 'relay_extract', 'relay_finish', 'relay_release', 'relay_console_resolve', 'relay_console_open', 'relay_console_cancel']) assert.ok((tools.find(t2 => t2.name === name)!.inputSchema.required ?? []).includes('guest'), name);
   for (const name of ['relay_search', 'relay_probe', 'relay_acquisition_capabilities', 'relay_acquire']) assert.ok(!(tools.find(t2 => t2.name === name)!.inputSchema.required ?? []).includes('guest'), name);
   assert.ok(!tools.some(t2 => ['relay_cua', 'relay_browser'].includes(t2.name)));
 });
@@ -153,14 +158,16 @@ test('each run tool maps to its own kind in the derived schema, without a kind f
 test('invalid input is refused by the strict contract before any manager exists; status stays inactive', async t => {
   const { client, root, project } = await fixture(t);
   // relay_acquire takes no network from the agent (DC-17).
-  for (const [name, args] of [['relay_probe', { reason: 'no' }], ['relay_exec', {}], ['relay_acquire', {}], ['relay_acquire', { task: 'net', image: 'ubuntu2404', extractions: [], network: 'internet' }], ['relay_run', { target: 'firefox', tool: 'x' }], ['relay_tools', {}]] as const) {
+  for (const [name, args] of [['relay_probe', { reason: 'no' }], ['relay_command', {}], ['relay_script', { guest: 'g-1', language: 'python', inline: true }], ['relay_script', { guest: 'g-1', language: 'python', inline: false, code: 'print(1)' }], ['relay_acquire', {}], ['relay_acquire', { task: 'net', image: 'ubuntu2404', extractions: [], network: 'internet' }]] as const) {
     const result: any = await client.callTool({ name, arguments: args });
     assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`);
     assert.match(result.content[0].text, /Invalid relay input/);
   }
-  const unknown: any = await client.callTool({ name: 'relay_dance', arguments: {} });
-  assert.equal(unknown.isError, true);
-  assert.match(unknown.content[0].text, /Unknown tool/);
+  for (const name of ['relay_dance', ...removedTools]) {
+    const unknown: any = await client.callTool({ name, arguments: {} });
+    assert.equal(unknown.isError, true, name);
+    assert.match(unknown.content[0].text, /Unknown tool/, name);
+  }
   const status: any = await client.callTool({ name: STATUS_TOOL, arguments: {} });
   assert.equal(status.isError, false); assert.deepEqual(JSON.parse(status.content[0].text), { active: false, guests: [], maxGuests: 4, project, service: 'http://127.0.0.1:9' });
   await assert.rejects(stat(join(root, 'state')), { code: 'ENOENT' }); // nothing was created for refused calls
@@ -205,7 +212,7 @@ test('cancelling a relay call from the client aborts the server-side signal', as
   const controller = new AbortController();
   const step = { id: 'step', title: 'Fixture', expected: 'Completes', inputMode: 'ordinary' };
   const callPromise = client.callTool(
-    { name: 'relay_exec', arguments: { guest: 'cancel-1', reason: 'Exercise client-initiated cancellation', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } } },
+    { name: 'relay_command', arguments: { guest: 'cancel-1', reason: 'Exercise client-initiated cancellation', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } } },
     undefined,
     { signal: controller.signal },
   );
@@ -234,7 +241,7 @@ test('the server dispatches calls on different guests at the same time (DC-20)',
   const client = new Client({ name: 'mcp-relay-concurrency-test', version: '0' });
   await client.connect(clientTransport);
   t.after(() => client.close());
-  const call = (guest: string) => client.callTool({ name: 'relay_exec', arguments: { guest, argv: ['true'] } }) as Promise<any>;
+  const call = (guest: string) => client.callTool({ name: 'relay_command', arguments: { guest, argv: ['true'] } }) as Promise<any>;
   const results = await Promise.race([Promise.all([call('first-1'), call('second-1')]), new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the two calls were not dispatched together')), 5000).unref())]);
   assert.deepEqual(running.sort(), ['first-1', 'second-1']);
   for (const result of results) assert.equal(result.isError, false, result.content[0].text);
@@ -252,7 +259,7 @@ test('the plugin files name the server the tests spoke to and ship the built bun
   const agent = await readFile('agents/vm-relay-operator.md', 'utf8');
   for (const tool of relayTools) assert.match(agent, new RegExp(`${PLUGIN_TOOL_PREFIX}${tool.name}(?![A-Za-z0-9_])`), tool.name);
   assert.match(agent, new RegExp(`${PLUGIN_TOOL_PREFIX}${STATUS_TOOL}(?![A-Za-z0-9_])`));
-  for (const name of ['server.mjs', 'receiver.mjs', 'mcp-host.mjs', 'doctor.mjs', 'integrity.json', 'build-info.json', 'NOTICE.txt']) assert.ok((await stat(join('dist', name))).isFile(), name);
+  for (const name of ['server.mjs', 'receiver.mjs', 'doctor.mjs', 'integrity.json', 'build-info.json', 'NOTICE.txt']) assert.ok((await stat(join('dist', name))).isFile(), name);
   const bundle = await readFile('dist/server.mjs', 'utf8');
   assert.doesNotMatch(bundle, /@earendil-works/);
   const info = JSON.parse(await readFile('dist/build-info.json', 'utf8'));
@@ -264,8 +271,4 @@ test('an image-bearing relay result becomes MCP content: the text block, then th
   assert.deepEqual(relayContent({ text: 'identity\n{}', details: {}, isError: false, image }), { content: [{ type: 'text', text: 'identity\n{}' }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }], isError: false });
   assert.deepEqual(relayContent({ text: 'failed', details: {}, isError: true, image }), { content: [{ type: 'text', text: 'failed' }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }], isError: true });
   assert.deepEqual(relayContent({ text: '{}', details: {}, isError: false }), { content: [{ type: 'text', text: '{}' }], isError: false });
-  // relay_run: the target tool's own blocks sit between the relay's text and the after-snapshot.
-  const tool = { type: 'image' as const, data: 'BBBB', mimeType: 'image/jpeg' };
-  assert.deepEqual(relayContent({ text: 'relay', details: {}, isError: true, image, content: [{ type: 'text', text: 'tool text' }, tool] }).content,
-    [{ type: 'text', text: 'relay' }, { type: 'text', text: 'tool text' }, { type: 'image', data: 'BBBB', mimeType: 'image/jpeg' }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }]);
 });

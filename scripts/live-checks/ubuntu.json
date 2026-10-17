@@ -14,110 +14,85 @@
   "show": 300
  },
  {
+  "tool": "relay_probe",
+  "label": "guest runtimes and listed software",
+  "args": {
+   "guest": "live-check-ubuntu-1",
+   "scope": "guest"
+  },
+  "show": 1200
+ },
+ {
   "tool": "relay_stage",
   "args": {
+   "guest": "live-check-ubuntu-1",
    "nodePath": "/usr/bin/node",
-   "cuaDriver": "/usr/local/bin/cua-driver",
-   "browserExecutable": "/home/admin/.cache/ms-playwright/chromium-1243/chrome-linux-arm64/chrome"
+   "cuaDriver": "/usr/local/bin/cua-driver"
   },
   "stopOnError": true,
   "show": 300
  },
  {
-  "tool": "relay_run",
+  "tool": "relay_command",
   "label": "cua get_screen_size",
   "args": {
-   "target": "cua",
-   "tool": "get_screen_size",
-   "args": {}
-  }
+   "guest": "live-check-ubuntu-1",
+   "argv": [
+    "/usr/local/bin/cua-driver",
+    "call",
+    "get_screen_size",
+    "--json",
+    "{}"
+   ]
+  },
+  "show": 200
  },
  {
-  "tool": "relay_run",
+  "tool": "relay_command",
   "label": "cua list_apps",
   "args": {
-   "target": "cua",
-   "tool": "list_apps",
-   "args": {}
+   "guest": "live-check-ubuntu-1",
+   "argv": [
+    "/usr/local/bin/cua-driver",
+    "call",
+    "list_apps",
+    "--json",
+    "{}"
+   ]
   },
   "show": 200
  },
  {
-  "tool": "relay_run",
-  "label": "schema refusal",
+  "tool": "relay_script",
+  "label": "inline javascript",
   "args": {
-   "target": "playwright",
-   "tool": "browser_navigate",
-   "args": {
-    "href": "x"
-   }
-  },
-  "expectError": true
- },
- {
-  "tool": "relay_run",
-  "label": "unknown tool refusal",
-  "args": {
-   "target": "cua",
-   "tool": "no_such_tool",
-   "args": {}
-  },
-  "expectError": true,
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "playwright navigate",
-  "args": {
-   "target": "playwright",
-   "tool": "browser_navigate",
-   "args": {
-    "url": "https://example.com"
-   }
+   "guest": "live-check-ubuntu-1",
+   "language": "javascript",
+   "inline": true,
+   "code": "console.log(process.version)"
   },
   "show": 200
  },
  {
-  "tool": "relay_run",
-  "label": "playwright snapshot",
+  "tool": "relay_script",
+  "label": "inline python",
   "args": {
-   "target": "playwright",
-   "tool": "browser_snapshot",
-   "args": {}
+   "guest": "live-check-ubuntu-1",
+   "language": "python",
+   "inline": true,
+   "code": "import sys\nprint(sys.version)"
   },
   "show": 200
  },
  {
-  "tool": "relay_run",
-  "label": "chrome-devtools navigate",
+  "tool": "relay_command",
+  "label": "diagnostic",
   "args": {
-   "target": "chrome-devtools",
-   "tool": "navigate_page",
-   "args": {
-    "type": "url",
-    "url": "https://example.org"
-   }
-  },
-  "show": 200
- },
- {
-  "tool": "relay_run",
-  "label": "chrome-devtools screenshot",
-  "args": {
-   "target": "chrome-devtools",
-   "tool": "take_screenshot",
-   "args": {}
-  },
-  "show": 200
- },
- {
-  "tool": "relay_exec",
-  "label": "server logs",
-  "args": {
+   "guest": "live-check-ubuntu-1",
    "argv": [
     "/bin/sh",
     "-c",
-    "grep -h 'starting' relay-run/servers/*.log | cut -c1-240"
+    "uname -a; ls"
    ],
    "diagnostic": true
   },
@@ -125,6 +100,9 @@
  },
  {
   "tool": "relay_finish",
-  "show": 1200
+  "show": 1200,
+  "args": {
+   "guest": "live-check-ubuntu-1"
+  }
  }
 ]

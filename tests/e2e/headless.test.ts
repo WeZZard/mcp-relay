@@ -92,25 +92,27 @@ test('status: the plugin loads, its tools carry the plugin-scoped names, and the
 
 test('refusal: an invalid relay call is an error result from the strict contract, reported without a crash', { skip, timeout: 300_000 }, async t => {
   const f = await fixture(t);
-  const run = await claude(f.project, `Call the relay_run tool exactly once with the arguments ${stepJson({ target: 'firefox', tool: 'x' })}. It will fail; that is expected. Reply with the error text you received and nothing else. Do not retry.`, f.env, 4);
+  // relay_script with inline: true takes code; one without it is refused by the strict contract (DC-23).
+  const run = await claude(f.project, `Call the relay_script tool exactly once with the arguments ${stepJson({ guest: 'nowhere-1', language: 'python', inline: true })}. It will fail; that is expected. Reply with the error text you received and nothing else. Do not retry.`, f.env, 4);
   assert.equal(run.code, 0, run.stderr);
-  assert.equal(run.toolUses.length, 1); assert.equal(run.toolUses[0]!.name, tool('relay_run'));
+  assert.equal(run.toolUses.length, 1); assert.equal(run.toolUses[0]!.name, tool('relay_script'));
   assert.equal(run.toolResults[0]!.isError, true);
-  assert.match(run.toolResults[0]!.text, /Invalid relay input|firefox/);
+  assert.match(run.toolResults[0]!.text, /Invalid relay input/);
   assert.deepEqual(await f.requests(), [], 'invalid input never reaches the service');
 });
 
-test('lifecycle: acquire, stage, run one exec, finish; the verified package and the artifact land in the project and the lease is released', { skip, timeout: 600_000 }, async t => {
+test('lifecycle: acquire, stage, run one command and one inline script, finish; the verified package and the artifact land in the project and the lease is released', { skip, timeout: 600_000 }, async t => {
   const f = await fixture(t);
   const steps: Array<[string, unknown]> = [
     ['relay_acquire', { task: 'e2e-exec', image: 'ubuntu2404', extractions: [{ path: 'artifact.txt', name: 'artifact' }] }],
     // relay_acquire names the guest after its task and a counter (DC-20).
     ['relay_stage', { guest: 'e2e-exec-1', nodePath: f.info.node, cuaDriver: f.info.driver }],
-    ['relay_exec', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', argv: [f.info.node, '-e', "require('fs').writeFileSync('artifact.txt','headless package')"], step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
+    ['relay_command', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', argv: [f.info.node, '-e', "require('fs').writeFileSync('artifact.txt','headless package')"], step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
+    ['relay_script', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', language: 'javascript', inline: true, code: "require('fs').appendFileSync('artifact.txt',' and script')", snapshots: { afterIntervalMs: 0 } }],
     ['relay_finish', { guest: 'e2e-exec-1' }],
   ];
-  const prompt = `You are exercising the relay plugin against a fixture service. Make exactly these four tool calls, in this order, one at a time, passing each JSON object as the arguments verbatim:\n${steps.map(([name, args], i) => `${i + 1}. ${name} with ${stepJson(args)}`).join('\n')}\nDo not call any other tool and do not change the arguments. When the fourth call has returned, reply with the single word DONE.`;
-  const run = await claude(f.project, prompt, f.env, 12);
+  const prompt = `You are exercising the relay plugin against a fixture service. Make exactly these ${steps.length} tool calls, in this order, one at a time, passing each JSON object as the arguments verbatim:\n${steps.map(([name, args], i) => `${i + 1}. ${name} with ${stepJson(args)}`).join('\n')}\nDo not call any other tool and do not change the arguments. When the last call has returned, reply with the single word DONE.`;
+  const run = await claude(f.project, prompt, f.env, 14);
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(run.toolUses.map(u => u.name), steps.map(([name]) => tool(name)), JSON.stringify(run.toolUses));
   for (const result of run.toolResults) assert.equal(result.isError, false, result.text);
@@ -121,7 +123,7 @@ test('lifecycle: acquire, stage, run one exec, finish; the verified package and 
   assert.equal(verified.deliveryVerified, true, JSON.stringify(verified));
   assert.equal(verified.execution, 'passed');
   const copies = await readdir(join(dir, 'extractions', 'artifact'));
-  assert.equal(await readFile(join(dir, 'extractions', 'artifact', copies[0]!), 'utf8'), 'headless package');
+  assert.equal(await readFile(join(dir, 'extractions', 'artifact', copies[0]!), 'utf8'), 'headless package and script');
   const requests = await f.requests();
   assert.ok(requests.some(r => r.path === '/acquire'));
   assert.equal(requests.find(r => r.path.endsWith('/release'))?.body.reason, 'finished');

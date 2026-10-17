@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFile, chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -14,7 +13,6 @@ import { RelayManager, type AcquireInput, type ManagerOptions, type RunInput } f
 import { Registry } from '../src/registry.js';
 import { VmService, VmServiceError, capacityRefusal, type VmLease } from '../src/vm-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
-import { targetLaunches, type Target } from '../src/targets.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { relayCall } from '../src/surface.js';
@@ -59,14 +57,7 @@ const png = (() => {
     chunk('IDAT', deflateSync(Buffer.from([0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 255, 255, 0, 0, 255, 255, 128, 0, 64]))), chunk('IEND', Buffer.alloc(0))]).toString('base64');
 })();
 const bundle = fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
-const mcpHostBundle = fileURLToPath(new URL('../dist/mcp-host.mjs', import.meta.url));
-const mcpFixture = fileURLToPath(new URL('./fixtures/mcp-fixture-server.mjs', import.meta.url));
-/** The browser targets launch SDK fixture servers; cua keeps its real launch (`<cuaDriver> mcp`), which the fake driver answers with the same fixture. */
-const fixtureLaunches = (log: string) => (context: Parameters<typeof targetLaunches>[0]) => {
-  const real = targetLaunches(context);
-  const fixture = (name: Target) => ({ command: context.node, args: [mcpFixture, name], cwd: context.workspace, env: { FIXTURE_LOG: log } });
-  return { cua: { ...real.cua, env: { FIXTURE_LOG: log } }, playwright: fixture('playwright'), 'chrome-devtools': fixture('chrome-devtools') };
-};
+const localBin = fileURLToPath(new URL('../node_modules/.bin', import.meta.url));
 const reason = 'Exercise isolated protocol fixtures, never the real desktop';
 /** The guest every fixture's first acquisition names: its task and the counter 1 (DC-20). */
 const G = 'manager-test-1';
@@ -191,6 +182,9 @@ class FixtureService {
     const argv: string[] = body.argv;
     if (argv[0] === 'cua-driver' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 127, output: 'fixture cua-driver not installed' });
     if (this.noNode && argv[0] === 'node') return this.respond(res, 200, { vm, rc: 127, output: 'env: node: No such file or directory' });
+    // relay_probe's runtime facts (DC-23): the fixture guest has Python and no tsx on vm-service's PATH.
+    if (argv[0] === 'tsx' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 127, output: 'env: tsx: No such file or directory' });
+    if (argv[0] === 'python3' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 0, output: 'Python 3.12.0' });
     assert.ok(['node', process.execPath, '/bin/mkdir', '/bin/sh', '/usr/bin/env', join(this.root, 'fake-cua')].includes(argv[0]), `Unexpected fixture executable: ${argv[0]}`);
     if (argv[0] === '/bin/sh') { assert.equal(argv[2], 'cd "$1" || exit; shift; exec "$@"'); assert.ok(argv[4].startsWith('/var/tmp/')); }
     if (argv[0] === '/bin/mkdir') {
@@ -207,7 +201,8 @@ class FixtureService {
     try {
       if (isReceiver) await this.receiverHook?.();
       const response = await new Promise<{ rc: number; output: string }>((resolve, reject) => {
-        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: { PATH: process.env.PATH, HOME: this.root }, stdio: ['ignore', 'pipe', 'pipe'] });
+        // The receiver finds the language runtimes on the guest's PATH: python3 from the host, tsx from this checkout.
+        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: { PATH: `${localBin}:${process.env.PATH}`, HOME: this.root }, stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         child.stdout.on('data', data => { output += String(data); }); child.stderr.on('data', data => { output += String(data); });
         child.on('error', reject); child.on('close', code => resolve({ rc: code ?? 1, output }));
@@ -222,8 +217,7 @@ class FixtureService {
   }
   async close() {
     this.server.closeAllConnections(); await new Promise<void>((resolve, reject) => this.server.close(error => error ? reject(error) : resolve()));
-    // Stop any guest MCP host a test left running (finish/release normally stop it).
-    for (const root of this.guestRoots) { try { execFileSync(process.execPath, [mcpHostBundle, 'stop', join(root, 'mcp')], { stdio: 'ignore', timeout: 20000 }); } catch {} await rm(root, { recursive: true, force: true }); }
+    for (const root of this.guestRoots) await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -231,12 +225,11 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-relay-manager-')));
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const service = new FixtureService(root), vm = await service.start();
-  const mcpLog = join(root, 'mcp-calls.jsonl');
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), mcpHostBundle, targetLaunches: fixtureLaunches(mcpLog), targetPackages: { playwright: { entry: '', packages: [] }, 'chrome-devtools': { entry: '', packages: [] } }, packageCache: join(root, 'package-cache'), ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { service.releaseFailures = 0; service.failHeartbeat = false; service.failGet = false; service.hideLeases = false; await manager.release(); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const driver = join(root, 'fake-cua');
-  await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){console.log('fixture-cua 1.0');process.exit(0);}if(process.argv[2]==='mcp'){process.argv[2]='cua';import(${JSON.stringify(mcpFixture)});return;}if(process.argv[2]!=='call'||process.argv[3]!=='get_desktop_state'||process.argv[4]!=='--json')process.exit(99);const a=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(a)+'\\n');fs.writeFileSync(a.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:a.screenshot_out_file}));`);
+  await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');if(process.argv[2]==='--version'){console.log('fixture-cua 1.0');process.exit(0);}if(process.argv[2]!=='call'||process.argv[3]!=='get_desktop_state'||process.argv[4]!=='--json')process.exit(99);const a=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(a)+'\\n');fs.writeFileSync(a.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:a.screenshot_out_file}));`);
   await chmod(driver, 0o700);
   const stage = () => manager.stage({ cuaDriver: driver, nodePath: process.execPath });
   const assertClean = async () => {
@@ -250,8 +243,7 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
     assert.equal((await json(leaseFile(manager))).lease.vm, vm);
     assert.notEqual(await readFile(registryPath, 'utf8'), registryText);
   };
-  const mcpCalls = async () => (await readFile(mcpLog, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-  return { root, manager, service, options, driver, stage, assertClean, assertRetained, registryPath, mcpCalls };
+  return { root, manager, service, options, driver, stage, assertClean, assertRetained, registryPath };
 }
 
 test('real HTTP service, receiver and Registry: acquire → stage → exec/script/code → extraction → verified finish', { timeout: 30000 }, async t => {
@@ -268,7 +260,7 @@ test('real HTTP service, receiver and Registry: acquire → stage → exec/scrip
   await f.manager.stage({ workspace: 'input', files: [{ local: 'support.txt', path: 'nested/support.txt' }], cuaDriver: f.driver, nodePath: process.execPath });
   assert.equal(await readFile(join(acquired.guestRoot, 'support/nested/support.txt'), 'utf8'), 'support bytes');
   assert.equal(await readFile(join(acquired.workspace, 'seed.txt'), 'utf8'), 'workspace seed');
-  for (const run of [operation('exec'), operation('script', { kind: 'script', language: 'javascript', localPath: 'script.js' }), operation('code', { kind: 'code', language: 'javascript', code: "console.log(require('node:fs').readFileSync('artifact.txt','utf8'))" })]) {
+  for (const run of [operation('exec'), operation('script', { kind: 'script', inline: false, language: 'javascript', localPath: 'script.js' }), operation('code', { kind: 'script', inline: true, language: 'javascript', code: "console.log(require('node:fs').readFileSync('artifact.txt','utf8'))" })]) {
     const result = await f.manager.run(run);
     assert.equal(result.outcome.kind, 'completed', JSON.stringify(result));
   }
@@ -334,8 +326,8 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
   f.service.receiverHook = async () => { await f.service.heartbeatDuringExec.promise; };
   const runs: Extract<RelayInput, { action: 'run' }>[] = [
     { action: 'run', guest: G, reason: why('exec'), kind: 'exec', argv: [process.execPath, '-e', "require('node:fs').writeFileSync('artifact.txt', 'exec artifact');console.log('exec result')"], step: { ...operation('tool-exec').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
-    { action: 'run', guest: G, reason: why('script'), kind: 'script', localPath: 'tool-script.js', language: 'javascript', step: { ...operation('tool-script').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
-    { action: 'run', guest: G, reason: why('code'), kind: 'code', code: "require('node:fs').appendFileSync('artifact.txt', '|code');console.log('code result')", language: 'javascript', step: { ...operation('tool-code').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
+    { action: 'run', guest: G, reason: why('script'), kind: 'script', inline: false, localPath: 'tool-script.js', language: 'javascript', step: { ...operation('tool-script').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
+    { action: 'run', guest: G, reason: why('code'), kind: 'script', inline: true, code: "require('node:fs').appendFileSync('artifact.txt', '|code');console.log('code result')", language: 'javascript', step: { ...operation('tool-code').step, expected: 'Fixture command completes', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } },
   ];
   for (const run of runs) {
     const result = await execute(run);
@@ -383,10 +375,10 @@ test('the shipped MCP server stages its shipped receiver and completes a full HT
   const client = new Client({ name: 'manager-test', version: '0' });
   await client.connect(transport);
   try {
-    // Nineteen relay_* tools replace the old single relay tool; a call's
+    // Fifteen relay_* tools replace the old single relay tool; a call's
     // action (and, for run, kind) selects which one, and the rest of the
     // args are its own arguments (no action/kind field on the wire).
-    const toolFor = ({ action, kind }: { action: string; kind?: string }) => `relay_${(kind ?? action).replace(/-/g, '_')}`;
+    const toolFor = ({ action, kind }: { action: string; kind?: string }) => kind === 'exec' ? 'relay_command' : `relay_${(kind ?? action).replace(/-/g, '_')}`;
     let named: { imageId: string } | undefined;
     const invoke = async (args: Record<string, unknown>) => {
       const { action, kind, ...rest } = args as { action: string; kind?: string; [key: string]: unknown };
@@ -862,7 +854,7 @@ test('relay_stage reads files[].local and workspace only in the project folder (
 test('relay_script reads localPath only in the project folder (DC-15)', { timeout: 30000 }, async t => {
   const f = await fixture(t); const { outside, parent } = await hostPathLayout(f.root, t);
   await f.manager.acquire(acquireInput()); await f.stage();
-  const script = (id: string, localPath: string) => operation(id, { kind: 'script', language: 'javascript', localPath });
+  const script = (id: string, localPath: string) => operation(id, { kind: 'script', inline: false, language: 'javascript', localPath });
   const relative = await f.manager.run(script('relative', 'script.js'));
   assert.deepEqual(relative.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
   assert.match(relative.stdout, /relative script/);
@@ -930,7 +922,7 @@ test('vm-service refusing internet passes through, and the relay never falls bac
 
 const nodeOnly = { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'dpkg:nodejs', name: 'Node.js', aliases: ['node'], version: '22.0.0' }, { id: 'dpkg:python3', name: 'Python', aliases: [], version: '3.12' }] }] };
 
-test('an image that lists no capture software stages, runs relay_code and finishes with no snapshots and a passed outcome (DC-13)', { timeout: 30000 }, async t => {
+test('an image that lists no capture software stages, runs relay_script and finishes with no snapshots and a passed outcome (DC-13)', { timeout: 30000 }, async t => {
   const f = await fixture(t); f.service.catalog = nodeOnly;
   await f.manager.acquire(acquireInput({ extractions: [{ name: 'out', path: 'out.txt' }] }));
   const before = await f.manager.probe('guest') as any;
@@ -939,10 +931,10 @@ test('an image that lists no capture software stages, runs relay_code and finish
   const staged = await f.manager.stage({ nodePath: process.execPath }) as any;
   assert.equal(staged.snapshots.taken, false); assert.match(staged.snapshots.reason, /lists no capture software \(cua-driver\)/);
   const probe = await f.manager.probe('guest') as any;
-  assert.deepEqual(probe.checks.map((check: any) => [check.name, check.required]), [['node', true], ['cuaDriver', false]]);
-  assert.equal(probe.checks.find((check: any) => check.name === 'cuaDriver').ready, false, 'cua-driver is reported as a fact');
+  assert.deepEqual(probe.checks.map((check: any) => [check.name, check.language, check.required, check.ready]), [['node', 'javascript', true, true], ['tsx', 'typescript', false, false], ['python3', 'python', false, true]], 'the runtimes are facts; only Node.js is required');
+  assert.deepEqual(probe.software, { image: 'ubuntu2404', applications: nodeOnly.images[0]!.applications }, 'the listed software is the catalog\'s');
   assert.equal(probe.snapshots.taken, false);
-  const run = await f.manager.run(operation('code', { kind: 'code', language: 'javascript', code: "require('node:fs').writeFileSync('out.txt','no capture');console.log('ran')" }));
+  const run = await f.manager.run(operation('code', { kind: 'script', inline: true, language: 'javascript', code: "require('node:fs').writeFileSync('out.txt','no capture');console.log('ran')" }));
   assert.deepEqual(run.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
   assert.match(run.stdout, /ran/);
   assert.equal(run.imageDelivery.status, 'not-requested'); assert.match(run.imageDelivery.diagnostic!, /no capture software/);
@@ -970,7 +962,7 @@ test('an image that lists cua-driver keeps its snapshots (DC-13)', { timeout: 30
   await f.manager.acquire(acquireInput());
   const staged = await f.stage() as any;
   assert.equal(staged.snapshots.taken, true);
-  const run = await f.manager.run(operation('code', { kind: 'code', language: 'javascript', code: "console.log('ran')" }));
+  const run = await f.manager.run(operation('code', { kind: 'script', inline: true, language: 'javascript', code: "console.log('ran')" }));
   assert.deepEqual(run.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } });
   await shown(f.manager, run);
   const captures = (await readFile(join(f.root, 'captures.jsonl'), 'utf8')).trim().split('\n');
@@ -1123,154 +1115,6 @@ for (const mode of ['symlink', 'corrupt-pull'] as const) test(`${mode} extractio
   await f.manager.release(); await f.assertClean();
 });
 
-test('relay_run forwards unchanged tool calls through the receiver and the guest MCP host, with automatic evidence', { timeout: 60000 }, async t => {
-  const f = await fixture(t);
-  const call = (raw: unknown) => relayCall(f.manager, raw);
-  const body = (text: string) => relayJson(text);
-  const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  // relay_tools: the fixture's real tools/list, pulled from the guest.
-  const listed = await call({ action: 'tools', guest: G, target: 'playwright' });
-  assert.equal(listed.isError, false);
-  assert.deepEqual(JSON.parse(listed.text).tools.map((tool: { name: string }) => tool.name), ['increment', 'echo', 'picture', 'fail', 'escalate', 'crash', 'slow', 'huge']);
-  assert.deepEqual(JSON.parse((await call({ action: 'tools', guest: G, target: 'playwright', tool: 'echo' })).text).tools[0].inputSchema.required, ['text']);
-  // No reason, step or interval: the record is derived and the evidence is automatic.
-  const first = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 } });
-  assert.equal(first.isError, false, first.text);
-  assert.equal(first.imageDelivery?.status, 'pending'); assert.equal(first.image, undefined, 'the after-snapshot downloads in the background');
-  assert.deepEqual(first.content, [{ type: 'text', text: first.content![0].type === 'text' ? first.content![0].text : '' }]);
-  assert.match((first.content![0] as { text: string }).text, /^count=2 /, 'the tool\'s own text passes through');
-  const result = body(first.text);
-  assert.equal(result.relayOutcome, 'completed'); assert.equal(result.toolOutcome, 'completed');
-  assert.deepEqual(result.step, { id: 'playwright.increment-1', title: 'playwright.increment', expected: 'playwright.increment returns without a tool error', inputMode: 'ordinary' });
-  assert.deepEqual(result.snapshots, { afterIntervalMs: 300 });
-  const request = await json(join(f.manager.guestStatus().output!, 'host/requests', `${result.executionId}.json`));
-  assert.equal(request.because, 'Relay playwright.increment (no reason given)');
-  assert.deepEqual(request.argv.slice(2, 7), ['call', join(acquired.guestRoot, 'mcp'), 'playwright', 'increment', '{"by":2}'], 'tool and args forwarded unchanged');
-  // The same server process keeps its state: the session persists across calls.
-  const second = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 3 }, reason: 'Count again', expected: 'count=5', afterIntervalMs: 0 });
-  assert.match((second.content![0] as { text: string }).text, /^count=5 /);
-  assert.equal(body(second.text).step.expected, 'count=5'); assert.deepEqual(body(second.text).snapshots, { afterIntervalMs: 0 });
-  // cua launches through the real `<cuaDriver> mcp` command; its image block is delivered inline too.
-  const picture = await call({ action: 'run', guest: G, kind: 'mcp', target: 'cua', tool: 'picture' });
-  assert.equal(picture.isError, false, picture.text);
-  assert.deepEqual(picture.content!.map(block => block.type), ['text', 'image']);
-  const tool = body(picture.text);
-  assert.equal(tool.toolImages[0].status, 'attached'); assert.equal(tool.toolImages[0].image.source, 'application');
-  assert.deepEqual(tool.snapshots, { afterIntervalMs: 500 });
-  // A mismatch is refused on the host: nothing reaches the receiver, the correct schema comes back.
-  const receiverCalls = f.service.receiverCalls;
-  const mismatch = await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'echo', args: { text: 42 } });
-  assert.equal(mismatch.isError, true);
-  assert.equal(body(mismatch.text).sent, false); assert.deepEqual(body(mismatch.text).inputSchema.required, ['text']);
-  assert.equal((await call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'nope' })).isError, true);
-  assert.equal(f.service.receiverCalls, receiverCalls, 'refused before sending anything');
-  // The target's isError: completed with a tool error; an error result; the VM is kept.
-  const failed = await call({ action: 'run', guest: G, kind: 'mcp', target: 'chrome-devtools', tool: 'fail' });
-  assert.equal(failed.isError, true);
-  assert.equal(body(failed.text).relayOutcome, 'completed-with-tool-error'); assert.equal(body(failed.text).outcome.exitStatus.code, 3);
-  assert.equal((failed.content![0] as { text: string }).text, 'fixture tool error');
-  assert.equal(failed.imageDelivery?.status, 'pending', 'a failed call is still bracketed by snapshots');
-  await f.assertRetained(acquired.vm);
-  assert.deepEqual((await f.mcpCalls()).map(entry => `${entry.server}.${entry.tool}`), ['playwright.increment', 'playwright.increment', 'cua.picture', 'chrome-devtools.fail']);
-  // finish stops the host and brings the results home as the relay-run extraction.
-  const output = f.manager.guestStatus().output!;
-  const delivered = await f.manager.finish();
-  assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.execution, 'failed');
-  const root = join(output, 'extractions', 'relay-run');
-  const copy = join(root, (await readdir(root))[0]!);
-  assert.ok((await readdir(join(copy, 'playwright'))).length >= 2);
-  assert.ok((await readdir(join(copy, 'servers'))).includes('playwright.log'));
-  await f.assertClean();
-});
-
-test('relay_run with a hold is delivered and waits; relay_gate go sends it, cancel refuses it with nothing sent', { timeout: 60000 }, async t => {
-  const f = await fixture(t);
-  const call = (raw: unknown) => relayCall(f.manager, raw);
-  const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  // Released while it waits in the guest: the call completes and says how it was decided.
-  const held = call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', args: { by: 2 }, hold: { id: 'h-go', timeoutMs: 20000 } });
-  await until(() => f.service.receiverCalls === 1, 'the held run to reach the guest');
-  assert.deepEqual(await f.mcpCalls(), [], 'nothing is sent while held');
-  const gate = relayJson((await call({ action: 'gate', guest: G, hold: 'h-go', decision: 'go' })).text);
-  assert.deepEqual(gate, { hold: 'h-go', requested: 'go', decision: 'go', applied: true });
-  const released = await held;
-  assert.equal(released.isError, false, released.text);
-  assert.match((released.content![0] as { text: string }).text, /^count=2 /);
-  assert.equal(relayJson(released.text).hold.decision, 'go');
-  // Cancelled: refused, with no MCP call, and the VM is not marked failed.
-  const cancelled = call({ action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment', hold: { id: 'h-cancel' } });
-  await until(() => f.service.receiverCalls === 2, 'the second held run to reach the guest');
-  assert.equal(relayJson((await call({ action: 'gate', guest: G, hold: 'h-cancel', decision: 'cancel' })).text).applied, true);
-  const refused = await cancelled;
-  assert.equal(refused.isError, true);
-  const body = relayJson(refused.text);
-  assert.equal(body.outcome.kind, 'refused'); assert.match(body.outcome.diagnostic, /not released \(cancel\); nothing was sent/);
-  assert.equal(body.hold.decision, 'cancel');
-  assert.equal(f.manager.guestStatus().lastError, undefined, 'a withheld call is not a failure of the VM');
-  assert.deepEqual((await f.mcpCalls()).map(entry => entry.tool), ['increment']);
-  // A decided hold answers from its receipt; a hold is named once; an unknown hold is an error.
-  assert.deepEqual(relayJson((await call({ action: 'gate', guest: G, hold: 'h-cancel', decision: 'go' })).text), { hold: 'h-cancel', requested: 'go', decision: 'cancel', applied: false });
-  await assert.rejects(f.manager.run({ kind: 'mcp', target: 'playwright', tool: 'increment', hold: { id: 'h-go' } }), /already used/);
-  await assert.rejects(call({ action: 'gate', guest: G, hold: 'h-none', decision: 'go' }), /No relay_run on guest manager-test-1 named hold h-none/);
-  await f.assertRetained(acquired.vm);
-  await f.manager.release(); await f.assertClean();
-});
-
-test('relay_run: a server crash mid-call is uncertain, keeps the VM and is never replayed', { timeout: 60000 }, async t => {
-  const f = await fixture(t);
-  const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  const crashed = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'crash' });
-  assert.equal(crashed.isError, true);
-  assert.equal(relayJson(crashed.text).outcome.kind, 'uncertain');
-  assert.equal(f.service.receiverCalls, 1);
-  await f.assertRetained(acquired.vm);
-  const after = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
-  assert.match((after.content![0] as { text: string }).text, /^count=1 /, 'a fresh server; the crashed call was not replayed');
-  assert.deepEqual((await f.mcpCalls()).map(entry => entry.tool), ['crash', 'increment']);
-  await f.manager.release(); await f.assertClean();
-});
-
-test('relay_run stages pinned packages hash-checked and refuses a tarball that does not match its pin', { timeout: 60000 }, async t => {
-  const source = await realpath(await mkdtemp(join(tmpdir(), 'relay-package-')));
-  t.after(() => rm(source, { recursive: true, force: true }));
-  await mkdir(join(source, 'package'));
-  await writeFile(join(source, 'package', 'package.json'), JSON.stringify({ name: 'fixture-mcp', version: '1.0.0' }));
-  await writeFile(join(source, 'package', 'server.cjs'), `import(${JSON.stringify(mcpFixture)});`);
-  execFileSync('tar', ['-czf', join(source, 'fixture.tgz'), '-C', source, 'package']);
-  const bytes = await readFile(join(source, 'fixture.tgz'));
-  const pin = { name: 'fixture-mcp', version: '1.0.0', integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` };
-  let fetched = 0;
-  const log = join(source, 'calls.jsonl');
-  const f = await fixture(t, {
-    targetPackages: { playwright: { entry: 'fixture-mcp/server.cjs', packages: [pin] }, 'chrome-devtools': { entry: '', packages: [{ ...pin, integrity: 'sha512-AAAA' }] } },
-    tarballSource: async () => { fetched++; return bytes; },
-    targetLaunches: context => ({ ...fixtureLaunches(log)(context), playwright: { command: context.node, args: [join(context.packagesRoot, 'node_modules', 'fixture-mcp', 'server.cjs'), 'playwright'], cwd: context.workspace, env: { FIXTURE_LOG: log } } }),
-  });
-  const acquired = await f.manager.acquire(acquireInput()); await f.stage();
-  const ran = await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
-  assert.equal(ran.isError, false, ran.text);
-  assert.equal(await readFile(join(acquired.guestRoot, 'mcp/packages/node_modules/fixture-mcp/server.cjs'), 'utf8'), `import(${JSON.stringify(mcpFixture)});`);
-  await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
-  assert.equal(fetched, 1, 'fetched once, then served from the verified host cache');
-  const receiverCalls = f.service.receiverCalls;
-  await assert.rejects(relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'chrome-devtools', tool: 'increment' }), /does not match its pinned integrity/);
-  assert.equal(f.service.receiverCalls, receiverCalls);
-  await f.manager.release(); await f.assertClean();
-});
-
-test('probe scope=guest reports per-target availability without starting anything', async t => {
-  const f = await fixture(t); await f.manager.acquire(acquireInput()); await f.stage();
-  const facts = await f.manager.probe('guest') as any;
-  assert.equal(facts.targets.cua.available, true); assert.deepEqual(facts.targets.cua.launch, [f.driver, 'mcp']);
-  assert.equal(facts.targets.playwright.server.state, 'not-started');
-  assert.deepEqual(facts.targets.playwright.pinned, ['@playwright/mcp@0.0.82', 'playwright@1.64.0-alpha-1789764292000', 'playwright-core@1.64.0-alpha-1789764292000']);
-  assert.equal(f.service.receiverCalls, 0);
-  await relayCall(f.manager, { action: 'run', guest: G, kind: 'mcp', target: 'playwright', tool: 'increment' });
-  const later = await f.manager.probe('guest') as any;
-  assert.equal(later.targets.playwright.server.state, 'running');
-  await f.manager.release(); await f.assertClean();
-});
-
 test('explicit release retains declared outputs already produced before a nonzero operation', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput({ extractions: [{ name: 'failure-log', path: 'error.txt' }] })); await f.stage();
   await writeFile(join(acquired.workspace, 'error.txt'), 'original failure evidence');
@@ -1373,29 +1217,67 @@ test('run timeout bounds reject without dispatch and a corrected timeout reaches
   await f.manager.release(); await f.assertClean();
 });
 
-test('guest probe checks executable readiness read-only before stage and after path repair', async t => {
+test('guest probe reports each language runtime and the listed software read-only, before stage and after path repair (DC-23)', async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput());
   let before = f.service.requests.length;
-  const initial = await f.manager.probe('guest');
-  assert.ok('checks' in initial);
+  const initial = await f.manager.probe('guest') as any;
   assert.equal(initial.scope, 'guest'); assert.equal(initial.owned.vm, acquired.vm);
   assert.equal(initial.captureVerified, false); assert.equal(initial.browserVerified, false);
-  assert.equal(initial.checks.find(c => c.name === 'node')?.ready, true);
-  assert.equal(initial.checks.find(c => c.name === 'cuaDriver')?.ready, false);
+  assert.deepEqual(initial.checks.map((c: any) => [c.name, c.language, c.ready]), [['node', 'javascript', true], ['tsx', 'typescript', false], ['python3', 'python', true]]);
+  assert.deepEqual(initial.software.applications.map((app: any) => app.id), ['dpkg:cua-driver', 'dpkg:nodejs']);
+  assert.equal('targets' in initial, false, 'relay_run targets are gone');
   let commands = f.service.requests.slice(before).filter(r => r.path.endsWith('/exec'));
-  assert.equal(commands.length, 3); assert.ok(commands.slice(0, 2).every(r => r.body.argv.at(-1) === '--version'));
-  assert.equal(commands[2].body.argv[1], '-e', 'the browser executable check is a read-only access test');
+  assert.deepEqual(commands.map(r => r.body.argv), [['node', '--version'], ['tsx', '--version'], ['python3', '--version']]);
   assert.equal(f.service.receiverCalls, 0); assert.equal(f.manager.guestStatus().staged, false);
   await f.stage(); before = f.service.requests.length;
-  const staged = await f.manager.probe('guest');
-  assert.ok('checks' in staged);
+  const staged = await f.manager.probe('guest') as any;
   assert.equal(staged.captureVerified, false); assert.equal(staged.browserVerified, false);
-  assert.ok(staged.checks.every(c => c.ready), JSON.stringify(staged.checks));
+  assert.equal(staged.snapshots.taken, true);
   await assert.rejects(readFile(join(f.root, 'captures.jsonl')), /ENOENT/);
   commands = f.service.requests.slice(before).filter(r => r.path.endsWith('/exec'));
-  assert.deepEqual(commands.slice(0, 2).map(r => r.body.argv), [[process.execPath, '--version'], [f.driver, '--version']]);
-  assert.equal(commands.length, 3);
+  assert.deepEqual(commands.map(r => r.body.argv), [[process.execPath, '--version'], ['tsx', '--version'], ['python3', '--version']], 'the staged Node.js is the one checked');
+  f.service.catalogFails = true;
+  const unread = await f.manager.probe('guest') as any;
+  assert.match(unread.software.diagnostic, /catalog could not be read/); assert.equal(unread.software.applications, undefined);
   await f.assertRetained(acquired.vm); await f.manager.release(); await f.assertClean();
+});
+
+test('relay_script runs inline code and a project file in each language, in the staged workspace, with evidence (DC-23)', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  await f.manager.acquire(acquireInput({ extractions: [{ name: 'out', path: 'out' }] })); await f.stage();
+  const programs = {
+    javascript: (tag: string) => `require('node:fs').mkdirSync('out',{recursive:true});require('node:fs').writeFileSync('out/js-${tag}.txt','js');console.log('js ${tag}')`,
+    typescript: (tag: string) => `import { mkdirSync, writeFileSync } from 'node:fs';const value: string = 'ts';mkdirSync('out',{recursive:true});writeFileSync('out/ts-${tag}.txt', value);console.log('ts ${tag}')`,
+    python: (tag: string) => `import os\nos.makedirs('out', exist_ok=True)\nopen('out/py-${tag}.txt', 'w').write('py')\nprint('py ${tag}')\n`,
+  } as const;
+  await mkdir(join(f.root, 'scripts'));
+  for (const [language, program] of Object.entries(programs) as Array<[keyof typeof programs, (tag: string) => string]>) {
+    const extension = language === 'python' ? 'py' : language === 'typescript' ? 'ts' : 'js';
+    await writeFile(join(f.root, 'scripts', `check.${extension}`), program('file'));
+    for (const run of [operation(`${language}-inline`, { kind: 'script', inline: true, language, code: program('inline') }), operation(`${language}-file`, { kind: 'script', inline: false, language, localPath: `scripts/check.${extension}` })]) {
+      const result = await f.manager.run(run);
+      assert.deepEqual(result.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } }, `${language} ${run.inline ? 'inline' : 'file'}: ${JSON.stringify(result)}`);
+      assert.match(result.stdout, new RegExp(`${language === 'python' ? 'py' : language === 'typescript' ? 'ts' : 'js'} ${run.inline ? 'inline' : 'file'}`));
+      await shown(f.manager, result);
+      const request = await json(join(result.evidencePath, 'host/requests', `${result.executionId}.json`));
+      assert.equal(request.kind, run.inline ? 'code' : 'script', 'inline code streams as code; a file is pushed as a script');
+      assert.equal(request.language, language);
+    }
+  }
+  // Each run records its own before and after snapshots.
+  assert.equal((await readFile(join(f.root, 'captures.jsonl'), 'utf8')).trim().split('\n').length, 12);
+  const [extracted] = await f.manager.extract(['out']);
+  assert.deepEqual(extracted!.facts.map((fact: any) => fact.path.split('/').at(-1)).sort(), ['js-file.txt', 'js-inline.txt', 'py-file.txt', 'py-inline.txt', 'ts-file.txt', 'ts-inline.txt']);
+  // A call the contract refuses never reaches the manager; the manager refuses a mismatch on its own too.
+  const calls = f.service.receiverCalls;
+  for (const bad of [{ inline: true, localPath: 'scripts/check.js' }, { inline: false, code: '1' }, { inline: true, code: '1', localPath: 'scripts/check.js' }]) {
+    await assert.rejects(f.manager.run(operation('mismatch', { kind: 'script', language: 'javascript', ...bad })), /relay_script with inline/, JSON.stringify(bad));
+  }
+  await assert.rejects(f.manager.run(operation('diagnostic-script', { kind: 'script', inline: true, language: 'javascript', code: '1', diagnostic: true })), /diagnostic is only supported for relay_command/);
+  assert.equal(f.service.receiverCalls, calls, 'nothing ran in the guest');
+  const delivered = await f.manager.finish();
+  assert.equal(delivered.execution, 'passed'); assert.equal(delivered.snapshots, 'complete');
+  await f.assertClean();
 });
 
 test('staged executable path correction reattaches without replay or workspace replacement', async t => {
@@ -1795,25 +1677,6 @@ test('finish takes the files the step downloads brought and archives only the re
   await f.assertClean();
 });
 
-test('a step lists a result file it cannot find as missing, and an extraction takes a result file a step brought (AD-2, AD-4, AD-9)', { timeout: 30000 }, async t => {
-  const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput({ extractions: [{ name: 'result', path: 'relay-run/kept/result.json' }] })); await f.stage();
-  const writes = (dir: string, write: boolean) => [process.execPath, '-e', `${write ? `require('fs').mkdirSync('relay-run/${dir}', { recursive: true }); require('fs').writeFileSync('relay-run/${dir}/result.json', '{"kept":true}');` : ''} console.log(JSON.stringify({ resultFile: '${dir}/result.json' }))`];
-  const kept = await f.manager.run(operation('kept-result', { argv: writes('kept', true) }));
-  const lost = await f.manager.run(operation('lost-result', { argv: writes('lost', false) }));
-  await shown(f.manager, kept); await shown(f.manager, lost);
-  const keptRecord = await downloadRecord(acquired.output!, kept.executionId!), lostRecord = await downloadRecord(acquired.output!, lost.executionId!);
-  assert.equal(keptRecord.status, 'downloaded'); assert.ok(keptRecord.files.some((file: any) => file.path === 'workspace/relay-run/kept/result.json'));
-  assert.equal(lostRecord.status, 'downloaded', 'a missing file does not fail the step');
-  assert.deepEqual(lostRecord.missing, ['workspace/relay-run/lost/result.json']);
-  const pulls = f.service.requests.filter(r => r.path.endsWith('/pull')).length;
-  const delivered = await f.manager.finish();
-  assert.equal(delivered.deliveryVerified, true);
-  const events = await Promise.all((await readdir(join(acquired.output!, 'host/events'))).map(name => json(join(acquired.output!, 'host/events', name))));
-  assert.deepEqual(events.find(event => event.kind === 'extraction-reused')?.details, { name: 'result', files: 1 });
-  assert.ok(!f.service.requests.slice(pulls).some(r => r.path.endsWith('/pull') && r.body.remote_path.endsWith('result.json')), 'the result file is not pulled again');
-  await f.assertClean();
-});
-
 test('a step file that changed after its download comes from the guest at finish (AD-6)', { timeout: 30000 }, async t => {
   const f = await fixture(t); const acquired = await f.manager.acquire(acquireInput()); await f.stage();
   const run = await f.manager.run(operation('changed-after-download')); await shown(f.manager, run);
@@ -1935,7 +1798,6 @@ test('a call naming a guest the session does not hold is refused and changes not
     () => f.manager.extract([], undefined, 'other-1'),
     () => f.manager.finish(undefined, 'other-1'),
     () => f.manager.release('other-1'),
-    () => f.manager.gate('h', 'go', undefined, 'other-1'),
     () => f.manager.consoleResolve(undefined, 'other-1'),
     () => f.manager.probe('guest', 'other-1'),
   ]) await assert.rejects(call(), /This session holds no guest named "other-1"; it holds manager-test-1\. relay_acquire answers each guest's name/);

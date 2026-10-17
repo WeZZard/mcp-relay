@@ -218,8 +218,7 @@ imageDelivery: {
   - `state/receiver/receipts/<executionId>.json`;
   - `state/records/execution/<executionId>.json`;
   - `state/records/action/<actionId>.json` for each action in the receipt's `imageEvidence.snapshots`;
-  - `state/snapshots/<sessionId>/<fileName>` for each before- and after-image in `imageEvidence.snapshots`;
-  - `workspace/relay-run/<resultFile>` when the receipt's output names a `relay-run` result file.
+  - `state/snapshots/<sessionId>/<fileName>` for each before- and after-image in `imageEvidence.snapshots`.
 - A file the receipt does not name is not part of a step: the shared journal, `state/receiver/groups.json`, application images and other workspace files. The finish fetches them (AD-9).
 - The download carries the step's files in one archive (AD-8). It files the after-image original in the image catalogue as before: it checks the action record, registers the catalogue entry, and writes a delivery receipt with the status `downloaded`. The preview is made only when `relay_image` asks for the image.
 - One worker per enclosure runs the downloads in order (DC-4). It runs outside the manager's serialized section, so the next operation does not wait for it, and in the manager process, which holds the owner lock.
@@ -297,7 +296,7 @@ imageDelivery: {
   2. It takes every file that has a matching host candidate (AD-6) from the host.
   3. It writes every other file into one archive in the guest, pulls it, and unpacks it with the checks of AD-8. These are the files of coalesced and failed downloads, and the shared files that belong to no step.
   4. It scans again and compares, as now.
-- The declared extractions, such as `relay-run`, work the same way: one scan, host candidates from the step folders, and one archive for the rest. An extraction of a single file takes a matching host candidate instead of its pull.
+- The declared extractions are pulled from the guest workspace: one scan and one archive. A step brings no workspace file since `relay_run`'s result files went with it (DC-23), so an extraction has no host candidate from the step folders.
 - The archive removes the per-file round trips: the finish makes a fixed number of requests, whatever the number of steps.
 
 ### AD-10: the finish falls back to the per-file pull when the archive cannot be built

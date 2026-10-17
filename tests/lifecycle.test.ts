@@ -224,7 +224,7 @@ test('R1: shutdown behind an operation that never settles is bounded by the grac
   assert.equal((await relay.call('relay_acquire', acquireArgs)).isError, false);
   const owned = await f.lease(relay);
   f.fake.execHook = () => new Promise(() => {}); // a guest command whose answer never comes
-  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
+  void relay.call('relay_command', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
   await f.fake.arrived('/exec');
   relay.child.stdin.end();
   const exit = await exitWithin(relay, 10000);
@@ -243,7 +243,7 @@ test('R2: a response written after the client closed its reader ends the session
   assert.equal(owned.active, true);
   const hold = gate();
   f.fake.execHook = async () => { await hold.promise; return { rc: 1, output: 'fixture failure after the client left' }; };
-  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/false'] });
+  void relay.call('relay_command', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/false'] });
   await f.fake.arrived('/exec');
   relay.child.stdout.destroy(); // the client's read side is gone; standard input stays open
   await sleep(200);
@@ -364,7 +364,7 @@ test('DC-21: with MCP_RELAY_ON_EXIT=release, a guest operation that never answer
   const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_ON_EXIT: 'release', MCP_RELAY_SHUTDOWN_GRACE_MS: '500' });
   const owned = await twoGuests(f, relay);
   f.fake.execHook = () => new Promise(() => {}); // a guest command whose answer never comes
-  void relay.call('relay_exec', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
+  void relay.call('relay_command', { guest: 'lifecycle-1', diagnostic: true, argv: ['/bin/true'] });
   await f.fake.arrived('/exec');
   relay.child.stdin.end();
   const exit = await exitWithin(relay, 20000);

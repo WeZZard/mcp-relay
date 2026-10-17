@@ -11,9 +11,7 @@ import type { FramedRequest } from "@wezzard/relay-driver-host-sdk";
  * (cua-driver): it takes no snapshots, and their absence is not a gap
  * (docs/guest-code-runs.md §3). Absent means capture, as before.
  */
-export type GuestRequest = FramedRequest & { readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly hold?: InputHold; readonly capture?: boolean };
-/** A delivered request whose input waits, before its before snapshot, until the host releases it (docs/relay-run.md, Held input). */
-export interface InputHold { readonly id: string; readonly timeoutMs: number }
+export type GuestRequest = FramedRequest & { readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly capture?: boolean };
 
 export const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 

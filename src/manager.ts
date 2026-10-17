@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
@@ -22,10 +22,6 @@ import { ImageStore, imageCapability, type ImageDescriptor, type ImageTarget, ty
 import { DownloadQueue, type DownloadJob, type StepResult } from './downloads.js';
 import type { LocalSource } from './transfer.js';
 import { refreshEvidenceState } from './evidence-merge.js';
-import { DEFAULT_AFTER_INTERVAL_MS, TARGET_PACKAGES, cachedTarball, tarballName, targetLaunches, type LaunchContext, type Target, type TargetLaunch, type TargetPackages, type TarballSource } from './targets.js';
-import { checkArguments } from './json-schema.js';
-import type { CallSummary } from './guest/mcp-host.js';
-import type { RelayImageContent } from './surface.js';
 
 export interface Extraction { path: string; name: string }
 export interface AcquireInput { task: string; image: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean }
@@ -37,14 +33,15 @@ export interface AcquireInput { task: string; image: string; extractions: Extrac
 export interface GuestSelector { guest?: string }
 export interface ConsoleAttemptInput extends GuestSelector { console_id: string; attempt_id: string }
 export interface ConsoleOpenInput extends ConsoleAttemptInput { userRequested: true; reason: string; expected: string }
-export interface StageInput extends GuestSelector { resetRecording?: boolean; workspace?: string; files?: Array<{ local: string; path: string }>; nodePath?: string; cuaDriver?: string; browserExecutable?: string }
+export interface StageInput extends GuestSelector { resetRecording?: boolean; workspace?: string; files?: Array<{ local: string; path: string }>; nodePath?: string; cuaDriver?: string }
 /**
  * One run. `because`, `step` and `snapshots` are optional: whatever is left
- * out is derived from the call (see `derive`). `kind: 'mcp'` is relay_run:
- * `target`, `tool` and `args` name one tool call on an in-guest MCP server;
- * `expected` and `afterIntervalMs` are its record overrides.
+ * out is derived from the call (see `derive`). `kind: 'exec'` is
+ * relay_command, `argv`, which alone may be `diagnostic`; `kind: 'script'` is
+ * relay_script, whose `inline` says whether the script is `code` or the host
+ * file `localPath` (DC-23).
  */
-export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; kind: 'exec' | 'script' | 'code' | 'mcp'; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; argv?: string[]; localPath?: string; language?: 'javascript' | 'typescript' | 'python'; code?: string; target?: Target; tool?: string; args?: Record<string, unknown>; expected?: string; afterIntervalMs?: number; hold?: { id: string; timeoutMs?: number } }
+export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; kind: 'exec' | 'script'; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; argv?: string[]; inline?: boolean; localPath?: string; language?: 'javascript' | 'typescript' | 'python'; code?: string }
 interface BackendBinding { endpoint: string; tartHome: string; environmentFingerprint?: string }
 /** One guest's durable ownership record, `guests/<guest>/lease.json` in the session's state directory. */
 interface Enclosure {
@@ -56,12 +53,6 @@ interface Enclosure {
   capture?: boolean;
   failed?: string; lastError?: string; released?: boolean; delivered?: DeliveryResult; acquisitionInFlight?: boolean;
   active?: boolean; guestState?: string; expiresAt?: number;
-  /** Guest browser for the playwright and chrome-devtools targets; default installed Google Chrome. */
-  browserExecutable?: string;
-  /** The guest MCP host was started with the current launch configuration. */
-  mcpHost?: boolean;
-  /** Targets whose pinned packages are unpacked in the guest. */
-  mcpPackages?: Target[];
   /** Counter for derived step IDs. */
   runSeq?: number;
   previousEvidence?: Array<{ path: string; sessionId: string; guestState?: string }>;
@@ -92,13 +83,6 @@ export interface RunResult {
 }
 export interface ManagerOptions {
   sessionId: string; project: string; stateRoot?: string; outputRoot?: string; registry?: Registry; vm?: VmBackend; environment?: SelectedEnvironment; tartHome?: string; tartPath?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>;
-  /** The guest MCP host bundle; default `dist/mcp-host.mjs`. */
-  mcpHostBundle?: string;
-  /** Test seams: replace the launch commands, the pinned package closures, the tarball source or the host tarball cache. */
-  targetLaunches?: (context: LaunchContext) => Record<string, TargetLaunch>;
-  targetPackages?: Partial<Record<Exclude<Target, 'cua'>, TargetPackages>>;
-  tarballSource?: TarballSource;
-  packageCache?: string;
   /** How far each renewal extends the lease at vm-service; default RENEWAL_WINDOW_MS. */
   renewalWindowMs?: number;
   /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
@@ -125,26 +109,14 @@ export interface ManagerOptions {
 export const RENEWAL_WINDOW_MS = 15 * 60000;
 /** vm-service refuses a ttl_hours below 0.1 h. */
 const MIN_RENEWAL_MS = 0.1 * 3600000;
-/** The workspace directory and extraction name that carry relay_run results home: each call's full result, the targets' images and files, and the servers' logs. */
-export const RELAY_RUN_OUTPUTS = 'relay-run';
-/** How long the guest MCP host may take to start a target server, on top of a call's own timeout. */
-export const MCP_START_ALLOWANCE_MS = 60000;
-/** How long a held relay_run waits for relay_gate when the call names no limit. */
-export const DEFAULT_HOLD_MS = 60000;
-/**
- * relay_gate's guest side: write the decision whole through a hard link, so
- * the first writer wins, then print the decision that stands. The receiver
- * writes its own `expired` the same way (src/guest/receiver.ts, decideHold).
- */
-const DECIDE = `const fs=require('fs'),p=require('path');const [dir,id,want]=process.argv.slice(1);fs.mkdirSync(dir,{recursive:true});const f=p.join(dir,id),t=f+'.'+process.pid+'.'+Date.now()+'.tmp';fs.writeFileSync(t,want,{mode:0o600});try{fs.linkSync(t,f)}catch(e){if(e.code!=='EEXIST')throw e}finally{fs.rmSync(t,{force:true})}console.log(fs.readFileSync(f,'utf8').trim());`;
+/** Default wait, in milliseconds, from the end of a run to its after-snapshot; a run that does not know what it changed on screen gives native animations and dialogs this long. */
+export const DEFAULT_AFTER_INTERVAL_MS = 500;
 /**
  * Capture software: the catalog ids of cua-driver, on macOS and on Linux. A
  * run takes snapshots only when the lease's image lists one of them
  * (docs/guest-code-runs.md §3).
  */
 export const CAPTURE_SOFTWARE: readonly string[] = ['bundle:com.trycua.driver', 'dpkg:cua-driver'];
-/** At most this many of a call's own images are delivered inline; the rest stay retrievable with relay_image. */
-export const MAX_TOOL_IMAGES = 4;
 /** Background step downloads a run may leave queued before it waits for the oldest (DC-4). */
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
@@ -166,13 +138,13 @@ async function settleEach(work: Array<Promise<unknown>>) {
   if (failed) throw failed.reason;
 }
 /**
- * The server's MCP `instructions`: the rules that cut across all nineteen
+ * The server's MCP `instructions`: the rules that cut across all fifteen
  * tools rather than belonging to one of them (see each tool's own
  * description for its specific contract). A compact version of the same
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers nineteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers fifteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tools relay_command and relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_command runs one command; relay_script runs a JavaScript, TypeScript or Python script, given inline or as a project file, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_command or relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
 export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
@@ -423,7 +395,6 @@ export class RelayManager {
         within('/workspace', extraction.path);
         if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(extraction.name) || names.has(extraction.name)) throw new Error('Extraction names must be unique safe basenames');
         if (extraction.name === 'full-workspace') throw new Error('full-workspace is a reserved extraction name');
-        if (extraction.name === RELAY_RUN_OUTPUTS && extraction.path !== RELAY_RUN_OUTPUTS) throw new Error(`${RELAY_RUN_OUTPUTS} is reserved for relay_run results at workspace/${RELAY_RUN_OUTPUTS}`);
         names.add(extraction.name);
       }
       const ttlHours = input.ttlHours ?? 4;
@@ -443,33 +414,11 @@ export class RelayManager {
   }
   stage(input: StageInput, signal?: AbortSignal) { return this.onGuest(input.guest, guest => guest.guarded(signal, () => guest.stage(input, signal))); }
   run(input: RunInput, signal?: AbortSignal): Promise<RunResult> {
-    // A hold is known before the run waits its turn, so relay_gate can decide it while the run is queued or delivered.
-    const hold = input.kind === 'mcp' ? input.hold : undefined;
-    const start = (guest: Guest): Promise<RunResult> => {
-      if (hold) {
-        if (guest.holds.has(hold.id)) return Promise.reject(new Error(`Hold ${hold.id} was already used; name each hold once`));
-        guest.holds.set(hold.id, {});
-      }
-      return guest.serialized(() => {
-        if (input.because !== undefined) this.reason(input.because);
-        return guest.guarded<RunResult>(signal, () => guest.run(input, hold, signal));
-      });
-    };
-    // Once the state is loaded the hold is registered at once, before any later relay_gate is read.
-    return this.whenLoaded(() => start(this.named(input.guest)));
+    return this.onGuest(input.guest, guest => {
+      if (input.because !== undefined) this.reason(input.because);
+      return guest.guarded<RunResult>(signal, () => guest.run(input, signal));
+    });
   }
-  /**
-   * Decides a held relay_run call: `go` lets the guest send it, `cancel`
-   * refuses it. Not serialized, since the held run occupies its guest's
-   * queue. The first decision written wins, the guest's own `expired`
-   * included; the result says which one stands.
-   */
-  async gate(id: string, decision: 'go' | 'cancel', signal?: AbortSignal, guest?: string) {
-    await this.load();
-    return this.named(guest).gate(id, decision, signal);
-  }
-  /** relay_tools: a target's real tools (names, descriptions, input schemas), optionally one. */
-  tools(target: Target, tool?: string, signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.guarded(signal, () => found.tools(target, tool, signal))); }
   image(target: ImageTarget, signal?: AbortSignal, guest?: string): Promise<ImageResult> {
     const deadline = Date.now() + 90000;
     const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(90000)]);
@@ -585,9 +534,6 @@ class Guest {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   readonly downloads: DownloadQueue;
-  /** Holds named by relay_run, and the decision each ended with once its receipt is in (docs/relay-run.md, Held input). */
-  readonly holds = new Map<string, { decided?: string }>();
-  private toolLists = new Map<string, Array<{ name: string; description?: string; inputSchema: unknown }>>();
   constructor(readonly m: RelayManager, readonly name: string, record?: Enclosure) {
     this.dir = join(m.root, 'guests', name);
     if (record) { this.enclosure = record; record.active = false; }
@@ -662,19 +608,28 @@ class Guest {
     this.transport.capture = e.capture !== false;
     this.session = await relay.attach(e.sessionId, this.transport);
   }
-  /** relay_probe scope=guest: what the guest has, as facts, without installing or starting anything. */
+  /**
+   * relay_probe scope=guest: what the guest has, as facts, without installing
+   * or starting anything: whether each relay_script language's runtime runs,
+   * and the software the image lists in the catalog (DC-23).
+   */
   async probe() {
     const e = this.current();
     const checks = [];
-    for (const [name, argv] of [['node', [e.node ?? 'node', '--version']], ['cuaDriver', [e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver'), '--version']]] as const) {
-      // Only Node.js is required, by staging; cua-driver is a fact (DC-13).
+    // Only Node.js is required, by staging; the other runtimes are facts (DC-13).
+    for (const [name, language, argv] of [['node', 'javascript', [e.node ?? 'node', '--version']], ['tsx', 'typescript', ['tsx', '--version']], ['python3', 'python', ['python3', '--version']]] as const) {
       const required = name === 'node';
-      try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, required, ...r, ready: r.code === 0 }); }
-      catch (error) { checks.push({ name, required, ready: false, diagnostic: String(error) }); }
+      try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, language, required, ...r, ready: r.code === 0 }); }
+      catch (error) { checks.push({ name, language, required, ready: false, diagnostic: String(error) }); }
     }
-    const targets = await this.targetAvailability(e, checks);
+    let software: { image: string; applications?: unknown[]; diagnostic?: string };
+    try {
+      const catalog: unknown = await this.m.vm.applications({ timeoutMs: 10000 }); validateCatalog(catalog);
+      const listed = catalog.images.find(image => image.image === e.image);
+      software = listed ? { image: e.image, applications: listed.applications } : { image: e.image, applications: [], diagnostic: `The catalog does not list ${e.image}.` };
+    } catch (error) { software = { image: e.image, diagnostic: `The image catalog could not be read: ${message(error)}` }; }
     const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
-    const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, targets, snapshots, captureVerified: false, browserVerified: false };
+    const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, software, snapshots, note: 'A ready runtime means its --version exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.', captureVerified: false, browserVerified: false };
     await this.log('guest-readiness', undefined, facts); return facts;
   }
   private async consoleOwner(signal?: AbortSignal) {
@@ -916,7 +871,7 @@ class Guest {
     const e = this.current();
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.resetRecording || e.pendingReset) await this.resetRecording();
-    if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use diagnostic exec for repairs or stage with only corrected executable paths');
+    if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use relay_command with diagnostic: true for repairs, or stage with only corrected executable paths');
     // Every host path is checked before anything reaches the guest (DC-15).
     const project = resolve(this.m.options.project);
     const files = [];
@@ -931,14 +886,9 @@ class Guest {
     // Node.js is the only software staging assumes: it runs the relay's own guest code (DC-13).
     try { await transfer.checked([node, '--version']); }
     catch (error) { throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node} --version\` failed: ${error instanceof Error ? error.message : String(error)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error }); }
-    const launchChanged = e.mcpHost && ((input.nodePath !== undefined && input.nodePath !== e.node) || (input.cuaDriver !== undefined && input.cuaDriver !== e.cuaDriver) || (input.browserExecutable !== undefined && input.browserExecutable !== e.browserExecutable));
     e.node = node;
     e.cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver');
-    if (input.browserExecutable !== undefined) e.browserExecutable = input.browserExecutable;
     await this.save();
-    // A corrected executable changes how the MCP servers launch: stop the host
-    // (and its servers) so the next relay_run starts them with the new paths.
-    if (launchChanged) await this.stopMcpHost('corrected executable paths');
     if (e.staged) { await this.session?.close(); await this.attach(); return { staged: true, workspace: join(e.guestRoot, 'workspace'), owned: this.status(), files: [], extractions: e.extractions, snapshots: this.snapshotFacts(e) }; }
     await transfer.checked(['/bin/mkdir', '-p', join(e.guestRoot, 'workspace'), join(e.guestRoot, 'state')]);
     const staged = [await transfer.pushFile(bundle, join(e.guestRoot, 'receiver.mjs'))];
@@ -972,53 +922,40 @@ class Guest {
       ? { taken: false, reason: `${e.image} lists no capture software (cua-driver), so runs take no snapshots and their records have none.` }
       : { taken: true, reason: e.capture ? `${e.image} lists cua-driver, so each run takes before and after snapshots.` : 'This lease predates the capture decision, so each run takes before and after snapshots.' };
   }
-  async run(input: RunInput, hold: RunInput['hold'], signal?: AbortSignal): Promise<RunResult> {
+  async run(input: RunInput, signal?: AbortSignal): Promise<RunResult> {
     const e = this.current();
     const timeoutMs = input.timeoutMs ?? 120000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new Error('timeoutMs must be an integer from 1 to 3600000');
-    if (input.diagnostic && input.kind !== 'exec') throw new Error('diagnostic is only supported for exec');
+    if (input.diagnostic && input.kind !== 'exec') throw new Error('diagnostic is only supported for relay_command');
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.diagnostic) return this.diagnostic(input, timeoutMs, signal);
-    if (e.pendingReset) throw new Error('Recording reset is pending; retry stage to reconcile it, or use diagnostic exec');
-    if (!e.staged || !this.session || !this.transport) throw new Error('Use relay_stage before a run, or relay_exec diagnostic=true for setup diagnosis and repair');
-    let argv: string[] | undefined, callTimeoutMs = timeoutMs;
-    if (input.kind === 'mcp') {
-      if (!input.target || !input.tool) throw new Error('relay_run requires target and tool');
-      // Checked before anything reaches the guest receiver: a refusal here sends nothing.
-      const refusal = await this.prepareMcp(e, input.target, input.tool, input.args ?? {}, signal);
-      if (refusal) return { ...refusal, timeoutMs, evidencePath: e.hostRoot, leaseReleased: false, imageDelivery: { status: 'not-requested' as const, diagnostic: 'Nothing was sent, so no snapshot was taken.' } };
-      // The dispatch bound covers a first-use server start on top of the call itself.
-      callTimeoutMs = Math.min(timeoutMs, 3600000 - MCP_START_ALLOWANCE_MS - 15000);
-      argv = [e.node!, join(e.guestRoot, 'mcp-host.mjs'), 'call', join(e.guestRoot, 'mcp'), input.target, input.tool, JSON.stringify(input.args ?? {}), String(callTimeoutMs), String(MCP_START_ALLOWANCE_MS)];
-    }
+    if (e.pendingReset) throw new Error('Recording reset is pending; retry stage to reconcile it, or use relay_command with diagnostic: true');
+    if (!e.staged || !this.session || !this.transport) throw new Error('Use relay_stage before a run, or relay_command with diagnostic: true for setup diagnosis and repair');
     const record = this.derive(e, input);
     await this.save();
     this.transport.because = record.because;
-    this.transport.timeoutMs = input.kind === 'mcp' ? callTimeoutMs + MCP_START_ALLOWANCE_MS + 15000 : timeoutMs;
+    this.transport.timeoutMs = timeoutMs;
     this.transport.diagnostic = false;
-    this.transport.hold = hold ? { id: hold.id, timeoutMs: hold.timeoutMs ?? DEFAULT_HOLD_MS } : undefined;
     // A cancelled run stops waiting for the receiver's answer; its outcome is then uncertain, never replayed.
     this.transport.signal = signal;
     const options = { step: record.step, snapshots: record.snapshots, cwd: join(e.guestRoot, 'workspace') };
     let result;
-    if (input.kind === 'exec' || input.kind === 'mcp') {
-      argv ??= input.argv;
-      if (!argv?.length) throw new Error('exec requires argv');
-      result = await this.session.exec(argv, options);
+    if (input.kind === 'exec') {
+      if (!input.argv?.length) throw new Error('relay_command requires argv');
+      result = await this.session.exec(input.argv, options);
     } else if (input.kind === 'script') {
-      if (!input.localPath || !input.language) throw new Error('script requires localPath and language');
-      const local = await this.m.projectPath(input.localPath, 'localPath');
-      result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
-    } else if (input.kind === 'code') {
-      if (typeof input.code !== 'string' || !input.language) throw new Error('code requires code and language');
-      result = await this.session.runCode(input.code, input.language, options);
+      if (!input.language) throw new Error('relay_script requires language');
+      if (input.inline) {
+        if (typeof input.code !== 'string' || input.localPath !== undefined) throw new Error('relay_script with inline: true takes the script as code, and no localPath');
+        result = await this.session.runCode(input.code, input.language, options);
+      } else {
+        if (!input.localPath || input.code !== undefined) throw new Error('relay_script with inline: false takes the script file as localPath, and no code');
+        const local = await this.m.projectPath(input.localPath, 'localPath');
+        result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
+      }
     } else throw new Error('Unknown operation kind');
     const outcome = result.outcome;
-    const held = hold ? this.transport.response?.hold : undefined;
-    if (hold && held) this.holds.set(hold.id, { decided: held.decision });
-    // A hold that was not released sent nothing: that is the caller's decision, not a failure of the VM.
-    if (held && held.decision !== 'go') await this.log('hold-withheld', record.because, { hold: hold!.id, ...held, outcome });
-    else if (outcome.kind !== 'completed' || outcome.exitStatus.code !== 0 || outcome.exitStatus.signal) {
+    if (outcome.kind !== 'completed' || outcome.exitStatus.code !== 0 || outcome.exitStatus.signal) {
       await this.log('execution-failed', record.because, result);
       await this.fail(new Error(`Execution ${result.executionId}: ${JSON.stringify(outcome)}`));
     }
@@ -1028,201 +965,25 @@ class Guest {
     const imageDelivery = await store.pending(target);
     await this.queueDownload(store, target, imageDelivery.status === 'pending', imageDelivery.image);
     const common = { guest: this.name, step: record.step, snapshots: record.snapshots, timeoutMs, evidencePath: e.hostRoot, leaseReleased: !this.enclosure, owned: this.status(), imageDelivery };
-    if (input.kind === 'mcp') return { ...result, ...await this.mcpResult(e, input.target!, input.tool!, outcome, signal), ...common, ...(held ? { hold: { id: hold!.id, ...held } } : {}) };
     // The guest's bounded output rides along in the receipt the transport filed.
     return { ...result, ...this.transport?.response, ...common };
   }
-  async gate(id: string, decision: 'go' | 'cancel', signal?: AbortSignal) {
-    const known = this.holds.get(id);
-    if (!known) throw new Error(`No relay_run on guest ${this.name} named hold ${id}`);
-    if (known.decided) return { hold: id, requested: decision, decision: known.decided, applied: known.decided === decision };
-    const e = this.current();
-    if (!e.node) throw new Error('Stage runtime first');
-    const result = await this.m.channel.exec(e.lease!.vm, [e.node, '-e', DECIDE, join(e.guestRoot, 'holds'), id, decision], 30000, { signal });
-    const stands = result.code === 0 ? result.stdout.trim().split('\n').at(-1)?.trim() : undefined;
-    await this.log('hold-gate', undefined, { hold: id, requested: decision, decision: stands, code: result.code });
-    if (!stands) throw new Error(`relay_gate could not write hold ${id} (exit ${result.code}): ${result.stdout.slice(0, 1000)}`);
-    return { hold: id, requested: decision, decision: stands, applied: stands === decision };
-  }
   /**
    * The step record for a run, from the call itself: a title such as
-   * `playwright.browser_click`, an expected result, an input mode, a default
+   * `exec node -e …`, an expected result, an input mode, a default
    * after-snapshot wait and a reason. Anything the caller gave overrides it.
    */
   private derive(e: Enclosure, input: RunInput): { because: string; step: StepDescription; snapshots: SnapshotsRequest } {
     const seq = e.runSeq = (e.runSeq ?? 0) + 1;
     const stepId = (prefix: string) => `${prefix.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^[^A-Za-z0-9]+/, '').slice(0, 100) || 'run'}-${seq}`;
-    if (input.kind === 'mcp') {
-      const title = `${input.target}.${input.tool}`.slice(0, 500);
-      const args = input.args ?? {};
-      // cua-driver forms that act through the accessibility API rather than real pointer or keyboard input.
-      const accessibility = input.target === 'cua' && (input.tool === 'set_value' || (e.lease!.image_kind === 'macos' && input.tool === 'type_text') || (['click', 'double_click', 'right_click', 'press_key'].includes(input.tool!) && args.element_index !== undefined));
-      return {
-        because: input.because ?? `Relay ${title} (no reason given)`,
-        step: { id: stepId(title), title, expected: input.expected ?? `${title} returns without a tool error`, inputMode: accessibility ? 'accessibility' : 'ordinary' },
-        snapshots: { afterIntervalMs: input.afterIntervalMs ?? DEFAULT_AFTER_INTERVAL_MS[input.target!] },
-      };
-    }
-    const title = input.step?.title ?? (input.kind === 'exec' ? `exec ${(input.argv ?? []).map((arg, index) => index === 0 ? arg.split('/').at(-1) : arg).join(' ')}` : input.kind === 'script' ? `script ${input.localPath?.split('/').at(-1) ?? ''}` : `code (${input.language ?? 'unknown'})`).slice(0, 500);
+    const title = input.step?.title ?? (input.kind === 'exec' ? `exec ${(input.argv ?? []).map((arg, index) => index === 0 ? arg.split('/').at(-1) : arg).join(' ')}` : input.inline ? `code (${input.language ?? 'unknown'})` : `script ${input.localPath?.split('/').at(-1) ?? ''}`).slice(0, 500);
     const snapshots: SnapshotsRequest = { ...(input.snapshots ?? {}) };
     const group = snapshots.group;
-    if (!group ? snapshots.afterIntervalMs === undefined : group.phase === 'last' && group.afterIntervalMs === undefined && snapshots.afterIntervalMs === undefined) Object.assign(snapshots, { afterIntervalMs: DEFAULT_AFTER_INTERVAL_MS.command });
+    if (!group ? snapshots.afterIntervalMs === undefined : group.phase === 'last' && group.afterIntervalMs === undefined && snapshots.afterIntervalMs === undefined) Object.assign(snapshots, { afterIntervalMs: DEFAULT_AFTER_INTERVAL_MS });
     return {
       because: input.because ?? `Relay ${title} (no reason given)`.slice(0, 4000),
-      step: { id: input.step?.id ?? stepId(input.kind), title: title || input.kind, expected: input.step?.expected ?? 'Exits with status 0', inputMode: input.step?.inputMode ?? 'ordinary' },
+      step: { id: input.step?.id ?? stepId(input.kind === 'exec' ? 'exec' : input.inline ? 'code' : 'script'), title: title || input.kind, expected: input.step?.expected ?? 'Exits with status 0', inputMode: input.step?.inputMode ?? 'ordinary' },
       snapshots,
-    };
-  }
-  /** Stage what a target needs, start the guest MCP host, and check the call against the target's real tool schema. Returns a refusal when nothing may be sent. */
-  private async prepareMcp(e: Enclosure, target: Target, tool: string, args: Record<string, unknown>, signal?: AbortSignal) {
-    const transfer = this.transfer();
-    await this.ensureMcpHost(e, transfer);
-    await this.ensureTargetPackages(e, target, transfer, signal);
-    const tools = await this.toolList(e, target, transfer);
-    const refuse = async (diagnostic: string, extra: Record<string, unknown>) => {
-      await this.log('relay-run-refused', undefined, { target, tool, diagnostic, ...extra });
-      return { executionId: null, outcome: { kind: 'refused' as const, diagnostic }, relayOutcome: 'refused', sent: false, guest: this.name, target, tool, ...extra, owned: this.status() };
-    };
-    const definition = tools.find(item => item.name === tool);
-    if (!definition) return refuse(`${target} has no tool named ${tool}; nothing was sent. Use relay_tools to see its tools.`, { tools: tools.map(item => item.name) });
-    const check = checkArguments(definition.inputSchema, args);
-    if (!check.valid) return refuse(`args do not match ${target}.${tool}'s input schema; nothing was sent`, { errors: check.errors, inputSchema: definition.inputSchema });
-    if (Buffer.byteLength(JSON.stringify(args)) > 64 * 1024) return refuse('args exceed 64 KiB; nothing was sent', {});
-    return undefined;
-  }
-  /** Map the guest MCP host's answer to the run result: the target's own text and images pass through, bounded; the full result stays in the workspace. */
-  private async mcpResult(e: Enclosure, target: Target, tool: string, outcome: { kind: string; exitStatus?: { code: number | null } }, signal?: AbortSignal) {
-    const response = this.transport?.response;
-    let summary: CallSummary | undefined;
-    try { const parsed = JSON.parse(String(response?.stdout ?? '').trim().split('\n').at(-1) ?? ''); if (parsed?.relayRun === 1) summary = parsed; } catch { /* No readable answer: the outcome says what is known. */ }
-    if (summary?.hostUnavailable) { e.mcpHost = false; this.toolLists.clear(); await this.save(); }
-    const relayOutcome = outcome.kind !== 'completed' ? outcome.kind : outcome.exitStatus?.code === 0 ? 'completed' : outcome.exitStatus?.code === 3 ? 'completed-with-tool-error' : 'completed-nonzero';
-    const passthrough: Array<{ type: 'text'; text: string } | RelayImageContent> = [];
-    const toolImages: unknown[] = [];
-    const content: unknown[] = [];
-    let lines = 0;
-    const resultFile = summary?.resultFile ? `workspace/${RELAY_RUN_OUTPUTS}/${summary.resultFile}` : undefined;
-    for (const block of summary?.content ?? []) {
-      if (typeof block.text === 'string') {
-        // The text bound is the relay's own: 50 KiB (the host already cut at 32 KiB characters) and 2000 lines in total.
-        const kept = block.text.split('\n').slice(0, Math.max(0, 2000 - lines));
-        lines += kept.length;
-        const text = kept.join('\n'), cut = block.truncated || text.length < block.text.length;
-        passthrough.push({ type: 'text', text: cut ? `${text}\n[Truncated. Full result: ${resultFile}]` : text });
-        content.push({ type: block.type, ...(block.uri ? { uri: block.uri } : {}), chars: block.text.length, ...(cut ? { truncated: true } : {}) });
-      } else if (block.type === 'image' && block.path) {
-        if (!['image/png', 'image/jpeg', 'image/webp'].includes(block.mimeType ?? '')) toolImages.push({ status: 'presentation-unavailable', path: block.path, mimeType: block.mimeType, diagnostic: 'Only PNG, JPEG and WebP images are delivered inline.' });
-        else if (toolImages.length >= MAX_TOOL_IMAGES) toolImages.push({ status: 'not-requested', path: block.path, diagnostic: `Beyond ${MAX_TOOL_IMAGES} inline images; retrieve with relay_image guest=${this.name} source=application name=${RELAY_RUN_OUTPUTS} path=${block.path}.` });
-        else {
-          const { content: image, ...delivery } = await this.imageStore().get({ source: 'application', name: RELAY_RUN_OUTPUTS, path: block.path }, signal);
-          toolImages.push({ ...delivery, path: block.path });
-          if (image) passthrough.push(image as RelayImageContent);
-        }
-        content.push({ type: 'image', path: block.path, mimeType: block.mimeType, bytes: block.bytes });
-      } else content.push(block);
-    }
-    return {
-      relayOutcome, target, tool,
-      ...(summary ? { toolOutcome: summary.outcome, sent: summary.sent, ...(summary.diagnostic ? { toolDiagnostic: summary.diagnostic } : {}), ...(summary.errors ? { errors: summary.errors } : {}), content, ...(summary.structuredContent !== undefined ? { structuredContent: summary.structuredContent } : {}), ...(summary.structuredContentOmitted ? { structuredContentOmitted: true } : {}), ...(resultFile ? { resultFile } : {}), toolImages } : { toolOutcome: 'unknown', stdout: response?.stdout, stderr: response?.stderr }),
-      ...(response?.stderr ? { stderr: response.stderr } : {}),
-      ...(response?.terminationConfirmed !== undefined ? { terminationConfirmed: response.terminationConfirmed } : {}),
-      passthrough,
-    };
-  }
-  /** A target's real `tools/list`, from the in-guest server, pulled home hash-checked and kept in the host evidence. */
-  private async toolList(e: Enclosure, target: Target, transfer: Transfer) {
-    const cached = this.toolLists.get(target);
-    if (cached) return cached;
-    const stateDir = join(e.guestRoot, 'mcp');
-    await transfer.checked([e.node!, join(e.guestRoot, 'mcp-host.mjs'), 'tools', stateDir, target], MCP_START_ALLOWANCE_MS * 2 + 20000);
-    const bytes = await transfer.pullFrame(join(stateDir, 'tools', `${target}.json`), join(e.hostRoot, 'host', 'mcp-tools', `${target}-${Date.now()}-${randomUUID().slice(0, 8)}.json`), e.guestRoot, e.hostRoot);
-    const parsed = JSON.parse(bytes.toString('utf8'));
-    if (parsed?.target !== target || !Array.isArray(parsed.tools)) throw new Error(`Malformed tool list from ${target}`);
-    const tools = (parsed.tools as Array<Record<string, unknown>>).filter(item => typeof item?.name === 'string' && item.inputSchema && typeof item.inputSchema === 'object')
-      .map(item => ({ name: item.name as string, ...(typeof item.description === 'string' ? { description: item.description } : {}), inputSchema: item.inputSchema }));
-    this.toolLists.set(target, tools);
-    return tools;
-  }
-  /** Push and start the guest MCP host once per launch configuration. It starts each target's server on first use. */
-  private async ensureMcpHost(e: Enclosure, transfer: Transfer) {
-    if (!e.extractions.some(item => item.name === RELAY_RUN_OUTPUTS)) { e.extractions.push({ path: RELAY_RUN_OUTPUTS, name: RELAY_RUN_OUTPUTS }); await this.save(); }
-    if (e.mcpHost) return;
-    const bundle = this.m.options.mcpHostBundle ?? fileURLToPath(new URL('../dist/mcp-host.mjs', import.meta.url));
-    const entry = join(e.guestRoot, 'mcp-host.mjs');
-    const staged = await transfer.pushFile(bundle, entry);
-    const context: LaunchContext = { node: e.node!, cuaDriver: e.cuaDriver!, packagesRoot: join(e.guestRoot, 'mcp', 'packages'), workspace: join(e.guestRoot, 'workspace'), outputDir: join(e.guestRoot, 'workspace', RELAY_RUN_OUTPUTS), ...(e.browserExecutable ? { browserExecutable: e.browserExecutable } : {}) };
-    const config = { stateDir: join(e.guestRoot, 'mcp'), outputDir: context.outputDir, targets: (this.m.options.targetLaunches ?? targetLaunches)(context), startTimeoutMs: MCP_START_ALLOWANCE_MS };
-    const local = join(e.hostRoot, 'host', 'mcp-host-config.json');
-    await jsonFile(local, config);
-    await transfer.pushFile(local, join(e.guestRoot, 'mcp-host-config.json'), e.hostRoot);
-    const answer = await transfer.checked([e.node!, entry, 'start', join(e.guestRoot, 'mcp-host-config.json')], 60000);
-    e.mcpHost = true; this.toolLists.clear(); await this.save();
-    await this.log('mcp-host-start', undefined, { bundle: staged, config, answer: answer.trim().slice(0, 2000) });
-  }
-  /** Stage a browser target's pinned packages: host-verified tarballs, pushed hash-checked, unpacked in the guest. */
-  private async ensureTargetPackages(e: Enclosure, target: Target, transfer: Transfer, signal?: AbortSignal) {
-    if (target === 'cua' || e.mcpPackages?.includes(target)) return;
-    const closure = this.m.options.targetPackages?.[target] ?? TARGET_PACKAGES[target];
-    const cache = this.m.options.packageCache ?? join(dirname(this.m.root), 'mcp-packages');
-    const specs: string[] = [], staged: unknown[] = [];
-    for (const pin of closure.packages) {
-      const local = await cachedTarball(cache, pin, this.m.options.tarballSource, signal);
-      const remote = join(e.guestRoot, 'mcp', 'tarballs', tarballName(pin));
-      staged.push({ ...pin, ...await transfer.pushFile(local.path, remote, cache) });
-      specs.push(`${pin.name}=${remote}=${local.sha256}`);
-    }
-    if (specs.length) await transfer.checked([e.node!, join(e.guestRoot, 'mcp-host.mjs'), 'install', join(e.guestRoot, 'mcp', 'packages', 'node_modules'), ...specs], 180000);
-    e.mcpPackages = [...(e.mcpPackages ?? []), target]; await this.save();
-    await this.log('mcp-target-staged', undefined, { target, packages: staged });
-  }
-  /** Stop the guest MCP host and its servers. Best effort: destroying the VM remains the final cleanup. */
-  private async stopMcpHost(reason: string) {
-    const e = this.enclosure;
-    if (!e?.mcpHost || !e.node || !e.lease) return;
-    try {
-      const result = await this.m.channel.exec(e.lease.vm, [e.node, join(e.guestRoot, 'mcp-host.mjs'), 'stop', join(e.guestRoot, 'mcp')], 30000);
-      await this.log('mcp-host-stop', undefined, { reason, code: result.code, output: result.stdout.slice(0, 2000) });
-    } catch (error) { await this.log('mcp-host-stop-failed', undefined, { reason, error: String(error) }).catch(() => {}); }
-    e.mcpHost = false; this.toolLists.clear(); await this.save();
-  }
-  async tools(target: Target, tool?: string, signal?: AbortSignal) {
-    const e = this.current();
-    if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
-    if (!e.staged) throw new Error('Use relay_stage before relay_tools');
-    const transfer = this.transfer();
-    await this.ensureMcpHost(e, transfer);
-    await this.ensureTargetPackages(e, target, transfer, signal);
-    const tools = await this.toolList(e, target, transfer);
-    const selected = tool === undefined ? tools : tools.filter(item => item.name === tool);
-    if (tool !== undefined && !selected.length) throw new Error(`${target} has no tool named ${tool}; it has: ${tools.map(item => item.name).join(', ')}`);
-    await this.log('tools', undefined, { target, tool, count: selected.length });
-    return { target, count: selected.length, tools: selected };
-  }
-  /** Per-target facts for probe scope=guest, without installing or starting anything. */
-  private async targetAvailability(e: Enclosure, checks: Array<{ name: string; ready: boolean }>) {
-    const node = checks.find(check => check.name === 'node')?.ready ?? false;
-    const driver = checks.find(check => check.name === 'cuaDriver')?.ready ?? false;
-    const candidates = e.browserExecutable ? [e.browserExecutable] : e.lease!.image_kind === 'macos' ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'] : ['/opt/google/chrome/chrome', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'];
-    let browser: { path: string | null; diagnostic?: string } = { path: null };
-    if (node) {
-      try { const r = await this.m.channel.exec(e.lease!.vm, [e.node ?? 'node', '-e', 'const fs=require("fs");console.log(JSON.stringify({path:process.argv.slice(1).find(p=>{try{fs.accessSync(p,fs.constants.X_OK);return true}catch{return false}})??null}))', ...candidates], 10000); browser = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}'); }
-      catch (error) { browser = { path: null, diagnostic: String(error) }; }
-    }
-    let servers: Record<string, unknown> = {};
-    if (e.mcpHost && node) {
-      try { const r = await this.m.channel.exec(e.lease!.vm, [e.node ?? 'node', join(e.guestRoot, 'mcp-host.mjs'), 'status', join(e.guestRoot, 'mcp')], 10000); servers = JSON.parse(r.stdout.trim().split('\n').at(-1) ?? '{}').targets ?? {}; }
-      catch (error) { servers = { diagnostic: String(error) }; }
-    }
-    const browserTarget = (target: Exclude<Target, 'cua'>) => ({
-      available: node && !!browser.path, node, browserExecutable: browser.path, browserCandidates: candidates,
-      packages: e.mcpPackages?.includes(target) ? 'staged' : 'staged from the host cache on first use', pinned: TARGET_PACKAGES[target].packages.map(pin => `${pin.name}@${pin.version}`),
-      server: servers[target] ?? { state: 'not-started' },
-    });
-    return {
-      cua: { available: driver, launch: [e.cuaDriver ?? 'cua-driver', 'mcp'], ...(e.lease!.image_kind === 'macos' ? {} : { requires: 'cua-driver serve --no-overlay running on native X11' }), server: servers.cua ?? { state: 'not-started' } },
-      playwright: browserTarget('playwright'),
-      'chrome-devtools': browserTarget('chrome-devtools'),
-      note: 'Availability means the executables exist; it never proves a browser renders on the display or that capture works. Staging requires only Node.js; cua-driver and the browser are facts about the image, needed only by the targets that use them.',
     };
   }
   private imageStore() {
@@ -1303,9 +1064,6 @@ class Guest {
       if (stepId(sn?.actionId)) paths.add(`state/records/action/${sn.actionId}.json`);
       if (stepId(sn?.sessionId) && stepId(sn?.fileName)) paths.add(`state/snapshots/${sn.sessionId}/${sn.fileName}`);
     }
-    let resultFile: unknown;
-    try { resultFile = JSON.parse(receipt.stdout)?.resultFile; } catch { /* not a relay_run summary */ }
-    if (typeof resultFile === 'string') { try { within('/', resultFile); paths.add(`workspace/${RELAY_RUN_OUTPUTS}/${resultFile}`); } catch { /* unsafe: the finish fetches it */ } }
     return [...paths].map(path => ({ path }));
   }
   /**
@@ -1364,11 +1122,6 @@ class Guest {
       return [join(recording, 'state', file.path), ...(steps.get(key) ?? []), ...(receipt ? [join(recording, 'host', 'receiver-receipts', receipt)] : []), ...(held.get(key) ?? [])];
     } };
   }
-  /** AD-9: an extraction takes the files the step downloads already brought, such as `relay-run` results. */
-  private async localWorkspace(recording: string): Promise<LocalSource> {
-    const steps = await this.stepCopies(recording, 'workspace/');
-    return { root: recording, candidates: file => steps.get(`${file.sha256}:${file.bytes}`) ?? [] };
-  }
   /** AD-7: the step folders are a staging area; once their files are in the recording's state they go. */
   private async removeStepFolders(recording: string) {
     const steps = join(recording, 'host', 'steps');
@@ -1417,9 +1170,7 @@ class Guest {
       const declaration = e.extractions.find(item => item.name === name);
       if (!declaration) throw new Error(`Undeclared extraction: ${name}`);
       const destination = join(e.hostRoot, 'extractions', name, randomUUID());
-      const reuse = await this.localWorkspace(e.hostRoot);
-      const facts = await transfer.pullVerified(within(join(e.guestRoot, 'workspace'), declaration.path), destination, join(e.guestRoot, 'workspace'), e.hostRoot, { reuse });
-      if (reuse.reused) await this.log('extraction-reused', undefined, { name, files: reuse.reused });
+      const facts = await transfer.pullVerified(within(join(e.guestRoot, 'workspace'), declaration.path), destination, join(e.guestRoot, 'workspace'), e.hostRoot);
       results.push({ ...declaration, destination, facts });
     }
     await jsonFile(join(e.hostRoot, 'host', 'extractions', `${randomUUID()}.json`), { extractions: results });
@@ -1492,11 +1243,7 @@ class Guest {
   async finish() {
     const e = this.current(); await this.log('finish');
     let incomplete: Array<{ name: string; path: string; error: string }> = [];
-    if (!e.delivered) {
-      // Stop the MCP servers first, so their output files are complete before extraction.
-      await this.stopMcpHost('finish');
-      incomplete = await this.extractForFinish();
-    }
+    if (!e.delivered) incomplete = await this.extractForFinish();
     const result = e.delivered ?? await this.packageInternal();
     await this.releaseInternal('finished');
     return incomplete.length ? { ...result, incompleteExtractions: incomplete } : result;
@@ -1556,7 +1303,7 @@ class Guest {
   private async releaseDrained() {
     try {
       await this.log('release');
-      if (this.enclosure?.staged && !this.enclosure.delivered) { await this.stopMcpHost('release'); await this.extractAvailable(); await this.packageInternal(); }
+      if (this.enclosure?.staged && !this.enclosure.delivered) { await this.extractAvailable(); await this.packageInternal(); }
     } catch (error) {
       if (this.enclosure) await jsonFile(`${this.enclosure.hostRoot}.delivery-error.json`, { error: String(error) }).catch(() => {});
     } finally { await this.releaseInternal('released'); }

@@ -1,5 +1,7 @@
 # relay_run: forwarding MCP tool calls into the VM
 
+> Removed by DC-23 ([guest-code-runs.md §10](guest-code-runs.md#10-two-ways-to-relay-an-action-dc-23)). `relay_run`, `relay_gate` and `relay_tools`, the guest MCP host and the pinned servers are gone; a script run with `relay_script` drives cua-driver, Playwright or Chrome DevTools through their own libraries or command lines. This document records the design as it was.
+
 `relay_run` replaces `relay_cua` and `relay_browser`. The model sends the
 tool calls it already knows for cua-driver, Playwright MCP or Chrome DevTools
 MCP. The relay carries each call into the VM and records evidence around it.
