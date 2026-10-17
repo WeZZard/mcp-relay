@@ -33,6 +33,14 @@ test('the server refuses to start on a guest network other than nat or internet 
   });
 });
 
+test('no text tells the agent to relay only interruptive work (DC-14)', async () => {
+  const rule = /interrupt|non-disruptive|headless work|stays with local tools|unknown is not idle/i;
+  assert.doesNotMatch(instructions, rule);
+  assert.doesNotMatch(relayTools.find(tool => tool.name === 'relay_probe')!.description, rule);
+  assert.doesNotMatch(await readFile('agents/vm-relay-operator.md', 'utf8'), rule);
+  assert.doesNotMatch((await readFile('README.md', 'utf8')).split('## How it is built')[0]!, rule);
+});
+
 test('the CLI prints the instructions text and the full table of tool schemas', async () => {
   const { stdout } = await run(process.execPath, [server, '--instructions']);
   assert.equal(stdout, `${instructions}\n`);

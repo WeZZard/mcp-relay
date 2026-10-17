@@ -143,14 +143,15 @@ test('probe remains read-only; unknown is not no user activity', async () => {
  const called: string[][] = [];
  const unavailable = await probeLocal(async argv => { called.push([...argv]); throw Error('unavailable'); });
  assert.equal(unavailable.screenshot.available, null); assert.equal(unavailable.userSessionActive.value, null);
- assert.match(unavailable.recommendation, /Unknown activity is not proof/);
+ // Facts only: the probe recommends nothing, local work included (DC-14).
+ assert.equal(Object.hasOwn(unavailable, 'recommendation'), false);
  assert.ok(called.every(argv => !argv.includes('grant') && !argv.includes('get_desktop_state')));
  const probe = await probeLocal(async argv => {
   const output = argv.includes('permissions') ? JSON.stringify({ screen_recording: true, accessibility: true }) : argv.includes('list_apps') ? '{"apps":[]}' : argv.includes('IOHIDSystem') ? '"HIDIdleTime" = 5000000000' : argv.includes('/dev/console') ? 'root\n' : '{}';
   return { stdout: output, stderr: '', code: 0 };
  }, 'darwin');
  assert.equal(probe.idleSeconds.value, 5); assert.equal(probe.userSessionActive.value, false);
- assert.match(probe.recommendation, /Prefer local tools/);
+ assert.equal(Object.hasOwn(probe, 'recommendation'), false);
 });
 
 test('local helper bounds output and timeouts', async () => {

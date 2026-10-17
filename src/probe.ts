@@ -17,11 +17,9 @@ export async function probeLocal(run = command, platform = process.platform) {
   const idle = platform === 'darwin'
     ? await observe(['/usr/sbin/ioreg', '-r', '-c', 'IOHIDSystem'], text => { const m = text.match(/"HIDIdleTime"\s*=\s*(\d+)/); return m ? Number(m[1]) / 1e9 : null; })
     : await observe(['xprintidle'], text => { const n = Number(text.trim()); return Number.isFinite(n) ? n / 1000 : null; });
-  const localFeasible = permissions.value?.screen_recording === true && permissions.value?.accessibility === true;
   return {
     observedAt: new Date().toISOString(), permissions, recorder, foreground, userSessionActive: session,
     idleSeconds: { ...idle, formula: 'OS idle duration in nanoseconds / 1e9 (macOS), milliseconds / 1000 (X11)' },
     screenshot: { available: permissions.value?.screen_recording_capturable ?? null, permissionGranted: permissions.value?.screen_recording ?? null, note: 'Read-only probe: permission is not proof of capture; no screenshot or consent dialog is triggered.' },
-    recommendation: localFeasible && session.value === false ? 'Reported permissions permit local use and no user console session is active; live capture remains unverified. Prefer local tools if the operation is non-disruptive.' : 'Judge interruption from these facts and task context. Unknown activity is not proof of an idle display; non-disruptive headless operations should remain local.',
   };
 }

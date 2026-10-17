@@ -7,9 +7,8 @@ it for both Claude Code and pi, the latter loaded through `pi-mcp-adapter`. It
 is an MCP server: nineteen `relay_*` tools, each with its own schema, title
 and annotations, and the server's `instructions`. The user command, status,
 ships as one small command file per host (see "Commands"). There is no skill and no hook. Together they offer recorded,
-snapshot-evidenced **interruptive** computer-use and browser-use in a fresh,
-dedicated VM. The agent judges interruption; non-disruptive work stays with the
-agent's local tools. Nothing here executes local computer-use, spawns
+snapshot-evidenced computer-use, browser-use and code runs in a fresh,
+dedicated VM, for any work the agent chooses to run there. Nothing here executes local computer-use, spawns
 subagents, targets physical machines, records video, or attaches to existing
 browsers.
 
