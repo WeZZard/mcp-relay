@@ -6,11 +6,20 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
 };
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __export = (target, all) => {
   for (var name in all)
@@ -472,7 +481,7 @@ var require_codegen = __commonJS({
         return `break${label};` + _n;
       }
     };
-    var Throw = class extends Node {
+    var Throw2 = class extends Node {
       constructor(error2) {
         super();
         this.error = error2;
@@ -917,7 +926,7 @@ var require_codegen = __commonJS({
       }
       // `throw` statement
       throw(error2) {
-        return this._leafNode(new Throw(error2));
+        return this._leafNode(new Throw2(error2));
       }
       // start self-balancing block
       block(body, nodeCount) {
@@ -8361,8 +8370,8 @@ function $constructor(name, initializer3, proto, params) {
       }
     }
   }
-  const Parent = params?.Parent ?? Object;
-  class Definition extends Parent {
+  const Parent2 = params?.Parent ?? Object;
+  class Definition extends Parent2 {
   }
   Object.defineProperty(Definition, "name", { value: name });
   function _(def) {
@@ -12716,7 +12725,7 @@ var nonoptionalProcessor = (schema, ctx, _json, params) => {
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
-var UNREPRESENTABLE_DEFAULT = Symbol();
+var UNREPRESENTABLE_DEFAULT = /* @__PURE__ */ Symbol();
 function serializeDefaultValue(value, schema, ctx, json2, params) {
   let unrepresentable = false;
   const serialized = JSON.stringify(value, (_, val) => {
@@ -15401,9 +15410,6 @@ function isTerminal(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
 }
 
-// node_modules/zod-to-json-schema/dist/esm/Options.js
-var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
-
 // node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
@@ -17747,6 +17753,8 @@ var VmServiceError = class extends Error {
     this.responseBody = responseBody;
     this.name = "VmServiceError";
   }
+  status;
+  responseBody;
   /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
   capacity = false;
 };
@@ -17768,6 +17776,7 @@ var AcquireIndeterminateError = class extends VmServiceError {
     this.purpose = purpose;
     this.name = "AcquireIndeterminateError";
   }
+  purpose;
 };
 function positive(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2147483647) throw new TypeError(`${label} must be a positive bounded integer`);
@@ -18473,6 +18482,7 @@ var ImageTransferError = class extends Error {
     this.code = code;
     this.name = "ImageTransferError";
   }
+  code;
 };
 function imagePath(root, target) {
   for (const path of [root, target]) {
@@ -18564,6 +18574,10 @@ var Transfer = class {
     this.node = node2;
     this.options = options;
   }
+  vm;
+  name;
+  node;
+  options;
   async copy(operation, transfer, validate2) {
     for (let attempt = 1; ; attempt++) {
       await validate2();
@@ -19095,6 +19109,10 @@ var VmTransport = class {
     this.hostRoot = hostRoot;
     this.cuaDriver = cuaDriver;
   }
+  transfer;
+  guestRoot;
+  hostRoot;
+  cuaDriver;
   because = "";
   timeoutMs = 12e4;
   diagnostic = false;
@@ -19755,6 +19773,7 @@ __export(settings_exports, {
 // node_modules/typebox/build/guard/guard.mjs
 var guard_exports = {};
 __export(guard_exports, {
+  CodePointCount: () => CodePointCount2,
   Counted: () => Counted,
   Entries: () => Entries,
   EntriesRegExp: () => EntriesRegExp,
@@ -19795,15 +19814,12 @@ __export(guard_exports, {
   Values: () => Values
 });
 
-// node_modules/typebox/build/guard/string.mjs
+// node_modules/typebox/build/guard/unicode/unicode_segment.mjs
 function IsBetween(value, min, max) {
   return value >= min && value <= max;
 }
 function IsZeroWidthJoiner(value) {
   return value === 8205;
-}
-function IsHighSurrogate(value) {
-  return IsBetween(value, 55296, 56319);
 }
 function IsRegionalIndicator(value) {
   return IsBetween(value, 127462, 127487);
@@ -19842,64 +19858,30 @@ function NextGraphemeClusterIndex(value, clusterStart) {
   }
   return clusterEnd;
 }
-function IsGraphemeCodePoint(value) {
-  return value >= 768 && // above special range
-  (IsHighSurrogate(value) || IsCombiningMark(value) || IsVariationSelector(value) || IsZeroWidthJoiner(value));
-}
 function GraphemeCount(value) {
-  let count = 0;
-  let index = 0;
+  let count = 0, index = 0;
   while (index < value.length) {
     index = NextGraphemeClusterIndex(value, index);
     count++;
   }
   return count;
 }
-function IsMinLengthSegmented(value, minLength) {
-  let count = 0;
-  let index = 0;
+
+// node_modules/typebox/build/guard/unicode/unicode.mjs
+function CodePointCount(value) {
+  let result2 = 0, index = 0, prev = 0;
   while (index < value.length) {
-    index = NextGraphemeClusterIndex(value, index);
-    if (++count >= minLength)
-      return true;
+    const next = value.charCodeAt(index++) >> 10;
+    result2 += +((prev << 8 | next) !== 13879);
+    prev = next;
   }
-  return false;
-}
-function IsMaxLengthSegmented(value, maxLength) {
-  let count = 0;
-  let index = 0;
-  while (index < value.length) {
-    index = NextGraphemeClusterIndex(value, index);
-    if (++count > maxLength)
-      return false;
-  }
-  return true;
-}
-function IsMinLength(value, minLength) {
-  if (minLength === 0)
-    return true;
-  if (value.length < minLength)
-    return false;
-  let index = 0;
-  while (true) {
-    if (IsGraphemeCodePoint(value.charCodeAt(index))) {
-      return IsMinLengthSegmented(value, minLength);
-    }
-    if (++index >= minLength)
-      return true;
-  }
+  return result2;
 }
 function IsMaxLength(value, maxLength) {
-  if (value.length <= maxLength)
-    return true;
-  let index = 0;
-  while (true) {
-    if (IsGraphemeCodePoint(value.charCodeAt(index))) {
-      return IsMaxLengthSegmented(value, maxLength);
-    }
-    if (++index > maxLength)
-      return false;
-  }
+  return value.length <= maxLength || value.length <= maxLength << 1 && CodePointCount(value) <= maxLength;
+}
+function IsMinLength(value, minLength) {
+  return value.length >= minLength << 1 || value.length >= minLength && CodePointCount(value) >= minLength;
 }
 
 // node_modules/typebox/build/guard/guard.mjs
@@ -19990,11 +19972,14 @@ function IsValueLike(value) {
 function GraphemeCount2(value) {
   return GraphemeCount(value);
 }
-function IsMaxLength2(value, length) {
-  return IsMaxLength(value, length);
+function CodePointCount2(value) {
+  return CodePointCount(value);
 }
-function IsMinLength2(value, length) {
-  return IsMinLength(value, length);
+function IsMaxLength2(value, maxLength) {
+  return IsMaxLength(value, maxLength);
+}
+function IsMinLength2(value, minLength) {
+  return IsMinLength(value, minLength);
 }
 function Every(value, offset, callback) {
   return value.every((item, index) => index < offset || callback(item, index));
@@ -20146,6 +20131,7 @@ var guard_default = guard_exports;
 var settings = {
   immutableTypes: false,
   maxErrors: 8,
+  maxParseErrors: 1,
   maxInstantiationCount: 128,
   useAcceleration: true,
   exactOptionalPropertyTypes: false,
@@ -20156,6 +20142,7 @@ var settings = {
 function Reset() {
   settings.immutableTypes = false;
   settings.maxErrors = 8;
+  settings.maxParseErrors = 1;
   settings.maxInstantiationCount = 128;
   settings.useAcceleration = true;
   settings.exactOptionalPropertyTypes = false;
@@ -20575,23 +20562,22 @@ function InstanceKeys(value) {
 function IsIEEE754(value) {
   return typeof value === "number";
 }
-var ByteMarker;
-(function(ByteMarker2) {
-  ByteMarker2[ByteMarker2["Array"] = 0] = "Array";
-  ByteMarker2[ByteMarker2["BigInt"] = 1] = "BigInt";
-  ByteMarker2[ByteMarker2["Boolean"] = 2] = "Boolean";
-  ByteMarker2[ByteMarker2["Date"] = 3] = "Date";
-  ByteMarker2[ByteMarker2["Constructor"] = 4] = "Constructor";
-  ByteMarker2[ByteMarker2["Function"] = 5] = "Function";
-  ByteMarker2[ByteMarker2["Null"] = 6] = "Null";
-  ByteMarker2[ByteMarker2["Number"] = 7] = "Number";
-  ByteMarker2[ByteMarker2["Object"] = 8] = "Object";
-  ByteMarker2[ByteMarker2["RegExp"] = 9] = "RegExp";
-  ByteMarker2[ByteMarker2["String"] = 10] = "String";
-  ByteMarker2[ByteMarker2["Symbol"] = 11] = "Symbol";
-  ByteMarker2[ByteMarker2["TypeArray"] = 12] = "TypeArray";
-  ByteMarker2[ByteMarker2["Undefined"] = 13] = "Undefined";
-})(ByteMarker || (ByteMarker = {}));
+var ByteMarker = {
+  Array: 0,
+  BigInt: 1,
+  Boolean: 2,
+  Date: 3,
+  Constructor: 4,
+  Function: 5,
+  Null: 6,
+  Number: 7,
+  Object: 8,
+  RegExp: 9,
+  String: 10,
+  Symbol: 11,
+  TypeArray: 12,
+  Undefined: 13
+};
 var Accumulator = BigInt("14695981039346656037");
 var [Prime, Size] = [BigInt("1099511628211"), BigInt(
   "18446744073709551616"
@@ -20758,7 +20744,7 @@ function en_US(error2) {
       return `must not have duplicate items`;
     case "~refine":
       return error2.params.message;
-    // deno-coverage-ignore - unreachable
+    // deno-coverage-ignore-start - unreachable
     default:
       return "an unknown validation error occurred";
   }
@@ -22626,8 +22612,14 @@ function TryRestInferable(type) {
 function TryInferable(type) {
   return IsInfer(type) ? Inferrable(type.name, type.extends) : void 0;
 }
-function TryInferResults(rest, right, result2 = []) {
-  return guard_exports.ShiftLeft(rest, (head, tail) => Match3(ExtendsLeft({}, head, right), () => TryInferResults(tail, right, [...result2, head]), () => void 0), () => result2);
+function TryInferResults(rest, right) {
+  const result2 = [];
+  for (const head of rest) {
+    if (!IsExtendsTrueLike(ExtendsLeft({}, head, right)))
+      return void 0;
+    result2.push(head);
+  }
+  return result2;
 }
 function InferTupleResult(inferred, name, left, right) {
   const results = TryInferResults(left, right);
@@ -22671,9 +22663,18 @@ function ExtendsTupleToTuple(inferred, left, right) {
   const reversed = Reversed(instantiatedRight);
   return Elements(inferred, reversed, ApplyReverse(left, reversed), ApplyReverse(instantiatedRight, reversed));
 }
+function ExtendsTupleToArrayReduce(inferred, left, right) {
+  for (const head of left) {
+    const result2 = ExtendsLeft(inferred, head, right);
+    if (!IsExtendsTrueLike(result2))
+      return result2;
+    inferred = result2.inferred;
+  }
+  return ExtendsTrue(inferred);
+}
 function ExtendsTupleToArray(inferred, left, right) {
   const inferrable = TryInferable(right);
-  return IsInferable(inferrable) ? InferUnionResult(inferred, inferrable["name"], left, inferrable["type"]) : guard_exports.ShiftLeft(left, (head, tail) => Match3(ExtendsLeft(inferred, head, right), (inferred2) => ExtendsTupleToArray(inferred2, tail, right), () => ExtendsFalse()), () => ExtendsTrue(inferred));
+  return IsInferable(inferrable) ? InferUnionResult(inferred, inferrable["name"], left, inferrable["type"]) : ExtendsTupleToArrayReduce(inferred, left, right);
 }
 function ExtendsTuple(inferred, left, right) {
   const instantiatedLeft = InstantiateElements(inferred, State([], []), left);
@@ -24700,10 +24701,7 @@ function CheckRefine(_stack, _context, schema, value) {
 }
 function ErrorRefine(_stack, context, schemaPath, instancePath, schema, value) {
   return guard_exports.EveryAll(schema["~refine"], 0, (refinement, index) => {
-    return refinement.check(value) || context.AddError("~refine", schemaPath, instancePath, {
-      index,
-      message: refinement.error(value)
-    });
+    return refinement.check(value) || context.AddError("~refine", schemaPath, instancePath, { index, message: refinement.error(value) });
   });
 }
 
@@ -24832,6 +24830,11 @@ function ErrorAdditionalItems(stack, context, schemaPath, instancePath, schema, 
   return isAdditionalItems;
 }
 
+// node_modules/typebox/build/schema/engine/_pathing.mjs
+function EncodeFragment(fragment) {
+  return fragment.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
 // node_modules/typebox/build/schema/engine/_regexp.mjs
 function UnicodeRegExp(pattern) {
   return new RegExp(pattern, "u");
@@ -24862,7 +24865,7 @@ function ErrorAdditionalProperties(stack, context, schemaPath, instancePath, sch
   const additionalProperties = [];
   const isAdditionalProperties = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key, _index) => {
     const nextSchemaPath = `${schemaPath}/additionalProperties`;
-    const nextInstancePath = `${instancePath}/${key}`;
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
     const isAdditionalProperty = regexp.test(key) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema.additionalProperties, value[key]) && context.AddKey(key);
     if (!isAdditionalProperty)
       additionalProperties.push(key);
@@ -24961,7 +24964,7 @@ function CheckDependencies(stack, context, schema, value) {
 function ErrorDependencies(stack, context, schemaPath, instancePath, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
   const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependencies), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/dependencies/${key}`;
+    const nextSchemaPath = `${schemaPath}/dependencies/${EncodeFragment(key)}`;
     return !guard_exports.HasPropertyKey(value, key) || (guard_exports.IsArray(schema2) ? schema2.every((dependency) => guard_exports.HasPropertyKey(value, dependency) || context.AddError("dependencies", schemaPath, instancePath, { property: key, dependencies: schema2 })) : ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value));
   });
   return isLength || isEvery;
@@ -24994,7 +24997,7 @@ function CheckDependentSchemas(stack, context, schema, value) {
 function ErrorDependentSchemas(stack, context, schemaPath, instancePath, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
   const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependentSchemas), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/dependentSchemas/${key}`;
+    const nextSchemaPath = `${schemaPath}/dependentSchemas/${EncodeFragment(key)}`;
     return !guard_exports.HasPropertyKey(value, key) || ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value);
   });
   return isLength || isEvery;
@@ -25017,80 +25020,68 @@ __export(pointer_exports, {
   Indices: () => Indices,
   Set: () => Set3
 });
-function AssertNotRoot(indices) {
-  if (indices.length === 0)
-    throw Error("Cannot set root");
+function Throw(message3) {
+  throw Error(message3);
 }
-function AssertCanSet(value) {
-  if (!guard_exports.IsObject(value))
-    throw Error("Cannot set value");
+function ThrowUnsafePropertyKey() {
+  Throw("Pointer contains unsafe property key");
 }
-function AssertIndex(index) {
-  if (guard_exports.IsUnsafePropertyKey(index))
-    throw Error("Pointer contains unsafe property key");
-}
-function AssertIndices(indices) {
-  for (const index of indices)
-    AssertIndex(index);
-}
-function IsNumericIndex(index) {
-  return /^(0|[1-9]\d*)$/.test(index);
-}
-function TakeIndexRight(indices) {
-  return [
-    indices.slice(0, indices.length - 1),
-    indices.slice(indices.length - 1)[0]
-  ];
-}
-function HasIndex(index, value) {
-  return guard_exports.IsObject(value) && guard_exports.HasPropertyKey(value, index);
-}
-function GetIndex(index, value) {
-  return guard_exports.IsObject(value) && !guard_exports.IsUnsafePropertyKey(index) ? value[index] : void 0;
-}
-function GetIndices(indices, value) {
-  return indices.reduce((value2, index) => GetIndex(index, value2), value);
+function ThrowCannotSetRoot() {
+  Throw("Cannot set value");
 }
 function Indices(pointer) {
-  if (guard_exports.IsEqual(pointer.length, 0))
-    return [];
   const indices = pointer.split("/").map((index) => index.replace(/~1/g, "/").replace(/~0/g, "~"));
-  return indices.length > 0 && indices[0] === "" ? indices.slice(1) : indices;
+  return indices[0] === "" ? indices.slice(1) : indices;
 }
 function Has(value, pointer) {
   let current = value;
-  return Indices(pointer).every((index) => {
-    if (!HasIndex(index, current))
+  for (const index of Indices(pointer)) {
+    if (!guard_exports.IsObject(current) || !guard_exports.HasPropertyKey(current, index))
       return false;
     current = current[index];
-    return true;
-  });
+  }
+  return true;
 }
 function Get3(value, pointer) {
-  const indices = Indices(pointer);
-  return GetIndices(indices, value);
+  let current = value;
+  for (const index of Indices(pointer)) {
+    if (!guard_exports.IsObject(current) || guard_exports.IsUnsafePropertyKey(index))
+      return void 0;
+    current = current[index];
+  }
+  return current;
+}
+function Parent(value, indices, last) {
+  let current = value;
+  for (const index of indices) {
+    if (guard_exports.IsUnsafePropertyKey(index))
+      ThrowUnsafePropertyKey();
+    current = guard_exports.IsObject(current) ? current[index] : void 0;
+  }
+  if (guard_exports.IsUnsafePropertyKey(last))
+    ThrowUnsafePropertyKey();
+  if (!guard_exports.IsObject(current))
+    ThrowCannotSetRoot();
+  return current;
 }
 function Set3(value, pointer, next) {
   const indices = Indices(pointer);
-  AssertNotRoot(indices);
-  AssertIndices(indices);
-  const [head, index] = TakeIndexRight(indices);
-  const parent = GetIndices(head, value);
-  AssertCanSet(parent);
-  parent[index] = next;
+  const last = indices.pop();
+  if (guard_exports.IsUndefined(last))
+    ThrowCannotSetRoot();
+  Parent(value, indices, last)[last] = next;
   return value;
 }
 function Delete(value, pointer) {
   const indices = Indices(pointer);
-  AssertNotRoot(indices);
-  AssertIndices(indices);
-  const [head, index] = TakeIndexRight(indices);
-  const parent = GetIndices(head, value);
-  AssertCanSet(parent);
-  if (guard_exports.IsArray(parent) && IsNumericIndex(index)) {
-    parent.splice(+index, 1);
+  const last = indices.pop();
+  if (guard_exports.IsUndefined(last))
+    ThrowCannotSetRoot();
+  const parent = Parent(value, indices, last);
+  if (guard_exports.IsArray(parent) && /^(0|[1-9]\d*)$/.test(last)) {
+    parent.splice(Number(last), 1);
   } else {
-    delete parent[index];
+    delete parent[last];
   }
   return value;
 }
@@ -25332,10 +25323,10 @@ function CheckDynamicRef(stack, context, schema, value) {
   const nextStack = target ? { ...stack, pendingResource: true } : stack;
   return IsSchema2(target) && CheckSchema(nextStack, context, target, value);
 }
-function ErrorDynamicRef(stack, context, _schemaPath, instancePath, schema, value) {
+function ErrorDynamicRef(stack, context, schemaPath, instancePath, schema, value) {
   const target = resolve_exports.DynamicRef(stack, schema) ?? false;
   const nextStack = target ? { ...stack, pendingResource: true } : stack;
-  return IsSchema2(target) && ErrorSchema(nextStack, context, "#", instancePath, target, value);
+  return IsSchema2(target) && ErrorSchema(nextStack, context, schemaPath, instancePath, target, value);
 }
 
 // node_modules/typebox/build/schema/engine/enum.mjs
@@ -25828,19 +25819,14 @@ function IsIriReference(value) {
 }
 
 // node_modules/typebox/build/format/iri.mjs
-var IpvFutureMatchMaxLength = 2048;
-var IpvFutureMatch = /\[[vV][0-9a-fA-F]+\.[^\]]+\]/;
 var InvalidIriChars2 = /[\x00-\x20<>\^`{|}\\]/;
 var InvalidPercentEncoding = /%(?![0-9a-fA-F]{2})/;
-function NarrowIpvFuture(value) {
-  return value.length < IpvFutureMatchMaxLength ? value.replace(IpvFutureMatch, "[::1]") : value;
-}
 function IsIri(value) {
   if (InvalidIriChars2.test(value))
     return false;
   if (InvalidPercentEncoding.test(value))
     return false;
-  return URL.canParse(NarrowIpvFuture(value));
+  return URL.canParse(value);
 }
 
 // node_modules/typebox/build/format/json_pointer_uri_fragment.mjs
@@ -26163,10 +26149,10 @@ function CheckPatternProperties(stack, context, schema, value) {
 }
 function ErrorPatternProperties(stack, context, schemaPath, instancePath, schema, value) {
   return guard_exports.EveryAll(guard_exports.Entries(schema.patternProperties), 0, ([pattern, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/patternProperties/${pattern}`;
+    const nextSchemaPath = `${schemaPath}/patternProperties/${EncodeFragment(pattern)}`;
     const regexp = UnicodeRegExp(pattern);
     return guard_exports.EveryAll(guard_exports.Entries(value), 0, ([key, value2]) => {
-      const nextInstancePath = `${instancePath}/${key}`;
+      const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
       const notKey = !regexp.test(key);
       return notKey || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value2) && context.AddKey(key);
     });
@@ -26207,8 +26193,8 @@ function CheckProperties(stack, context, schema, value) {
 function ErrorProperties(stack, context, schemaPath, instancePath, schema, value) {
   const required2 = IsRequired(schema) ? schema.required : [];
   const isProperties = guard_exports.EveryAll(guard_exports.Entries(schema.properties), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/properties/${key}`;
-    const nextInstancePath = `${instancePath}/${key}`;
+    const nextSchemaPath = `${schemaPath}/properties/${EncodeFragment(key)}`;
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
     const isProperty = () => !guard_exports.HasPropertyKey(value, key) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value[key]) && context.AddKey(key);
     return IsExactOptional(required2, key) ? isProperty() : InexactOptionalCheck(value, key) || isProperty();
   });
@@ -26222,7 +26208,7 @@ function CheckPropertyNames(stack, context, schema, value) {
 function ErrorPropertyNames(stack, context, schemaPath, instancePath, schema, value) {
   const propertyNames = [];
   const isPropertyNames = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key, _index) => {
-    const nextInstancePath = `${instancePath}/${key}`;
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
     const nextSchemaPath = `${schemaPath}/propertyNames`;
     const isPropertyName = ErrorSchema(stack, context, nextSchemaPath, nextInstancePath, schema.propertyNames, key);
     if (!isPropertyName)
@@ -26238,10 +26224,10 @@ function CheckRecursiveRef(stack, context, schema, value) {
   const nextStack = target ? { ...stack, pendingResource: true } : stack;
   return IsSchema2(target) && CheckSchema(nextStack, context, target, value);
 }
-function ErrorRecursiveRef(stack, context, _schemaPath, instancePath, schema, value) {
+function ErrorRecursiveRef(stack, context, schemaPath, instancePath, schema, value) {
   const target = resolve_exports.RecursiveRef(stack, schema) ?? false;
   const nextStack = target ? { ...stack, pendingResource: true } : stack;
-  return IsSchema2(target) && ErrorSchema(nextStack, context, "#", instancePath, target, value);
+  return IsSchema2(target) && ErrorSchema(nextStack, context, schemaPath, instancePath, target, value);
 }
 
 // node_modules/typebox/build/schema/engine/ref.mjs
@@ -26254,11 +26240,11 @@ function CheckRef(stack, context, schema, value) {
     context.Merge([nextContext]);
   return valid;
 }
-function ErrorRef(stack, context, _schemaPath, instancePath, schema, value) {
+function ErrorRef(stack, context, schemaPath, instancePath, schema, value) {
   const result2 = resolve_exports.Ref(stack, schema);
   const target = result2.schema ?? false;
   const nextContext = new ErrorContext();
-  const valid = IsSchema2(target) && ErrorSchema(result2.stack, nextContext, "#", instancePath, target, value);
+  const valid = IsSchema2(target) && ErrorSchema(result2.stack, nextContext, schemaPath, instancePath, target, value);
   if (valid)
     context.Merge([nextContext]);
   if (!valid)
@@ -26374,7 +26360,7 @@ function CheckSchemaPushStack(stack, context, schema, value) {
 }
 function CheckSchema(stack, context, schema, value) {
   const current = NextStack(stack, schema);
-  const result2 = IsSchemaBoolean(schema) ? CheckSchemaBoolean(current, context, schema, value) : (!IsType(schema) || CheckType(current, context, schema, value)) && (!(guard_exports.IsObject(value) && !guard_exports.IsArray(value)) || (!IsRequired(schema) || CheckRequired(current, context, schema, value)) && (!IsAdditionalProperties(schema) || CheckAdditionalProperties(current, context, schema, value)) && (!IsDependencies(schema) || CheckDependencies(current, context, schema, value)) && (!IsDependentRequired(schema) || CheckDependentRequired(current, context, schema, value)) && (!IsDependentSchemas(schema) || CheckDependentSchemas(current, context, schema, value)) && (!IsPatternProperties(schema) || CheckPatternProperties(current, context, schema, value)) && (!IsProperties(schema) || CheckProperties(current, context, schema, value)) && (!IsPropertyNames(schema) || CheckPropertyNames(current, context, schema, value)) && (!IsMinProperties(schema) || CheckMinProperties(current, context, schema, value)) && (!IsMaxProperties(schema) || CheckMaxProperties(current, context, schema, value))) && (!guard_exports.IsArray(value) || (!IsAdditionalItems(schema) || CheckAdditionalItems(current, context, schema, value)) && (!IsContains(schema) || CheckContains(current, context, schema, value)) && (!IsItems(schema) || CheckItems(current, context, schema, value)) && (!IsMaxContains(schema) || CheckMaxContains(current, context, schema, value)) && (!IsMaxItems(schema) || CheckMaxItems(current, context, schema, value)) && (!IsMinContains(schema) || CheckMinContains(current, context, schema, value)) && (!IsMinItems(schema) || CheckMinItems(current, context, schema, value)) && (!IsPrefixItems(schema) || CheckPrefixItems(current, context, schema, value)) && (!IsUniqueItems(schema) || CheckUniqueItems(current, context, schema, value))) && (!guard_exports.IsString(value) || (!IsMaxLength3(schema) || CheckMaxLength(current, context, schema, value)) && (!IsMinLength3(schema) || CheckMinLength(current, context, schema, value)) && (!IsFormat(schema) || CheckFormat(current, context, schema, value)) && (!IsPattern(schema) || CheckPattern(current, context, schema, value))) && (!(guard_exports.IsNumber(value) || guard_exports.IsBigInt(value)) || (!IsExclusiveMaximum(schema) || CheckExclusiveMaximum(current, context, schema, value)) && (!IsExclusiveMinimum(schema) || CheckExclusiveMinimum(current, context, schema, value)) && (!IsMaximum(schema) || CheckMaximum(current, context, schema, value)) && (!IsMinimum(schema) || CheckMinimum(current, context, schema, value)) && (!IsMultipleOf2(schema) || CheckMultipleOf(current, context, schema, value))) && (!IsRef2(schema) || CheckRef(current, context, schema, value)) && (!IsRecursiveRef(schema) || CheckRecursiveRef(current, context, schema, value)) && (!IsDynamicRef(schema) || CheckDynamicRef(current, context, schema, value)) && (!IsConst(schema) || CheckConst(current, context, schema, value)) && (!IsEnum2(schema) || CheckEnum(current, context, schema, value)) && (!IsIf(schema) || CheckIf(current, context, schema, value)) && (!IsNot(schema) || CheckNot(current, context, schema, value)) && (!IsAllOf(schema) || CheckAllOf(current, context, schema, value)) && (!IsAnyOf(schema) || CheckAnyOf(current, context, schema, value)) && (!IsOneOf(schema) || CheckOneOf(current, context, schema, value)) && (!IsUnevaluatedItems(schema) || (!guard_exports.IsArray(value) || CheckUnevaluatedItems(current, context, schema, value))) && (!IsUnevaluatedProperties(schema) || (!guard_exports.IsObject(value) || CheckUnevaluatedProperties(current, context, schema, value))) && (!IsRefine2(schema) || CheckRefine(current, context, schema, value));
+  const result2 = IsSchemaBoolean(schema) ? CheckSchemaBoolean(current, context, schema, value) : (!IsType(schema) || CheckType(current, context, schema, value)) && (!(guard_exports.IsObject(value) && !guard_exports.IsArray(value)) || (!IsRequired(schema) || CheckRequired(current, context, schema, value)) && (!IsAdditionalProperties(schema) || CheckAdditionalProperties(current, context, schema, value)) && (!IsDependencies(schema) || CheckDependencies(current, context, schema, value)) && (!IsDependentRequired(schema) || CheckDependentRequired(current, context, schema, value)) && (!IsDependentSchemas(schema) || CheckDependentSchemas(current, context, schema, value)) && (!IsPatternProperties(schema) || CheckPatternProperties(current, context, schema, value)) && (!IsProperties(schema) || CheckProperties(current, context, schema, value)) && (!IsPropertyNames(schema) || CheckPropertyNames(current, context, schema, value)) && (!IsMinProperties(schema) || CheckMinProperties(current, context, schema, value)) && (!IsMaxProperties(schema) || CheckMaxProperties(current, context, schema, value))) && (!guard_exports.IsArray(value) || (!IsAdditionalItems(schema) || CheckAdditionalItems(current, context, schema, value)) && (!IsContains(schema) || CheckContains(current, context, schema, value)) && (!IsItems(schema) || CheckItems(current, context, schema, value)) && (!IsMinContains(schema) || CheckMinContains(current, context, schema, value)) && (!IsMaxContains(schema) || CheckMaxContains(current, context, schema, value)) && (!IsMinItems(schema) || CheckMinItems(current, context, schema, value)) && (!IsMaxItems(schema) || CheckMaxItems(current, context, schema, value)) && (!IsPrefixItems(schema) || CheckPrefixItems(current, context, schema, value)) && (!IsUniqueItems(schema) || CheckUniqueItems(current, context, schema, value))) && (!guard_exports.IsString(value) || (!IsMinLength3(schema) || CheckMinLength(current, context, schema, value)) && (!IsMaxLength3(schema) || CheckMaxLength(current, context, schema, value)) && (!IsFormat(schema) || CheckFormat(current, context, schema, value)) && (!IsPattern(schema) || CheckPattern(current, context, schema, value))) && (!(guard_exports.IsNumber(value) || guard_exports.IsBigInt(value)) || (!IsExclusiveMinimum(schema) || CheckExclusiveMinimum(current, context, schema, value)) && (!IsExclusiveMaximum(schema) || CheckExclusiveMaximum(current, context, schema, value)) && (!IsMinimum(schema) || CheckMinimum(current, context, schema, value)) && (!IsMaximum(schema) || CheckMaximum(current, context, schema, value)) && (!IsMultipleOf2(schema) || CheckMultipleOf(current, context, schema, value))) && (!IsRef2(schema) || CheckRef(current, context, schema, value)) && (!IsRecursiveRef(schema) || CheckRecursiveRef(current, context, schema, value)) && (!IsDynamicRef(schema) || CheckDynamicRef(current, context, schema, value)) && (!IsConst(schema) || CheckConst(current, context, schema, value)) && (!IsEnum2(schema) || CheckEnum(current, context, schema, value)) && (!IsIf(schema) || CheckIf(current, context, schema, value)) && (!IsNot(schema) || CheckNot(current, context, schema, value)) && (!IsAllOf(schema) || CheckAllOf(current, context, schema, value)) && (!IsAnyOf(schema) || CheckAnyOf(current, context, schema, value)) && (!IsOneOf(schema) || CheckOneOf(current, context, schema, value)) && (!IsUnevaluatedItems(schema) || (!guard_exports.IsArray(value) || CheckUnevaluatedItems(current, context, schema, value))) && (!IsUnevaluatedProperties(schema) || (!guard_exports.IsObject(value) || CheckUnevaluatedProperties(current, context, schema, value))) && (!IsRefine2(schema) || CheckRefine(current, context, schema, value));
   return result2;
 }
 function ErrorSchemaPushStack(stack, context, schemaPath, instancePath, schema, value) {
@@ -26384,7 +26370,7 @@ function ErrorSchema(stack, context, schemaPath, instancePath, schema, value) {
   if (context.AtCapacity())
     return false;
   const current = NextStack(stack, schema);
-  const result2 = IsSchemaBoolean(schema) ? ErrorSchemaBoolean(current, context, schemaPath, instancePath, schema, value) : !!(+(!IsType(schema) || ErrorType(current, context, schemaPath, instancePath, schema, value)) & +(!(guard_exports.IsObject(value) && !guard_exports.IsArray(value)) || !!(+(!IsRequired(schema) || ErrorRequired(current, context, schemaPath, instancePath, schema, value)) & +(!IsAdditionalProperties(schema) || ErrorAdditionalProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependencies(schema) || ErrorDependencies(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependentRequired(schema) || ErrorDependentRequired(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependentSchemas(schema) || ErrorDependentSchemas(current, context, schemaPath, instancePath, schema, value)) & +(!IsPatternProperties(schema) || ErrorPatternProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsProperties(schema) || ErrorProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsPropertyNames(schema) || ErrorPropertyNames(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinProperties(schema) || ErrorMinProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxProperties(schema) || ErrorMaxProperties(current, context, schemaPath, instancePath, schema, value)))) & +(!guard_exports.IsArray(value) || !!(+(!IsAdditionalItems(schema) || ErrorAdditionalItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsContains(schema) || ErrorContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsItems(schema) || ErrorItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxContains(schema) || ErrorMaxContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxItems(schema) || ErrorMaxItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinContains(schema) || ErrorMinContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinItems(schema) || ErrorMinItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsPrefixItems(schema) || ErrorPrefixItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsUniqueItems(schema) || ErrorUniqueItems(current, context, schemaPath, instancePath, schema, value)))) & +(!guard_exports.IsString(value) || !!(+(!IsMaxLength3(schema) || ErrorMaxLength(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinLength3(schema) || ErrorMinLength(current, context, schemaPath, instancePath, schema, value)) & +(!IsFormat(schema) || ErrorFormat(current, context, schemaPath, instancePath, schema, value)) & +(!IsPattern(schema) || ErrorPattern(current, context, schemaPath, instancePath, schema, value)))) & +(!(guard_exports.IsNumber(value) || guard_exports.IsBigInt(value)) || !!(+(!IsExclusiveMaximum(schema) || ErrorExclusiveMaximum(current, context, schemaPath, instancePath, schema, value)) & +(!IsExclusiveMinimum(schema) || ErrorExclusiveMinimum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaximum(schema) || ErrorMaximum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinimum(schema) || ErrorMinimum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMultipleOf2(schema) || ErrorMultipleOf(current, context, schemaPath, instancePath, schema, value)))) & +(!IsRef2(schema) || ErrorRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsRecursiveRef(schema) || ErrorRecursiveRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsDynamicRef(schema) || ErrorDynamicRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsConst(schema) || ErrorConst(current, context, schemaPath, instancePath, schema, value)) & +(!IsEnum2(schema) || ErrorEnum(current, context, schemaPath, instancePath, schema, value)) & +(!IsIf(schema) || ErrorIf(current, context, schemaPath, instancePath, schema, value)) & +(!IsNot(schema) || ErrorNot(current, context, schemaPath, instancePath, schema, value)) & +(!IsAllOf(schema) || ErrorAllOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsAnyOf(schema) || ErrorAnyOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsOneOf(schema) || ErrorOneOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsUnevaluatedItems(schema) || (!guard_exports.IsArray(value) || ErrorUnevaluatedItems(current, context, schemaPath, instancePath, schema, value))) & +(!IsUnevaluatedProperties(schema) || (!guard_exports.IsObject(value) || ErrorUnevaluatedProperties(current, context, schemaPath, instancePath, schema, value)))) && (!IsRefine2(schema) || ErrorRefine(current, context, schemaPath, instancePath, schema, value));
+  const result2 = IsSchemaBoolean(schema) ? ErrorSchemaBoolean(current, context, schemaPath, instancePath, schema, value) : !!(+(!IsType(schema) || ErrorType(current, context, schemaPath, instancePath, schema, value)) & +(!(guard_exports.IsObject(value) && !guard_exports.IsArray(value)) || !!(+(!IsRequired(schema) || ErrorRequired(current, context, schemaPath, instancePath, schema, value)) & +(!IsAdditionalProperties(schema) || ErrorAdditionalProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependencies(schema) || ErrorDependencies(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependentRequired(schema) || ErrorDependentRequired(current, context, schemaPath, instancePath, schema, value)) & +(!IsDependentSchemas(schema) || ErrorDependentSchemas(current, context, schemaPath, instancePath, schema, value)) & +(!IsPatternProperties(schema) || ErrorPatternProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsProperties(schema) || ErrorProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsPropertyNames(schema) || ErrorPropertyNames(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinProperties(schema) || ErrorMinProperties(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxProperties(schema) || ErrorMaxProperties(current, context, schemaPath, instancePath, schema, value)))) & +(!guard_exports.IsArray(value) || !!(+(!IsAdditionalItems(schema) || ErrorAdditionalItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsContains(schema) || ErrorContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsItems(schema) || ErrorItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinContains(schema) || ErrorMinContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxContains(schema) || ErrorMaxContains(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinItems(schema) || ErrorMinItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxItems(schema) || ErrorMaxItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsPrefixItems(schema) || ErrorPrefixItems(current, context, schemaPath, instancePath, schema, value)) & +(!IsUniqueItems(schema) || ErrorUniqueItems(current, context, schemaPath, instancePath, schema, value)))) & +(!guard_exports.IsString(value) || !!(+(!IsMinLength3(schema) || ErrorMinLength(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaxLength3(schema) || ErrorMaxLength(current, context, schemaPath, instancePath, schema, value)) & +(!IsFormat(schema) || ErrorFormat(current, context, schemaPath, instancePath, schema, value)) & +(!IsPattern(schema) || ErrorPattern(current, context, schemaPath, instancePath, schema, value)))) & +(!(guard_exports.IsNumber(value) || guard_exports.IsBigInt(value)) || !!(+(!IsExclusiveMinimum(schema) || ErrorExclusiveMinimum(current, context, schemaPath, instancePath, schema, value)) & +(!IsExclusiveMaximum(schema) || ErrorExclusiveMaximum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMinimum(schema) || ErrorMinimum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMaximum(schema) || ErrorMaximum(current, context, schemaPath, instancePath, schema, value)) & +(!IsMultipleOf2(schema) || ErrorMultipleOf(current, context, schemaPath, instancePath, schema, value)))) & +(!IsRef2(schema) || ErrorRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsRecursiveRef(schema) || ErrorRecursiveRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsDynamicRef(schema) || ErrorDynamicRef(current, context, schemaPath, instancePath, schema, value)) & +(!IsConst(schema) || ErrorConst(current, context, schemaPath, instancePath, schema, value)) & +(!IsEnum2(schema) || ErrorEnum(current, context, schemaPath, instancePath, schema, value)) & +(!IsIf(schema) || ErrorIf(current, context, schemaPath, instancePath, schema, value)) & +(!IsNot(schema) || ErrorNot(current, context, schemaPath, instancePath, schema, value)) & +(!IsAllOf(schema) || ErrorAllOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsAnyOf(schema) || ErrorAnyOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsOneOf(schema) || ErrorOneOf(current, context, schemaPath, instancePath, schema, value)) & +(!IsUnevaluatedItems(schema) || (!guard_exports.IsArray(value) || ErrorUnevaluatedItems(current, context, schemaPath, instancePath, schema, value))) & +(!IsUnevaluatedProperties(schema) || (!guard_exports.IsObject(value) || ErrorUnevaluatedProperties(current, context, schemaPath, instancePath, schema, value)))) && (!IsRefine2(schema) || ErrorRefine(current, context, schemaPath, instancePath, schema, value));
   return result2;
 }
 
@@ -26401,6 +26387,18 @@ function Errors(...args) {
   const locale2 = Get2();
   const localized = errors.map((error2) => ({ ...error2, message: locale2(error2) }));
   return [result2, localized];
+}
+
+// node_modules/typebox/build/system/settings/internal.mjs
+var TempMaxErrors = 0;
+function EnableParseErrors() {
+  const settings2 = Get();
+  TempMaxErrors = settings2.maxErrors;
+  settings2.maxErrors = settings2.maxParseErrors;
+}
+function DisableParseErrors() {
+  const settings2 = Get();
+  settings2.maxErrors = TempMaxErrors;
 }
 
 // node_modules/typebox/build/schema/check.mjs
@@ -26482,7 +26480,7 @@ function FromObject10(context, type, value) {
     return value;
   const additionalProperties = GetAdditionalProperties(type);
   for (const key of guard_exports.Keys(value)) {
-    if (guard_exports.HasPropertyKey(type.properties, key)) {
+    if (guard_exports.HasPropertyKey(type.properties, key) && IsSchema(type.properties[key])) {
       value[key] = FromType19(context, type.properties[key], value[key]);
       continue;
     }
@@ -26574,6 +26572,9 @@ function FromProperties4(properties) {
     result2[key] = FromType20(properties[key]);
   return result2;
 }
+function FromRecordKey(type) {
+  return String2({ pattern: RecordPattern(type) });
+}
 function FromPriorityTypes(types) {
   return FromTypes6(Priority(types));
 }
@@ -26581,7 +26582,7 @@ function FromTypes6(types) {
   return types.map((type) => FromType20(type));
 }
 function FromType20(type) {
-  const next = IsArray2(type) ? _Array_(FromType20(type.items), ArrayOptions(type)) : IsIntersect(type) ? Intersect(FromTypes6(type.allOf)) : IsUnion(type) ? Union(FromPriorityTypes(type.anyOf)) : IsObject2(type) ? _Object_(FromProperties4(type.properties)) : IsRecord(type) ? Record(RecordKey(type), FromType20(RecordValue(type))) : IsTuple(type) ? Tuple(FromTypes6(type.items)) : type;
+  const next = IsArray2(type) ? _Array_(FromType20(type.items), ArrayOptions(type)) : IsIntersect(type) ? Intersect(FromTypes6(type.allOf)) : IsUnion(type) ? Union(FromPriorityTypes(type.anyOf)) : IsObject2(type) ? _Object_(FromProperties4(type.properties)) : IsRecord(type) ? Record(FromRecordKey(type), FromType20(RecordValue(type))) : IsTuple(type) ? Tuple(FromTypes6(type.items)) : type;
   return Modifiers(type, next);
 }
 function UnionPrioritySort(type) {
@@ -27294,8 +27295,11 @@ var ParseError = class extends AssertError {
   }
 };
 function Assert3(context, type, value) {
+  EnableParseErrors();
+  const errors = Errors2(context, type, value);
+  DisableParseErrors();
   if (!Check2(context, type, value))
-    throw new ParseError(value, Errors2(context, type, value));
+    throw new ParseError(value, errors);
   return value;
 }
 var Parser = Pipeline([
@@ -28035,6 +28039,7 @@ var ImageError = class extends Error {
     super(message3);
     this.code = code;
   }
+  code;
 };
 function fail(code, message3) {
   throw new ImageError(code, message3);
@@ -28162,6 +28167,7 @@ var ImageStore = class {
   constructor(options) {
     this.options = options;
   }
+  options;
   get binding() {
     const o = this.options;
     return hash(JSON.stringify([o.owner, o.enclosure, o.backend]));
@@ -28489,6 +28495,7 @@ var DownloadQueue = class {
   constructor(options) {
     this.options = options;
   }
+  options;
   state = "open";
   /** Set after a transient failure: the worker takes nothing until a relay operation reaches the guest (AD-4). */
   paused = false;
@@ -28771,6 +28778,7 @@ var RelayManager = class {
       pull: (name, remote_path, local_path, options2) => this.vm.pull(name, { remote_path, local_path }, options2)
     };
   }
+  options;
   vm;
   environment;
   tartHome;
@@ -29214,6 +29222,8 @@ var Guest = class {
     this.restored = !record3;
     this.downloads = new DownloadQueue({ bound: m.options.downloadBound ?? DOWNLOAD_BOUND, record: (job) => this.recordDownload(job) });
   }
+  m;
+  name;
   /** `guests/<name>` in the session's state directory: the guest's `lease.json` and `owner.lock`. */
   dir;
   enclosure;

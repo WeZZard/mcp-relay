@@ -62,14 +62,14 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.5",
     "@wezzard/relay-driver-core": "^0.2.1",
     "@wezzard/relay-driver-host-sdk": "^0.2.1",
     "@wezzard/relay-driver-remote-runtime": "^0.2.1",
-    "esbuild": "^0.25.0",
-    "tsx": "^4.20.0",
-    "typebox": "1.3.30",
-    "typescript": "^5.9.0"
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typebox": "1.3.37",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22"

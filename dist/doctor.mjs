@@ -54,6 +54,8 @@ var VmServiceError = class extends Error {
     this.responseBody = responseBody;
     this.name = "VmServiceError";
   }
+  status;
+  responseBody;
   /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
   capacity = false;
 };
@@ -75,6 +77,7 @@ var AcquireIndeterminateError = class extends VmServiceError {
     this.purpose = purpose;
     this.name = "AcquireIndeterminateError";
   }
+  purpose;
 };
 function positive(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2147483647) throw new TypeError(`${label} must be a positive bounded integer`);

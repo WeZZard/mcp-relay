@@ -82,7 +82,7 @@ function noImageBytes(pulls: string[]) { assert.ok(pulls.every(path => path.ends
 test('display selection pulls the saved receipt, corroborating action and exact original only', async t => {
  const f = await setup(t), receiptBefore = await readFile(f.receiptPath), actionBefore = await readFile(f.actionPath);
  const result = await f.store.get(target);
- assert.equal(result.status, 'attached', result.diagnostic); assert.equal(result.content?.type, 'image');
+ assert.equal(result.status, 'attached', result.diagnostic ?? 'no diagnostic'); assert.equal(result.content?.type, 'image');
  assert.equal(result.image?.sha256, hash(original)); assert.equal(result.image?.phase, 'after');
  assert.equal(result.image?.executionId, target.executionId); assert.equal(result.image?.actionId, f.snapshot.actionId);
  assert.deepEqual(f.calls.pull, [f.receiptPath, f.actionPath, f.imagePath]);
@@ -112,10 +112,10 @@ for (const change of ['session', 'action', 'execution', 'phase', 'absent'] as co
 
 test('reference cache works with the guest offline and performs no guest calls', async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const counts = structuredClone(f.calls); f.controls.offline = true;
  const next = await new ImageStore(f.options).get({ source: 'reference', imageId: first.image!.imageId });
- assert.equal(next.status, 'attached', next.diagnostic); assert.equal(next.image!.imageId, first.image!.imageId);
+ assert.equal(next.status, 'attached', next.diagnostic ?? 'no diagnostic'); assert.equal(next.image!.imageId, first.image!.imageId);
  assert.equal(next.image!.sha256, first.image!.sha256); assert.deepEqual(f.calls, counts);
 });
 
@@ -126,13 +126,13 @@ test('failed byte delivery issues a durable reference whose retry returns the sa
  assert.equal(f.calls.pull.filter(path => path.endsWith('.png')).length, 1, 'receipt and action share the three-attempt budget');
  f.controls.failImagePull = false; const metadataPulls = f.calls.pull.filter(path => path.endsWith('.json')).length;
  const recovered = await new ImageStore(f.options).get({ source: 'reference', imageId: failed.image!.imageId });
- assert.equal(recovered.status, 'attached', recovered.diagnostic);
+ assert.equal(recovered.status, 'attached', recovered.diagnostic ?? 'no diagnostic');
  assert.equal(recovered.image!.imageId, failed.image!.imageId); assert.equal(recovered.image!.sha256, hash(original));
  assert.equal(f.calls.pull.filter(path => path.endsWith('.json')).length, metadataPulls);
 });
 
 test('conflicting local original is retained rather than overwritten or repaired from guest', async t => {
- const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic);
+ const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const conflict = Buffer.from(original); conflict[conflict.length - 1] ^= 1;
  await writeFile(first.image!.originalPath!, conflict);
  const counts = structuredClone(f.calls);
@@ -142,7 +142,7 @@ test('conflicting local original is retained rather than overwritten or repaired
 });
 
 test('local original symlink is rejected as unsafe without reading or overwriting its target', async t => {
- const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic);
+ const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const outside = join(f.root, 'outside.png'); await writeFile(outside, original);
  await rm(first.image!.originalPath!); await symlink(outside, first.image!.originalPath!);
  const counts = structuredClone(f.calls);
@@ -163,7 +163,7 @@ test('guest image and ancestor symlinks cannot select outside declaration bytes'
 });
 
 test('owner, enclosure and backend bindings reject foreign references without guest access', async t => {
- const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic);
+ const f = await setup(t), first = await f.store.get(target); assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const counts = structuredClone(f.calls);
  for (const patch of [{ owner: 'other-owner' }, { enclosure: 'other-enclosure' }, { backend: { service: 'other-backend' } }]) {
   const result = await new ImageStore({ ...f.options, ...patch }).get({ source: 'reference', imageId: first.image!.imageId });
@@ -196,11 +196,11 @@ test('reset lineage recovers an untransferred reference from moved guest evidenc
  f.controls.failImagePull = false;
  const reset = new ImageStore(options);
  const recovered = await reset.get({ source: 'reference', imageId: first.image!.imageId });
- assert.equal(recovered.status, 'attached', recovered.diagnostic); assert.equal(recovered.image!.imageId, first.image!.imageId);
+ assert.equal(recovered.status, 'attached', recovered.diagnostic ?? 'no diagnostic'); assert.equal(recovered.image!.imageId, first.image!.imageId);
  assert.equal(recovered.image!.sha256, first.image!.sha256);
  assert.equal(f.calls.pull.at(-1), join(oldState, 'snapshots', target.sessionId, f.snapshot.fileName));
  const selected = await reset.get(target);
- assert.equal(selected.status, 'attached', selected.diagnostic); assert.equal(selected.image!.imageId, first.image!.imageId);
+ assert.equal(selected.status, 'attached', selected.diagnostic ?? 'no diagnostic'); assert.equal(selected.image!.imageId, first.image!.imageId);
  const counts = structuredClone(f.calls);
  const foreign = await new ImageStore({ ...options, previousEvidence: [] }).get(target);
  assert.equal(foreign.status, 'unauthorized-reference'); assert.deepEqual(f.calls, counts);
@@ -209,7 +209,7 @@ test('reset lineage recovers an untransferred reference from moved guest evidenc
 test('application selection copies one declared image and rejects traversal and undeclared files', async t => {
  const f = await setup(t);
  const result = await f.store.get({ source: 'application', name: 'shots', path: 'one.png' });
- assert.equal(result.status, 'attached', result.diagnostic); assert.equal(result.image!.source, 'application');
+ assert.equal(result.status, 'attached', result.diagnostic ?? 'no diagnostic'); assert.equal(result.image!.source, 'application');
  assert.equal(result.image!.sessionId, undefined); assert.equal(result.image!.path, 'one.png');
  assert.deepEqual(f.calls.pull, [join(f.guestRoot, 'workspace/shots/one.png')]);
  const count = f.calls.pull.length;
@@ -224,10 +224,10 @@ test('application selection copies one declared image and rejects traversal and 
 
 test('display selection reuses retained metadata and original while offline', async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const counts = structuredClone(f.calls); f.controls.offline = true;
  const recovered = await new ImageStore(f.options).get(target);
- assert.equal(recovered.status, 'attached', recovered.diagnostic);
+ assert.equal(recovered.status, 'attached', recovered.diagnostic ?? 'no diagnostic');
  assert.equal(recovered.image!.imageId, first.image!.imageId);
  assert.deepEqual(f.calls, counts);
 });
@@ -239,16 +239,16 @@ test('old recording without guestState resolves local evidence and original with
  const options = { ...f.options, hostRoot: join(f.root, 'recording-two'), sessionId: undefined,
   previousEvidence: [{ path: f.hostRoot, sessionId: target.sessionId }] };
  const first = await new ImageStore(options).get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  assert.deepEqual(await readFile(first.image!.originalPath!), original);
  const retry = await new ImageStore(options).get({ source: 'reference', imageId: first.image!.imageId });
- assert.equal(retry.status, 'attached', retry.diagnostic);
+ assert.equal(retry.status, 'attached', retry.diagnostic ?? 'no diagnostic');
  assert.deepEqual(f.calls, { exec: [], pull: [], ensure: 0, push: 0 });
 });
 
 for (const field of ['sha256', 'phase', 'fileName', 'remote'] as const) test(`catalogue mutation of ${field} cannot redirect an issued reference or materialization`, async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const path = join(f.options.catalogRoot, `${first.image!.imageId}.json`);
  const value = JSON.parse(await readFile(path, 'utf8'));
  if (field === 'sha256') value.descriptor.sha256 = '0'.repeat(64);
@@ -265,18 +265,18 @@ for (const field of ['sha256', 'phase', 'fileName', 'remote'] as const) test(`ca
 
 test('catalogue canonical identity is independent of JSON property order', async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const path = join(f.options.catalogRoot, `${first.image!.imageId}.json`);
  const value = JSON.parse(await readFile(path, 'utf8'));
  value.descriptor = Object.fromEntries(Object.entries(value.descriptor).reverse());
  await writeFile(path, JSON.stringify(value));
  const result = await f.store.get({ source: 'reference', imageId: first.image!.imageId });
- assert.equal(result.status, 'attached', result.diagnostic);
+ assert.equal(result.status, 'attached', result.diagnostic ?? 'no diagnostic');
 });
 
 for (const kind of ['oversized', 'fifo', 'truncated'] as const) test(`catalogue ${kind} fails promptly without guest access or overwriting evidence`, async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const path = join(f.options.catalogRoot, `${first.image!.imageId}.json`);
  await rm(path);
  if (kind === 'oversized') await writeFile(path, Buffer.alloc(4 * 1024 * 1024 + 1));
@@ -294,7 +294,7 @@ for (const kind of ['oversized', 'fifo', 'truncated'] as const) test(`catalogue 
 
 test('catalogue publications are private regular files with no leftover temporary hard links', async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  const names = await readdir(f.options.catalogRoot);
  assert.deepEqual(names, [`${first.image!.imageId}.json`]);
  const info = await lstat(join(f.options.catalogRoot, names[0]!));
@@ -327,16 +327,16 @@ test('guest-only partial capture retains identity after the shared budget is spe
  await rm(join(f.hostRoot, 'state'), { recursive: true });
  f.controls.offline = false;
  const first = await f.store.get({ ...target, phase: 'before' });
- assert.equal(first.status, 'transfer-failed', first.diagnostic);
+ assert.equal(first.status, 'transfer-failed', first.diagnostic ?? 'no diagnostic');
  assert.ok(first.image?.imageId); assert.equal(first.image!.sha256, hash(original));
  assert.deepEqual(f.calls.pull, [f.receiptPath, f.actionPath, guestJournal]);
  const next = await new ImageStore(f.options).get({ source: 'reference', imageId: first.image!.imageId });
- assert.equal(next.status, 'attached', next.diagnostic);
+ assert.equal(next.status, 'attached', next.diagnostic ?? 'no diagnostic');
  assert.equal(next.image!.imageId, first.image!.imageId);
  assert.deepEqual(f.calls.pull, [f.receiptPath, f.actionPath, guestJournal, f.imagePath]);
  f.controls.offline = true; const counts = structuredClone(f.calls);
  const selected = await new ImageStore(f.options).get({ ...target, phase: 'before' });
- assert.equal(selected.status, 'attached', selected.diagnostic);
+ assert.equal(selected.status, 'attached', selected.diagnostic ?? 'no diagnostic');
  assert.equal(selected.image!.imageId, first.image!.imageId); assert.deepEqual(f.calls, counts);
 });
 
@@ -360,14 +360,14 @@ test('retained journal predating the capture permits bounded guest journal recov
  await writeFile(f.journalPath, JSON.stringify(f.journal[0]) + '\n');
  f.controls.offline = false;
  const result = await f.store.get({ ...target, phase: 'before' });
- assert.equal(result.status, 'attached', result.diagnostic);
+ assert.equal(result.status, 'attached', result.diagnostic ?? 'no diagnostic');
  assert.deepEqual(f.calls.pull, [guestJournal]);
 });
 
 test('before capture with missing reverse refs is recoverable from authoritative saved journal', async t => {
  const f = await partialBefore(t);
  const result = await f.store.get({ ...target, phase: 'before' });
- assert.equal(result.status, 'attached', result.diagnostic);
+ assert.equal(result.status, 'attached', result.diagnostic ?? 'no diagnostic');
  assert.equal(result.image!.phase, 'before'); assert.equal(result.image!.sha256, hash(original));
  assert.deepEqual(f.calls, { exec: [], pull: [], ensure: 0, push: 0 });
 });
@@ -389,7 +389,7 @@ for (const change of ['hash', 'execution', 'duplicate', 'contradictory-reverse',
 
 test('materialization copies only display originals to canonical state and preserves bytes on conflict', async t => {
  const f = await setup(t), first = await f.store.get(target);
- assert.equal(first.status, 'attached', first.diagnostic);
+ assert.equal(first.status, 'attached', first.diagnostic ?? 'no diagnostic');
  assert.equal((await f.store.get({ source: 'application', name: 'single' })).status, 'attached');
  const counts = structuredClone(f.calls); f.controls.offline = true;
  assert.equal(await f.store.materializeDisplayOriginals(f.hostRoot), 1);

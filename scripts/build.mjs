@@ -21,7 +21,7 @@ const doctor = await build({ ...common, entryPoints: ['src/doctor.ts'], outfile:
 const reviewData = await build({ ...common, entryPoints: ['src/review-data.ts'], outfile: 'dist/review-data.mjs', banner: { js: banner } });
 {
   const types = await mkdtemp(join(tmpdir(), 'mcp-relay-types-'));
-  execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', 'src/review-data.ts', '--declaration', '--emitDeclarationOnly', '--outDir', types,
+  execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '--ignoreConfig', 'src/review-data.ts', '--declaration', '--emitDeclarationOnly', '--outDir', types,
     '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--strict', '--skipLibCheck', '--types', 'node']);
   // The declarations are self-contained: the types live in src/review-data.ts.
   await writeFile('dist/review-data.d.ts', await readFile(join(types, 'review-data.d.ts')));
