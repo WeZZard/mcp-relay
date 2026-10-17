@@ -131,7 +131,7 @@ export interface RelayCallResult extends RelayRendered {
 export const relayResultKind = 'relay-image-result-v1';
 
 /** Text output is capped at 50 KiB / 2000 lines; a larger result is retained whole in a private local file. */
-export async function renderRelayResult(value: unknown, resultRoot = join(tmpdir(), 'mcp-vm-relay-results'), indent: number | undefined = 2): Promise<RelayRendered> {
+export async function renderRelayResult(value: unknown, resultRoot = join(tmpdir(), 'mcp-relay-results'), indent: number | undefined = 2): Promise<RelayRendered> {
   const full = JSON.stringify(value, null, indent);
   const text = new TextDecoder().decode(Buffer.from(full.split('\n').slice(0, 2000).join('\n')).subarray(0, 50 * 1024), { stream: true });
   if (text !== full) {

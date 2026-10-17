@@ -179,7 +179,7 @@ class FixtureService {
     if (argv[0] === '/bin/sh') { assert.equal(argv[2], 'cd "$1" || exit; shift; exec "$@"'); assert.ok(argv[4].startsWith('/var/tmp/')); }
     if (argv[0] === '/bin/mkdir') {
       for (const path of argv.slice(2)) {
-        const root = /^\/var\/tmp\/[^/]+-mcp-vm-relay-(relay-manager-test-[a-f0-9-]+)(?:\/|$)/.exec(path);
+        const root = /^\/var\/tmp\/[^/]+-mcp-relay-(relay-manager-test-[a-f0-9-]+)(?:\/|$)/.exec(path);
         assert.ok(root, `Unexpected fixture directory: ${path}`);
         assert.equal(root[1], lease.purpose);
         this.guestRoots.add(path.split('/').slice(0, 4).join('/'));
@@ -361,7 +361,7 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
 test('the shipped MCP server stages its shipped receiver and completes a full HTTP lifecycle over stdio', async t => {
   const f = await fixture(t);
   const bin = join(f.root, 'bin'); await mkdir(bin); await writeFile(join(bin, 'tart'), '#!/bin/sh\nprintf "[]"\n'); await chmod(join(bin, 'tart'), 0o700);
-  const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: f.root, MCP_VM_RELAY_STATE_DIR: join(f.root, 'compiled-state'), MCP_VM_RELAY_URL: f.manager.vm.baseUrl, MCP_VM_RELAY_REGISTRY: f.registryPath, MCP_VM_RELAY_PROJECT: f.root, MCP_VM_RELAY_SESSION: 'compiled-distribution-fixture', PATH: `${bin}:${process.env.PATH}` };
+  const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: f.root, MCP_RELAY_STATE_DIR: join(f.root, 'compiled-state'), MCP_RELAY_URL: f.manager.vm.baseUrl, MCP_RELAY_REGISTRY: f.registryPath, MCP_RELAY_PROJECT: f.root, MCP_RELAY_SESSION: 'compiled-distribution-fixture', PATH: `${bin}:${process.env.PATH}` };
   delete env.VM_ENVIRONMENT_FILE;
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'server.mjs')], env });
   const client = new Client({ name: 'manager-test', version: '0' });

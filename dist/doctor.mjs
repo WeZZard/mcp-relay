@@ -316,7 +316,7 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
-  const names = ["vm-service", "pilot-images", "mcp-vm-relay"];
+  const names = ["vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
   const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];
@@ -385,12 +385,12 @@ function relayStateRoot(options = {}) {
   const env = options.env ?? process.env;
   const selected = selectedEnvironment(env, options.home);
   if (selected) return selected.profile.relayStateDir;
-  if (env.MCP_VM_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_VM_RELAY_STATE_DIR, "MCP_VM_RELAY_STATE_DIR");
-  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-vm-relay");
-  return join2(absolute(options.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-vm-relay");
+  if (env.MCP_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_RELAY_STATE_DIR, "MCP_RELAY_STATE_DIR");
+  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-relay");
+  return join2(absolute(options.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-relay");
 }
 function pythonExecutable(env = process.env) {
-  return nonblank(env.MCP_VM_RELAY_PYTHON ?? "python3", "MCP_VM_RELAY_PYTHON");
+  return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
 }
 
 // src/registry.ts
@@ -457,13 +457,13 @@ function resolveRegistry(options = {}) {
   const env = options.env ?? process.env;
   const root = options.managedRoot ?? selectedEnvironment(env, options.home)?.profile.relayStateDir;
   if (root !== void 0 && options.path === void 0) return { path: join3(absolute(root, "managed registry root"), "registry.md"), managed: true };
-  const explicit = options.path ?? env.MCP_VM_RELAY_REGISTRY;
+  const explicit = options.path ?? env.MCP_RELAY_REGISTRY;
   const validate = (path) => {
     if (!statSync2(path).isFile()) throw new RegistryError("Registry target must be a regular file");
     table(readFileSync2(path, "utf8"));
   };
   if (explicit !== void 0) {
-    const path = options.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_VM_RELAY_REGISTRY");
+    const path = options.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_RELAY_REGISTRY");
     validate(path);
     return { path, managed: false };
   }
@@ -476,7 +476,8 @@ function resolveRegistry(options = {}) {
   }
   return { path: join3(relayStateRoot(options), "registry.md"), managed: true };
 }
-var MANAGED_REGISTRY = `# mcp-vm-relay task registry
+var REGISTRY_LOCK_SUFFIX = ".mcp-vm-relay.lock";
+var MANAGED_REGISTRY = `# mcp-relay task registry
 
 ## Using VMs
 
@@ -563,7 +564,7 @@ var Registry = class {
       if ((parent.mode & 63) !== 0) throw new RegistryError("Managed registry parent must be private (0700); choose a private state directory. Existing directory permissions are not changed automatically.");
     }
     const target = this.managed ? join3(await realpath(dirname2(this.path)), "registry.md") : await realpath(this.path);
-    const lock = await this.lock(`${target}.mcp-vm-relay.lock`, signal);
+    const lock = await this.lock(`${target}${REGISTRY_LOCK_SUFFIX}`, signal);
     const token = randomUUID2();
     let temporary;
     try {
@@ -730,7 +731,7 @@ async function installationReport(options = {}) {
   });
   await check("python", async () => {
     const r = await run([pythonExecutable(), "-c", "import fcntl, sys; print(sys.version.split()[0])"], { timeoutMs: 5e3 });
-    if (r.code !== 0) throw Error("Install Python 3 with fcntl, or set MCP_VM_RELAY_PYTHON to its executable. " + r.stderr);
+    if (r.code !== 0) throw Error("Install Python 3 with fcntl, or set MCP_RELAY_PYTHON to its executable. " + r.stderr);
     return r.stdout.trim();
   });
   await check("runtime-bundles", async () => {
@@ -749,7 +750,7 @@ async function installationReport(options = {}) {
       return `Existing registry: ${registry.path}`;
     } catch (e) {
       if (e.code !== "ENOENT") throw e;
-      if (process.env.MCP_VM_RELAY_REGISTRY) throw Error("MCP_VM_RELAY_REGISTRY must point to an existing Using VMs registry table.");
+      if (process.env.MCP_RELAY_REGISTRY) throw Error("MCP_RELAY_REGISTRY must point to an existing Using VMs registry table.");
       return `Managed registry will be created on first acquisition: ${registry.path}`;
     }
   });
@@ -759,7 +760,7 @@ async function installationReport(options = {}) {
     return "Read-only local inventory available";
   });
   await check("vm-service", async () => {
-    const vm = options.vm ?? new VmService({ baseUrl: environment?.profile.vmServiceUrl ?? process.env.MCP_VM_RELAY_URL, environment });
+    const vm = options.vm ?? new VmService({ baseUrl: environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment });
     const health = await vm.health({ timeoutMs: 5e3 });
     if (!health.ok) throw Error("Service health check failed");
     if (environment && !matchesEnvironment(health.environment, environment)) throw Error("VM service environment identity mismatch");
@@ -777,7 +778,7 @@ if (process.argv[1] && pathToFileURL(realpathSync2(process.argv[1])).href === im
     console.log(JSON.stringify(r, null, 2));
     process.exitCode = r.ready ? 0 : 1;
   } catch (e) {
-    console.log(JSON.stringify({ ready: false, error: String(e), hint: "Check MCP_VM_RELAY_* configuration and installation paths." }, null, 2));
+    console.log(JSON.stringify({ ready: false, error: String(e), hint: "Check MCP_RELAY_* configuration and installation paths." }, null, 2));
     process.exitCode = 1;
   }
 }

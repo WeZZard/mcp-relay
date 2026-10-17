@@ -26,8 +26,8 @@ async function fixture(t: TestContext, port = 6249) {
 test('profile resolves without creating stores, has stable canonical identity and overrides stale ambient routing', async t => {
   const f = await fixture(t);
   assert.equal(selectedEnvironment({}), undefined);
-  assert.equal(relayStateRoot({ env: { VM_ENVIRONMENT_FILE: f.path, MCP_VM_RELAY_STATE_DIR: '/wrong' } }), f.profile.relayStateDir);
-  assert.deepEqual(resolveRegistry({ env: { VM_ENVIRONMENT_FILE: f.path, MCP_VM_RELAY_REGISTRY: '/wrong' } }), { path: join(f.profile.relayStateDir, 'registry.md'), managed: true });
+  assert.equal(relayStateRoot({ env: { VM_ENVIRONMENT_FILE: f.path, MCP_RELAY_STATE_DIR: '/wrong' } }), f.profile.relayStateDir);
+  assert.deepEqual(resolveRegistry({ env: { VM_ENVIRONMENT_FILE: f.path, MCP_RELAY_REGISTRY: '/wrong' } }), { path: join(f.profile.relayStateDir, 'registry.md'), managed: true });
   assert.equal(environmentVariables(f.selected).TART_HOME, f.profile.tartHome);
   for (const path of [f.profile.tartHome, f.profile.serviceStateDir, f.profile.imageStateDir, f.profile.relayStateDir]) await assert.rejects(readFile(path), /ENOENT/);
   await writeFile(f.path, JSON.stringify(Object.fromEntries(Object.entries(f.profile).reverse())));

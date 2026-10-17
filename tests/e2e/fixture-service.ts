@@ -54,7 +54,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (match[2] === 'pull') { await copyFile(body.remote_path, body.local_path); return respond(res, 200, { vm, pulled: body.remote_path, to: body.local_path }); }
   const argv: string[] = body.argv;
   if (!['node', process.execPath, '/bin/mkdir', '/usr/bin/env'].includes(argv[0]!)) return respond(res, 400, { error: `Unexpected fixture executable: ${argv[0]}` });
-  if (argv[0] === '/bin/mkdir') for (const dir of argv.slice(2)) { const m = /^(\/var\/tmp\/[^/]+-mcp-vm-relay-[^/]+)(?:\/|$)/.exec(dir); if (m) guestRoots.add(m[1]!); }
+  if (argv[0] === '/bin/mkdir') for (const dir of argv.slice(2)) { const m = /^(\/var\/tmp\/[^/]+-mcp-relay-[^/]+)(?:\/|$)/.exec(dir); if (m) guestRoots.add(m[1]!); }
   const response = await new Promise<{ rc: number; output: string }>((done, reject) => {
     const child = spawn(argv[0]!, argv.slice(1), { cwd: root, env: { PATH: process.env.PATH!, HOME: root }, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';

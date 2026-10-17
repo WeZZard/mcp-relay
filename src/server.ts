@@ -1,7 +1,7 @@
 /**
- * mcp-vm-relay: the Model Context Protocol front end of the VM relay.
+ * mcp-relay: the Model Context Protocol front end of the VM relay.
  *
- * Everything the relay does lives in mcp-vm-relay's host-agnostic core (the
+ * Everything the relay does lives in mcp-relay's host-agnostic core (the
  * manager, the vm-service client, the registry, the strict contract, the
  * action dispatch and the bounded result rendering). This file binds that
  * core to MCP over standard input and output: nineteen `relay_*` tools, each
@@ -23,12 +23,12 @@ import { RelayManager, Registry, guestNetwork, instructions, relayCall, relayToo
 
 export const SERVER_NAME = 'relay';
 /** The build injects this from package.json (esbuild define); under tsx it falls back to reading the file directly. */
-declare const __MCP_VM_RELAY_VERSION__: string;
-export const SERVER_VERSION = typeof __MCP_VM_RELAY_VERSION__ !== 'undefined' ? __MCP_VM_RELAY_VERSION__
+declare const __MCP_RELAY_VERSION__: string;
+export const SERVER_VERSION = typeof __MCP_RELAY_VERSION__ !== 'undefined' ? __MCP_RELAY_VERSION__
   : (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 export const STATUS_TOOL = 'relay_status';
 /** How the plugin's MCP server names its tools once Claude Code scopes them. */
-export const PLUGIN_TOOL_PREFIX = 'mcp__plugin_mcp-vm-relay_relay__';
+export const PLUGIN_TOOL_PREFIX = 'mcp__plugin_mcp-relay_relay__';
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const text = (value: string, isError = false) => ({ content: [{ type: 'text' as const, text: value }], isError });
@@ -40,7 +40,7 @@ export function relayContent(result: RelayCallResult) {
 
 /** The project directory: the plugin passes Claude Code's; an unexpanded placeholder or nothing means the server's own working directory. */
 export function projectDirectory(env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): string {
-  const given = env.MCP_VM_RELAY_PROJECT;
+  const given = env.MCP_RELAY_PROJECT;
   return given && !given.includes('${') ? resolve(given) : cwd;
 }
 
@@ -63,7 +63,7 @@ export function allToolDefinitions() {
 /**
  * How long shutdown waits for an in-flight operation (a finish or release the
  * client already sent) before it cancels the operation; override with
- * MCP_VM_RELAY_SHUTDOWN_GRACE_MS. See docs/lifecycle-fixes.md.
+ * MCP_RELAY_SHUTDOWN_GRACE_MS. See docs/lifecycle-fixes.md.
  */
 export const SHUTDOWN_GRACE_MS = 120000;
 /** How long shutdown waits for a cancelled operation before it pauses renewal without it. */
@@ -72,7 +72,7 @@ export const SHUTDOWN_CANCEL_MS = 5000;
 export interface RelayServerOptions { sessionId?: string; project?: string; manager?: () => RelayManager }
 
 export function createRelayServer(options: RelayServerOptions = {}) {
-  const sessionId = options.sessionId ?? process.env.MCP_VM_RELAY_SESSION ?? randomUUID();
+  const sessionId = options.sessionId ?? process.env.MCP_RELAY_SESSION ?? randomUUID();
   const project = options.project ?? projectDirectory();
   let manager: RelayManager | undefined;
   // A selected environment (VM_ENVIRONMENT_FILE) binds the backend, the image
@@ -89,7 +89,7 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   /** The data relay_status reports, read-only. */
   const statusPayload = () => {
     const environment = selectedEnvironment();
-    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_VM_RELAY_URL ?? 'http://localhost:6240';
+    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? 'http://localhost:6240';
     return { ...(manager ? manager.status() : { active: false }), project, service, environment: environment?.identity };
   };
   // Cancels every in-flight tool call when shutdown gives up waiting for it.
@@ -123,8 +123,8 @@ async function main(args: string[]): Promise<void> {
   // A guest network the relay cannot honour refuses the server at startup (DC-17).
   guestNetwork();
   const relay = createRelayServer();
-  const grace = Number(process.env.MCP_VM_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
-  if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_VM_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');
+  const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
+  if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');
   const settledWithin = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => true), new Promise<boolean>(done => setTimeout(done, ms, false).unref())]);
   let closing: Promise<void> | undefined;
   // Every session end comes here once. Cleanup is queued behind an in-flight
@@ -135,13 +135,13 @@ async function main(args: string[]): Promise<void> {
     try {
       const cleanup = relay.cleanup(reason);
       if (await settledWithin(cleanup, grace)) return;
-      process.stderr.write(`mcp-vm-relay: an operation was still running ${grace} ms after the session ended; cancelling it\n`);
+      process.stderr.write(`mcp-relay: an operation was still running ${grace} ms after the session ended; cancelling it\n`);
       relay.cancel(reason);
       if (await settledWithin(cleanup, SHUTDOWN_CANCEL_MS)) return;
-      process.stderr.write('mcp-vm-relay: the cancelled operation did not stop; pausing renewal without it\n');
+      process.stderr.write('mcp-relay: the cancelled operation did not stop; pausing renewal without it\n');
       await relay.pauseNow(reason);
     }
-    catch (error) { process.stderr.write(`mcp-vm-relay: cleanup failed: ${message(error)}\n`); code = 1; }
+    catch (error) { process.stderr.write(`mcp-relay: cleanup failed: ${message(error)}\n`); code = 1; }
     finally { process.exit(code); }
   })();
   relay.server.onclose = () => { void shutdown('Enclosure session ended', 0); };
@@ -161,5 +161,5 @@ async function main(args: string[]): Promise<void> {
 }
 
 if (process.argv[1] && await realpath(process.argv[1]).catch(() => '') === await realpath(new URL(import.meta.url)).catch(() => '')) {
-  main(process.argv.slice(2)).catch(error => { process.stderr.write(`mcp-vm-relay: ${message(error)}\n`); process.exitCode = 1; });
+  main(process.argv.slice(2)).catch(error => { process.stderr.write(`mcp-relay: ${message(error)}\n`); process.exitCode = 1; });
 }

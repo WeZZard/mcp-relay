@@ -18,9 +18,11 @@ const allToolNames = [...relayTools.map(tool => tool.name), STATUS_TOOL];
 const runTools = ['relay_exec', 'relay_script', 'relay_code', 'relay_run'];
 
 test('the project directory comes from the plugin, unless the placeholder was never expanded', () => {
-  assert.equal(projectDirectory({ MCP_VM_RELAY_PROJECT: '/tmp/project' }, '/elsewhere'), '/tmp/project');
-  assert.equal(projectDirectory({ MCP_VM_RELAY_PROJECT: '${CLAUDE_PROJECT_DIR}' }, '/elsewhere'), '/elsewhere');
+  assert.equal(projectDirectory({ MCP_RELAY_PROJECT: '/tmp/project' }, '/elsewhere'), '/tmp/project');
+  assert.equal(projectDirectory({ MCP_RELAY_PROJECT: '${CLAUDE_PROJECT_DIR}' }, '/elsewhere'), '/elsewhere');
   assert.equal(projectDirectory({}, '/elsewhere'), '/elsewhere');
+  // The project's earlier name is not read (DC-16).
+  assert.equal(projectDirectory({ MCP_VM_RELAY_PROJECT: '/tmp/project' }, '/elsewhere'), '/elsewhere');
 });
 
 test('the server refuses to start on a guest network other than nat or internet (DC-17)', async () => {
@@ -48,17 +50,17 @@ test('the CLI prints the instructions text and the full table of tool schemas', 
 });
 
 async function fixture(t: { after(fn: () => Promise<unknown>): void }) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-vm-relay-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-')));
   const project = join(root, 'project'); await mkdir(project);
   t.after(() => rm(root, { recursive: true, force: true }));
   const transport = new StdioClientTransport({ command: process.execPath, args: [server], env: {
     ...process.env as Record<string, string>,
-    MCP_VM_RELAY_PROJECT: project, MCP_VM_RELAY_SESSION: 'test-session',
+    MCP_RELAY_PROJECT: project, MCP_RELAY_SESSION: 'test-session',
     HOME: root, // no ~/AGENTS.md here: the relay keeps a private registry in its own state directory
-    MCP_VM_RELAY_STATE_DIR: join(root, 'state'),
-    MCP_VM_RELAY_URL: 'http://127.0.0.1:9', // nothing listens: every service call fails fast and visibly
+    MCP_RELAY_STATE_DIR: join(root, 'state'),
+    MCP_RELAY_URL: 'http://127.0.0.1:9', // nothing listens: every service call fails fast and visibly
   } });
-  const client = new Client({ name: 'mcp-vm-relay-test', version: '0' });
+  const client = new Client({ name: 'mcp-relay-test', version: '0' });
   await client.connect(transport);
   t.after(() => client.close());
   return { root, project, client };
@@ -155,7 +157,7 @@ test('cancelling a relay call from the client aborts the server-side signal', as
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await relay.server.connect(serverTransport);
   t.after(() => relay.server.close());
-  const client = new Client({ name: 'mcp-vm-relay-cancel-test', version: '0' });
+  const client = new Client({ name: 'mcp-relay-cancel-test', version: '0' });
   await client.connect(clientTransport);
   t.after(() => client.close());
 
@@ -178,7 +180,9 @@ test('the plugin files name the server the tests spoke to and ship the built bun
   assert.deepEqual(Object.keys(mcp.mcpServers), ['relay']);
   assert.deepEqual(mcp.mcpServers['relay'].args, ['${CLAUDE_PLUGIN_ROOT}/dist/server.mjs']);
   const plugin = JSON.parse(await readFile('.claude-plugin/plugin.json', 'utf8'));
-  assert.equal(plugin.name, 'mcp-vm-relay');
+  assert.equal(plugin.name, 'mcp-relay');
+  assert.equal(plugin.repository, 'https://github.com/WeZZard/mcp-relay');
+  assert.deepEqual(mcp.mcpServers['relay'].env, { MCP_RELAY_PROJECT: '${CLAUDE_PROJECT_DIR}' });
   assert.equal(PLUGIN_TOOL_PREFIX, `mcp__plugin_${plugin.name}_relay__`);
   const agent = await readFile('agents/vm-relay-operator.md', 'utf8');
   for (const tool of relayTools) assert.match(agent, new RegExp(`${PLUGIN_TOOL_PREFIX}${tool.name}(?![A-Za-z0-9_])`), tool.name);

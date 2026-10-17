@@ -1,5 +1,5 @@
 // The review data of a delivered package, for programs that read relay
-// packages: `@wezzard/mcp-vm-relay/review-data`. It is the relay's derivation
+// packages: `@wezzard/mcp-relay/review-data`. It is the relay's derivation
 // of a package (docs/design.md, "Derive at review"): steps, verdicts and
 // reasons, derived from the raw evidence by this relay's rules. It reads the
 // package and writes nothing; verify the package first with

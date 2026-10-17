@@ -101,7 +101,9 @@ export function loadEnvironment(path: string, env: NodeJS.ProcessEnv = process.e
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), '.local/state');
-  const names = ['vm-service', 'pilot-images', 'mcp-vm-relay'];
+  // The relay's default state root is mcp-relay; mcp-vm-relay, its name before
+  // the rename (DC-16), stays a legacy root that vm-service also refuses.
+  const names = ['vm-service', 'pilot-images', 'mcp-relay', 'mcp-vm-relay'];
   const defaults = [join(canonicalPath(home), '.tart'), ...names.map(n => join(state, n)), ...names.map(n => join(canonicalPath(home), '.local/state', n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];

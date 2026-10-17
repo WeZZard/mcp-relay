@@ -15,8 +15,8 @@ import test, { type TestContext } from 'node:test';
 import { verifyDeliveredPackage } from '../../src/package.js';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PREFIX = 'mcp__plugin_mcp-vm-relay_relay__';
-const TOOL = /^mcp__(?:plugin_mcp-vm-relay_)?relay__relay_[a-z_]+$/;
+const PREFIX = 'mcp__plugin_mcp-relay_relay__';
+const TOOL = /^mcp__(?:plugin_mcp-relay_)?relay__relay_[a-z_]+$/;
 /** The plugin-scoped Claude Code name of one relay tool. */
 const tool = (name: string) => PREFIX + name;
 const STATUS = tool('relay_status');
@@ -30,7 +30,7 @@ interface ToolResult { text: string; isError: boolean }
 interface Run { code: number | null; events: any[]; toolUses: ToolUse[]; toolResults: ToolResult[]; result?: any; stderr: string }
 
 async function fixture(t: TestContext) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-vm-relay-e2e-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-e2e-')));
   const project = join(root, 'project'); await mkdir(project);
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const infoFile = join(root, 'service.json');
@@ -39,7 +39,7 @@ async function fixture(t: TestContext) {
   const deadline = Date.now() + 15000; let info: any;
   while (!info && Date.now() < deadline) { try { info = JSON.parse(await readFile(infoFile, 'utf8')); } catch { await sleep(50); } }
   assert.ok(info, 'fixture service did not start');
-  const env = { MCP_VM_RELAY_URL: info.url, MCP_VM_RELAY_STATE_DIR: join(root, 'state'), MCP_VM_RELAY_REGISTRY: registryPath, MCP_VM_RELAY_SESSION: `e2e-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}` };
+  const env = { MCP_RELAY_URL: info.url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registryPath, MCP_RELAY_SESSION: `e2e-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}` };
   const requests = async () => (await readFile(join(root, 'requests.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   return { root, project, registryPath, info, env, requests };
 }

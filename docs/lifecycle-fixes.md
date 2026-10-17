@@ -24,7 +24,7 @@
 |---|---|---|
 | R1 | The server never notices EOF on standard input. | Treat `end` or `close` on standard input as the end of the session, through the same shutdown path as SIGTERM and the transport's `onclose`. |
 | R2 | A write to a closed standard output ends the process without cleanup. | Handle `error` on standard output and route it to the same orderly shutdown. |
-| R1, R2 | Shutdown must not cut short an in-flight `finish` or `release`. | Shutdown waits for the in-flight operation for a bounded grace period (default 120 seconds, `MCP_VM_RELAY_SHUTDOWN_GRACE_MS`). After the grace period it cancels in-flight tool calls, and if they still do not settle it pauses renewal directly and exits. |
+| R1, R2 | Shutdown must not cut short an in-flight `finish` or `release`. | Shutdown waits for the in-flight operation for a bounded grace period (default 120 seconds, `MCP_RELAY_SHUTDOWN_GRACE_MS`). After the grace period it cancels in-flight tool calls, and if they still do not settle it pauses renewal directly and exits. |
 | R3 | `relay_release` on a session that owns no lease looks like a successful release. | The result says explicitly that this session owns no lease and nothing was released, and it is an MCP error result. The relay never guesses at another session's lease. |
 | R3 (identity) | A restarted server gets a new random session identity, so it cannot see its earlier lease. | No change. Changing the default session identity is the owner's decision; a skipped reproducer documents the current behavior. |
 | R4 | A cancelled `relay_acquire` whose lease arrives after cancellation keeps the VM with no heartbeat and no owner action. | Keep the lease, start its heartbeat, and report in the error that the VM is retained and renewed under this session until `relay_finish` or `relay_release`. |
@@ -80,7 +80,7 @@ flowchart TD
 ### Explicit results for no-lease release and cancelled acquire
 
 - A `release` on a session that owns no lease returns `{"active": false, "ownedLease": false, "released": false, "diagnostic": "..."}` with `isError: true`.
-- The diagnostic names the session identity rule: a lease acquired by an earlier server process under another session identity is visible only when `MCP_VM_RELAY_SESSION` names that identity; otherwise the backend's TTL expires it.
+- The diagnostic names the session identity rule: a lease acquired by an earlier server process under another session identity is visible only when `MCP_RELAY_SESSION` names that identity; otherwise the backend's TTL expires it.
 - A successful release still returns the owned status, which is `{"active": false}` once the VM is gone.
 - A cancelled `acquire` whose lease arrives after cancellation is still an error result, because the caller did not receive the acquisition it asked for.
 - That error says that the VM is retained and renewed, names the VM, and tells the agent to call `relay_finish` or `relay_release`.

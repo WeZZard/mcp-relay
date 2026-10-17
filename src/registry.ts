@@ -21,7 +21,7 @@ export interface RegistryOptions extends ConfigOptions {
   managedRoot?: string;
   lockTimeoutMs?: number;
   lockRetryMs?: number;
-  /** Standard-library-only flock helper; defaults to MCP_VM_RELAY_PYTHON or PATH python3. */
+  /** Standard-library-only flock helper; defaults to MCP_RELAY_PYTHON or PATH python3. */
   pythonExecutable?: string;
 }
 export class RegistryError extends Error {
@@ -92,13 +92,13 @@ export function resolveRegistry(options: ConfigOptions & { path?: string; manage
   const env = options.env ?? process.env;
   const root = options.managedRoot ?? selectedEnvironment(env, options.home)?.profile.relayStateDir;
   if (root !== undefined && options.path === undefined) return { path: join(absolute(root, 'managed registry root'), 'registry.md'), managed: true };
-  const explicit = options.path ?? env.MCP_VM_RELAY_REGISTRY;
+  const explicit = options.path ?? env.MCP_RELAY_REGISTRY;
   const validate = (path: string) => {
     if (!statSync(path).isFile()) throw new RegistryError("Registry target must be a regular file");
     table(readFileSync(path, "utf8"));
   };
   if (explicit !== undefined) {
-    const path = options.path !== undefined ? resolve(nonblank(explicit, "Registry path")) : absolute(explicit, 'MCP_VM_RELAY_REGISTRY');
+    const path = options.path !== undefined ? resolve(nonblank(explicit, "Registry path")) : absolute(explicit, 'MCP_RELAY_REGISTRY');
     validate(path);
     return { path, managed: false };
   }
@@ -112,7 +112,14 @@ export function resolveRegistry(options: ConfigOptions & { path?: string; manage
   return { path: join(relayStateRoot(options), "registry.md"), managed: true };
 }
 
-const MANAGED_REGISTRY = `# mcp-vm-relay task registry
+/**
+ * The lock beside a registry file. It keeps the name it had before the
+ * project was renamed to mcp-relay (DC-16): a relay of an earlier release
+ * may edit the same registry, such as ~/AGENTS.md, and both must take the
+ * same lock to exclude each other.
+ */
+export const REGISTRY_LOCK_SUFFIX = '.mcp-vm-relay.lock';
+const MANAGED_REGISTRY = `# mcp-relay task registry
 
 ## Using VMs
 
@@ -216,7 +223,7 @@ export class Registry {
     const target = this.managed
       ? join(await realpath(dirname(this.path)), "registry.md")
       : await realpath(this.path);
-    const lock = await this.lock(`${target}.mcp-vm-relay.lock`, signal);
+    const lock = await this.lock(`${target}${REGISTRY_LOCK_SUFFIX}`, signal);
     const token = randomUUID();
     let temporary: string | undefined;
     try {

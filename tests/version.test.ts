@@ -10,10 +10,10 @@ test('package.json, the plugin manifest and the pinned pi-mcp.json arg agree on 
   const pkg = JSON.parse(await readFile('package.json', 'utf8'));
   const plugin = JSON.parse(await readFile('.claude-plugin/plugin.json', 'utf8'));
   const piMcp = JSON.parse(await readFile('pi-mcp.json', 'utf8'));
-  const pinned = piMcp.mcpServers['relay'].args.find((arg: string) => arg.startsWith('@wezzard/mcp-vm-relay@'));
-  assert.ok(pinned, 'pi-mcp.json must pin @wezzard/mcp-vm-relay@<version>');
+  const pinned = piMcp.mcpServers['relay'].args.find((arg: string) => arg.startsWith('@wezzard/mcp-relay@'));
+  assert.ok(pinned, 'pi-mcp.json must pin @wezzard/mcp-relay@<version>');
   assert.equal(plugin.version, pkg.version, '.claude-plugin/plugin.json version must match package.json');
-  assert.equal(pinned, `@wezzard/mcp-vm-relay@${pkg.version}`, 'pi-mcp.json must pin the same version as package.json');
+  assert.equal(pinned, `@wezzard/mcp-relay@${pkg.version}`, 'pi-mcp.json must pin the same version as package.json');
 });
 
 test('package.json ships no skills or hook; pi gets the MCP server and the prompt templates', async () => {
@@ -35,6 +35,6 @@ test('npm pack ships no skills/ or hooks/ files', async () => {
 test('the marketplace is named after the project, not the account, and lists this plugin', async () => {
   const marketplace = JSON.parse(await readFile('.claude-plugin/marketplace.json', 'utf8'));
   const plugin = JSON.parse(await readFile('.claude-plugin/plugin.json', 'utf8'));
-  assert.equal(marketplace.name, 'mcp-vm-relay');
+  assert.equal(marketplace.name, 'mcp-relay');
   assert.deepEqual(marketplace.plugins.map((entry: { name: string }) => entry.name), [plugin.name]);
 });

@@ -1,5 +1,5 @@
 /**
- * The host-agnostic core of mcp-vm-relay: everything a front end needs to
+ * The host-agnostic core of mcp-relay: everything a front end needs to
  * offer the relay to an agent, with no dependency on any agent runtime. The
  * MCP server (`src/server.ts`) and any other runtime's binding are thin
  * wrappers over these exports.

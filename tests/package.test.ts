@@ -74,7 +74,7 @@ test("delivers capture-classified package; all originals and extractions are che
   // The package is data: it carries no page of its own.
   assert.equal(manifest.records.some((r: any) => r.path === "index.html"), false);
   await assert.rejects(readFile(join(root, "index.html")));
-  assert.match(await readFile(join(root, "OPENING.txt"), "utf8"), /@wezzard\/mcp-vm-relay\/review-data/);
+  assert.match(await readFile(join(root, "OPENING.txt"), "utf8"), /@wezzard\/mcp-relay\/review-data/);
   assert.equal(((await reviewData(root)) as any).steps[0].because, "The user is presenting");
 });
 

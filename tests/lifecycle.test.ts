@@ -79,7 +79,7 @@ interface Relay {
 }
 
 async function fixture(t: TestContext) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-vm-relay-lifecycle-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-lifecycle-')));
   const project = join(root, 'project'); await mkdir(project);
   const bin = join(root, 'bin'); await mkdir(bin);
   const tart = join(bin, 'tart'); await writeFile(tart, '#!/bin/sh\nprintf "[]"\n'); await chmod(tart, 0o700);
@@ -91,7 +91,7 @@ async function fixture(t: TestContext) {
   });
   /** Start the shipped server with only the variables this test sets: no inherited environment selection, state or registry. */
   const start = async (url: string, sessionId: string | undefined = `lifecycle-${randomUUID()}`, extra: Record<string, string> = {}): Promise<Relay> => {
-    const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TART: tart, MCP_VM_RELAY_URL: url, MCP_VM_RELAY_STATE_DIR: join(root, 'state'), MCP_VM_RELAY_REGISTRY: registry, MCP_VM_RELAY_PROJECT: project, ...(sessionId ? { MCP_VM_RELAY_SESSION: sessionId } : {}), ...extra };
+    const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TART: tart, MCP_RELAY_URL: url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registry, MCP_RELAY_PROJECT: project, ...(sessionId ? { MCP_RELAY_SESSION: sessionId } : {}), ...extra };
     const child = spawn(process.execPath, [server], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     children.push(child);
     let stdout = '', stderr = '', nextId = 1;
@@ -207,7 +207,7 @@ async function withService(t: TestContext) { const f = await fixture(t); return 
 
 test('R1: shutdown behind an operation that never settles is bounded by the grace period and still pauses renewal', { timeout: 30000 }, async t => {
   const f = await withService(t);
-  const relay = await f.start(f.fake.url, undefined, { MCP_VM_RELAY_SHUTDOWN_GRACE_MS: '500' });
+  const relay = await f.start(f.fake.url, undefined, { MCP_RELAY_SHUTDOWN_GRACE_MS: '500' });
   assert.equal((await relay.call('relay_acquire', acquireArgs)).isError, false);
   const owned = await f.lease(relay);
   f.fake.execHook = () => new Promise(() => {}); // a guest command whose answer never comes
@@ -253,7 +253,7 @@ test('R3: relay_release on a session that owns no lease says so instead of looki
   const text = result.content[0].text;
   assert.equal(result.isError, true, `a release that released nothing must not look like success: ${text}`);
   assert.match(text, /owns no lease/);
-  assert.match(text, /MCP_VM_RELAY_SESSION/, 'the result names how an earlier session\'s lease can be reached');
+  assert.match(text, /MCP_RELAY_SESSION/, 'the result names how an earlier session\'s lease can be reached');
   relay.child.stdin.end(); await relay.exited;
 });
 

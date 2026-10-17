@@ -30,7 +30,7 @@ test('doctor checks shipped hashes and read-only prerequisites without acquisiti
 
 test('doctor rejects corrupt existing managed registry instead of reporting readiness',async t=>{
  const root=await mkdtemp(join(tmpdir(),'relay-doctor-registry-'));t.after(()=>rm(root,{recursive:true,force:true}));
- const registry=new Registry({env:{MCP_VM_RELAY_STATE_DIR:root},home:root});
+ const registry=new Registry({env:{MCP_RELAY_STATE_DIR:root},home:root});
  await writeFile(registry.path,'not a registry');
  const vm=new VmService({baseUrl:'http://127.0.0.1:1'});t.mock.method(vm,'health',async()=>{throw Error('offline fixture');});
  const r=await installationReport({registry,vm,run:async()=>({code:0,stdout:'[]',stderr:''})});

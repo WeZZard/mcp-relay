@@ -40,7 +40,7 @@ test('TypeScript, Python backend, and image bootstrap agree on canonical selecte
   const profile = { schemaVersion: 1, id: 'cross-runtime', vmServiceUrl: 'http://127.0.0.1:6249', imageRepository: repo,
     tartHome: join(root, 'tart'), serviceStateDir: join(root, 'service'), imageStateDir: join(root, 'image-state'), relayStateDir: join(root, 'relay'), vmctlPath: vmctl, tartPath: tart };
   const env = { ...process.env, HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'xdg'), VM_ENVIRONMENT_FILE: path, VM_ENVIRONMENT_FINGERPRINT: undefined,
-    TART_HOME: '/wrong', PILOT_REPO: '/wrong', VM_SERVICE_STATE: '/wrong', MCP_VM_RELAY_URL: 'http://127.0.0.1:1', PYTHONDONTWRITEBYTECODE: '1' };
+    TART_HOME: '/wrong', PILOT_REPO: '/wrong', VM_SERVICE_STATE: '/wrong', MCP_RELAY_URL: 'http://127.0.0.1:1', PYTHONDONTWRITEBYTECODE: '1' };
   const positive = [profile, { ...profile, vmServiceUrl: 'http://localhost:00080/' }, { ...profile, vmServiceUrl: 'http://[::1]:6249/' }];
   for (const value of positive) {
     await writeFile(path, JSON.stringify(value));

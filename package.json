@@ -1,16 +1,16 @@
 {
-  "name": "@wezzard/mcp-vm-relay",
+  "name": "@wezzard/mcp-relay",
   "version": "0.11.0",
   "type": "module",
   "description": "MCP server and Claude Code plugin for the VM relay: recorded, snapshot-evidenced computer-use and browser-use in a fresh disposable VM",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WeZZard/mcp-vm-relay.git"
+    "url": "git+https://github.com/WeZZard/mcp-relay.git"
   },
-  "homepage": "https://github.com/WeZZard/mcp-vm-relay#readme",
+  "homepage": "https://github.com/WeZZard/mcp-relay#readme",
   "bugs": {
-    "url": "https://github.com/WeZZard/mcp-vm-relay/issues"
+    "url": "https://github.com/WeZZard/mcp-relay/issues"
   },
   "keywords": [
     "pi-package",
@@ -36,7 +36,7 @@
     "pi-prompts/"
   ],
   "bin": {
-    "mcp-vm-relay": "./dist/server.mjs"
+    "mcp-relay": "./dist/server.mjs"
   },
   "exports": {
     "./review-data": {

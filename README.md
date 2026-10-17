@@ -1,8 +1,8 @@
-# mcp-vm-relay
+# mcp-relay
 
 The Model Context Protocol front end of the VM relay, packaged as a Claude Code
 plugin and as a pi package. [pi-vm-relay](https://github.com/WeZZard/pi-vm-relay),
-which gave pi a native `relay` tool directly, is retired; mcp-vm-relay replaces
+which gave pi a native `relay` tool directly, is retired; mcp-relay replaces
 it for both Claude Code and pi, the latter loaded through `pi-mcp-adapter`. It
 is an MCP server: nineteen `relay_*` tools, each with its own schema, title
 and annotations, and the server's `instructions`. The user command, status,
@@ -12,6 +12,12 @@ dedicated VM. The agent judges interruption; non-disruptive work stays with the
 agent's local tools. Nothing here executes local computer-use, spawns
 subagents, targets physical machines, records video, or attaches to existing
 browsers.
+
+The project was named mcp-vm-relay before v0.12.0. The npm package is now
+`@wezzard/mcp-relay`, the plugin and its marketplace are `mcp-relay`, and every
+`MCP_VM_RELAY_*` variable is now `MCP_RELAY_*`; the old names are not read. The
+default state directory moved with the name, so finish or release a lease the
+old relay owns before upgrading.
 
 ## How it is built
 
@@ -24,7 +30,7 @@ rendering (`src/surface.ts`), and the two guest programs
 (`src/guest/receiver.ts`, `src/guest/mcp-host.ts`). It was inherited from
 [pi-vm-relay](https://github.com/WeZZard/pi-vm-relay) at commit 8990123,
 synchronized with its implementation through commit 0d69fc7 before that
-project's retirement, and is maintained here as mcp-vm-relay's own
+project's retirement, and is maintained here as mcp-relay's own
 implementation from then on. `src/server.ts` binds the core to MCP over
 standard input and output.
 
@@ -45,7 +51,7 @@ adds nothing Claude-Code-specific beyond the marketplace packaging and the
 |---|---|
 | a registered `relay` tool with thirteen actions | nineteen `relay_*` MCP tools from the server `relay`, each with its own schema, title and annotations |
 | doctrine injected before each agent turn | the server's MCP `instructions`, plus a compact version in the `relay_probe` and `relay_acquire` descriptions for clients that do not surface `instructions` |
-| `/relay-status` command | `/mcp-vm-relay-status` in pi, `/mcp-vm-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
+| `/relay-status` command | `/mcp-relay-status` in pi, `/mcp-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
 | prompt-composed enclosure | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
 | typed image blocks in a run result, with pi's `tool_result` hook keeping the error flag | MCP image content blocks in the tool result, with the MCP `isError` flag set beside them |
 | session shutdown pauses lease renewal | the same when the server's stdio closes or it is signalled: renewal pauses after one final renewal for the rest of the lease's TTL, the recording detaches, the VM is retained until that TTL for an explicit `relay_finish` or `relay_release`, and the vm-service TTL is the backstop |
@@ -58,40 +64,40 @@ adds nothing Claude-Code-specific beyond the marketplace packaging and the
 Try it from a checkout:
 
 ```sh
-claude --plugin-dir /path/to/mcp-vm-relay
+claude --plugin-dir /path/to/mcp-relay
 ```
 
 Or add this repository as a marketplace and install the plugin from it:
 
 ```
-/plugin marketplace add WeZZard/mcp-vm-relay
-/plugin install mcp-vm-relay@mcp-vm-relay
+/plugin marketplace add WeZZard/mcp-relay
+/plugin install mcp-relay@mcp-relay
 ```
 
 Once loaded, the model sees the nineteen tools as
-`mcp__plugin_mcp-vm-relay_relay__relay_search`,
-`mcp__plugin_mcp-vm-relay_relay__relay_probe`, and so on through
-`mcp__plugin_mcp-vm-relay_relay__relay_status` (see "The tools" below for
+`mcp__plugin_mcp-relay_relay__relay_search`,
+`mcp__plugin_mcp-relay_relay__relay_probe`, and so on through
+`mcp__plugin_mcp-relay_relay__relay_status` (see "The tools" below for
 the full table). The `vm-relay-operator` agent definition allows them by those
 names. The server can also be configured directly in a project's `.mcp.json`
-with `node /path/to/mcp-vm-relay/dist/server.mjs`, in which case the tools are
+with `node /path/to/mcp-relay/dist/server.mjs`, in which case the tools are
 `mcp__relay__relay_search` and so on.
 
 ### Use with pi
 
 ```sh
-pi install npm:@wezzard/mcp-vm-relay
+pi install npm:@wezzard/mcp-relay
 ```
 
 This needs `pi-mcp-adapter` installed. The tools appear as `relay_search`,
 `relay_probe`, and so on through `relay_status`, with no host-specific
 prefix (`pi-mcp.json` sets `toolPrefix: "none"`). The package also
-ships a pi prompt template for the command, `/mcp-vm-relay-status`.
+ships a pi prompt template for the command, `/mcp-relay-status`.
 
 ### Use with npx
 
 ```sh
-npx -y @wezzard/mcp-vm-relay
+npx -y @wezzard/mcp-relay
 ```
 
 This runs the MCP server directly on stdio, for a client that speaks MCP
@@ -165,7 +171,7 @@ It changes nothing itself.
 
 | Command in pi | Command in Claude Code | Arguments | Purpose |
 |---|---|---|---|
-| `/mcp-vm-relay-status` | `/mcp-vm-relay:status` | none | Calls `relay_status` and reports this session's owned lease as is. Read-only. |
+| `/mcp-relay-status` | `/mcp-relay:status` | none | Calls `relay_status` and reports this session's owned lease as is. Read-only. |
 
 It is not an MCP prompt. pi's MCP adapter can only name a prompt
 `/mcp__<package>__<server>__<prompt>`, so each host gets its own command file
@@ -185,7 +191,7 @@ tarball it checked.
 - Use `finish` to deliver evidence and release, or `release` to abandon explicitly. A declared output that was never produced is recorded as incomplete (`incompleteExtractions`) rather than failing `finish`. A failed delivery retains the VM; a release failure retains ownership until destruction is verified.
 - When the session ends (the client closes the server's standard input, a write to its standard output fails, or it is signalled), the relay renews the lease once for the rest of its TTL, then renewal pauses and the recording detaches; the VM is not destroyed and is retained until its TTL for an explicit finish or release. A `finish` or `release` already in flight completes first, for up to the shutdown grace period; after that the operation is cancelled and renewal pauses without it. The backend TTL and grace period handle abandoned leases. Status reports the last confirmed expiration time.
 - While the session is live, the relay tracks the lease's own deadline (its start plus `ttlHours`) and renews vm-service only 15 minutes ahead at a time, never past that deadline, and stops renewing at it. A client that crashes without ending its session therefore leaves its VM leased for at most about 15 minutes, plus the backend's grace period, rather than its whole TTL.
-- A restarted server with the same `MCP_VM_RELAY_SESSION` reconciles its durable ownership and reattaches the recording session without replaying prior work. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
+- A restarted server with the same `MCP_RELAY_SESSION` reconciles its durable ownership and reattaches the recording session without replaying prior work. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
 - A run tool's `timeoutMs` defaults to 120,000 ms and accepts integers up to 3,600,000 ms. It bounds command execution, not the snapshot delay or the lease lifetime. A timeout reports confirmed termination or uncertainty and keeps the VM available.
 - `relay_exec` with `diagnostic: true` records command diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. Before staging it runs through vm-service in the guest's default directory; after staging in the recording workspace. It cannot join a snapshot group and is not visual verification.
 - After diagnosing damaged recording state, `relay_stage` with `resetRecording: true` archives the old recording and starts a new recording session in the same VM. An existing receiver lock refuses the reset until its operation is reconciled. Prior evidence paths remain in the owned status.
@@ -299,7 +305,7 @@ installation or platform acceptance is claimed here.
 Set `VM_ENVIRONMENT_FILE` to a profile that binds a loopback vm-service
 endpoint, an image repository, a Tart store and separate service, image and
 relay state directories together. The profile is validated before use, is
-authoritative over the individual `MCP_VM_RELAY_*` variables, and an invalid
+authoritative over the individual `MCP_RELAY_*` variables, and an invalid
 selection fails rather than falling back. Leases are bound to their backend and
 store: an owned lease restored under a different environment fails before any
 backend operation, and destruction is verified with the selected Tart binary
@@ -320,7 +326,7 @@ The package is the raw evidence only; pi-secretary's computer-use extension
 shows its steps and verdicts beside the agent's session. The steps and verdicts
 are derived from the evidence when you review it, so an earlier package is reviewed with today's rules.
 A program that reads relay packages gets the same derivation from
-`@wezzard/mcp-vm-relay/review-data`: `await reviewData(<directory>)` returns the
+`@wezzard/mcp-relay/review-data`: `await reviewData(<directory>)` returns the
 steps (with each snapshot's package path), the verdicts and their reasons. No network, VM or external assets are
 needed. Diagnostic commands appear in the review data
 as command-only steps without screenshots. `finish` verifies the package before
@@ -341,16 +347,16 @@ keeps the VM for a retry after space is freed.
 
 ## Configuration
 
-- `MCP_VM_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
-- `MCP_VM_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the enclosure of the same identity.
-- `MCP_VM_RELAY_URL`: the loopback vm-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
+- `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
+- `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the enclosure of the same identity.
+- `MCP_RELAY_URL`: the loopback vm-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, vm-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a vm-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
-- `MCP_VM_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-vm-relay` or `~/.local/state/mcp-vm-relay`, one subdirectory per session.
-- `MCP_VM_RELAY_REGISTRY`: an explicit task registry file; otherwise an existing compatible `~/AGENTS.md` VM table, or a private managed `registry.md` in the state directory.
-- `MCP_VM_RELAY_SHUTDOWN_GRACE_MS`: how long a session end waits for an in-flight operation before cancelling it; default 120000.
-- `MCP_VM_RELAY_PYTHON`: the Python 3 used for the registry lock; default `python3` on PATH.
+- `MCP_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-relay` or `~/.local/state/mcp-relay`, one subdirectory per session.
+- `MCP_RELAY_REGISTRY`: an explicit task registry file; otherwise an existing compatible `~/AGENTS.md` VM table, or a private managed `registry.md` in the state directory.
+- `MCP_RELAY_SHUTDOWN_GRACE_MS`: how long a session end waits for an in-flight operation before cancelling it; default 120000.
+- `MCP_RELAY_PYTHON`: the Python 3 used for the registry lock; default `python3` on PATH.
 - `VM_ENVIRONMENT_FILE`: a selected environment profile; it overrides the URL, state directory and registry above and binds the Tart store.
-- Guest files go to `/var/tmp/<UTC-timestamp>-mcp-vm-relay-<task>/`, with the runtime in `receiver.mjs`, support in `support/` and work in `workspace/`.
+- Guest files go to `/var/tmp/<UTC-timestamp>-mcp-relay-<task>/`, with the runtime in `receiver.mjs`, support in `support/` and work in `workspace/`.
 
 ## Development
 

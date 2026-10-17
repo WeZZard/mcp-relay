@@ -28,10 +28,10 @@ const steps = JSON.parse(await readFile(stepsFile, 'utf8'));
 const session = process.env.LIVE_CHECK_SESSION ?? `live-check-${Date.now()}`;
 const transport = new StdioClientTransport({
   command: process.execPath, args: [server],
-  env: { ...process.env, MCP_VM_RELAY_PROJECT: join(outDir, 'project'), MCP_VM_RELAY_SESSION: session },
+  env: { ...process.env, MCP_RELAY_PROJECT: join(outDir, 'project'), MCP_RELAY_SESSION: session },
   stderr: 'inherit',
 });
-const client = new Client({ name: 'mcp-vm-relay-live-check', version: '1' });
+const client = new Client({ name: 'mcp-relay-live-check', version: '1' });
 await client.connect(transport);
 const vars = {};
 const fill = value => JSON.parse(JSON.stringify(value)

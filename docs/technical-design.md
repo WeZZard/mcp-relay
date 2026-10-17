@@ -58,7 +58,7 @@ flowchart TB
 |---|---|
 | Pi extension (`src/index.ts`, `src/schema.ts`, `src/tool.ts`) | Registration, model guidance, validation, bounded rendering and action dispatch |
 | `RelayManager` | Durable ownership, same-session operation ordering, lease heartbeat, staging, delivery and cleanup |
-| Review data export (`src/review-data.ts`, `dist/review-data.mjs`) | `@wezzard/mcp-vm-relay/review-data`: derives a delivered package's steps, verdicts and reasons from its raw evidence for programs that read relay packages, such as pi-secretary's `extensions/secretary/computer-use/viewer/` trajectory viewer or a harness report; it reads a package and writes nothing. Delivery writes no page and no derived data. |
+| Review data export (`src/review-data.ts`, `dist/review-data.mjs`) | `@wezzard/mcp-relay/review-data`: derives a delivered package's steps, verdicts and reasons from its raw evidence for programs that read relay packages, such as pi-secretary's `extensions/secretary/computer-use/viewer/` trajectory viewer or a harness report; it reads a package and writes nothing. Delivery writes no page and no derived data. |
 | vm-service | Disposable leases, guest command/transfer API, guest sharing, service-host viewer management, access revocation and verified destruction. |
 | relay-driver | Recorded/admitted submissions, journal, durable receipts, snapshots and evidence-package substrate |
 | Image/backend layer (planned integration) | Authoritative published-image application inventory and search/catalog API |
@@ -282,7 +282,7 @@ Reverify real registered schemas and adapter payloads rather than assuming suppo
 - Required-viewing enforcement is consumer guidance, not a persisted runtime gate proving human visibility. Consumers must stop before application work when the required observations are absent.
 - Verify the supported standard viewer, authentication, guest isolation, connection evidence, and temporary-resource cleanup under [the backend acceptance specification](../../vm-service/docs/vnc-acceptance.md). Missing capabilities must remain with the backend owner rather than become consumer bypasses.
 - Investigate whether console output, relay desktop capture, and the application's browser capture address the same display. Preserve historical black-snapshot evidence and report any disagreement independently.
-- Coordinate shared backend or driver changes with `mcp-vm-relay` where necessary. Sibling parity does not expand this feature into unrelated implementation work.
+- Coordinate shared backend or driver changes with `mcp-relay` where necessary. Sibling parity does not expand this feature into unrelated implementation work.
 
 #### Acceptance plan
 
@@ -613,9 +613,9 @@ snapshot references. Preserve original annotations in sealed historical evidence
 ## 7. Installation and operational constraints
 
 *Historical: this section described pi-vm-relay's own git-based Pi install,
-which is retired. See this repository's README for mcp-vm-relay's current
+which is retired. See this repository's README for mcp-relay's current
 install methods (npm, the Claude Code plugin, or `pi install
-npm:@wezzard/mcp-vm-relay` via pi-mcp-adapter). The rest of this section is
+npm:@wezzard/mcp-relay` via pi-mcp-adapter). The rest of this section is
 preserved as written.*
 
 Use native Pi package installation:

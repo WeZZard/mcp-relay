@@ -11,7 +11,7 @@ await rm('dist', { recursive: true, force: true });
 for (const dir of Object.values(COMMAND_DIRS)) await rm(dir, { recursive: true, force: true });
 for (const [path, content] of Object.entries(hostCommandFiles())) { await mkdir(dirname(path), { recursive: true }); await writeFile(path, content); }
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
-const common = { bundle: true, platform: 'node', target: 'node22', format: 'esm', metafile: true, define: { __MCP_VM_RELAY_VERSION__: JSON.stringify(pkg.version) } };
+const common = { bundle: true, platform: 'node', target: 'node22', format: 'esm', metafile: true, define: { __MCP_RELAY_VERSION__: JSON.stringify(pkg.version) } };
 // Bundled CommonJS dependencies need a real require; esbuild's ESM output gets one from this banner.
 const banner = "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);";
 const receiver = await build({ ...common, entryPoints: ['src/guest/receiver.ts'], outfile: 'dist/receiver.mjs', banner: { js: banner } });
@@ -21,7 +21,7 @@ const doctor = await build({ ...common, entryPoints: ['src/doctor.ts'], outfile:
 // Programs that read relay packages derive their review data with the relay's own rules.
 const reviewData = await build({ ...common, entryPoints: ['src/review-data.ts'], outfile: 'dist/review-data.mjs', banner: { js: banner } });
 {
-  const types = await mkdtemp(join(tmpdir(), 'mcp-vm-relay-types-'));
+  const types = await mkdtemp(join(tmpdir(), 'mcp-relay-types-'));
   execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', 'src/review-data.ts', '--declaration', '--emitDeclarationOnly', '--outDir', types,
     '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--strict', '--skipLibCheck', '--types', 'node']);
   // The declarations are self-contained: the types live in src/review-data.ts.
@@ -42,7 +42,7 @@ for (const path of [...new Set([receiver, mcpHost, server, doctor, reviewData].f
   sources[key] = createHash('sha256').update(await readFile(path)).digest('hex');
 }
 await writeFile('dist/build-info.json', JSON.stringify({ formatVersion: 1, packages, sources }, null, 2) + '\n');
-await writeFile('dist/NOTICE.txt', 'This distribution includes compiled @wezzard/relay-driver-core, @wezzard/relay-driver-host-sdk and @wezzard/relay-driver-remote-runtime code (https://github.com/WeZZard/relay-driver), the Model Context Protocol TypeScript SDK, and Ajv with ajv-formats (MIT). See build-info.json for source hashes and versions. The relay implementation was inherited from pi-vm-relay (https://github.com/WeZZard/pi-vm-relay) at commit 8990123, synchronized with its implementation through commit 0d69fc7 before that project\'s retirement, and has been maintained here as mcp-vm-relay\'s own implementation from then on.\n');
+await writeFile('dist/NOTICE.txt', 'This distribution includes compiled @wezzard/relay-driver-core, @wezzard/relay-driver-host-sdk and @wezzard/relay-driver-remote-runtime code (https://github.com/WeZZard/relay-driver), the Model Context Protocol TypeScript SDK, and Ajv with ajv-formats (MIT). See build-info.json for source hashes and versions. The relay implementation was inherited from pi-vm-relay (https://github.com/WeZZard/pi-vm-relay) at commit 8990123, synchronized with its implementation through commit 0d69fc7 before that project\'s retirement, and has been maintained here as mcp-relay\'s own implementation from then on.\n');
 const integrity = {};
 for (const name of ['server.mjs', 'receiver.mjs', 'mcp-host.mjs', 'doctor.mjs', 'review-data.mjs']) integrity[name] = createHash('sha256').update(await readFile(`dist/${name}`)).digest('hex');
 await writeFile('dist/integrity.json', JSON.stringify(integrity, null, 2) + '\n');

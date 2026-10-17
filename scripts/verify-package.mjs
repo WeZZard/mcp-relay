@@ -17,7 +17,7 @@ import { COMMAND_DIRS, COMMANDS, hostCommandFiles, piCommandName } from './host-
 const args = process.argv.slice(2);
 const versionAt = args.indexOf('--version');
 const expectedVersion = versionAt >= 0 ? args.splice(versionAt, 2)[1] : undefined;
-const work = mkdtempSync(join(tmpdir(), 'mcp-vm-relay-verify-'));
+const work = mkdtempSync(join(tmpdir(), 'mcp-relay-verify-'));
 const failures = [];
 const check = (ok, message) => { if (!ok) failures.push(message); };
 
@@ -35,13 +35,13 @@ try {
 
   // 1. Versions: package.json, the Claude Code plugin, the pinned pi server, and the tag.
   const pkg = json('package.json');
-  check(pkg.name === '@wezzard/mcp-vm-relay', `package name is ${pkg.name}`);
+  check(pkg.name === '@wezzard/mcp-relay', `package name is ${pkg.name}`);
   if (expectedVersion) check(pkg.version === expectedVersion, `package version ${pkg.version} differs from the tag ${expectedVersion}`);
   check(json('.claude-plugin/plugin.json').version === pkg.version, '.claude-plugin/plugin.json version differs from package.json');
   const pinned = json('pi-mcp.json').mcpServers?.relay?.args ?? [];
-  check(pinned.includes(`@wezzard/mcp-vm-relay@${pkg.version}`), `pi-mcp.json does not pin @wezzard/mcp-vm-relay@${pkg.version}`);
+  check(pinned.includes(`@wezzard/mcp-relay@${pkg.version}`), `pi-mcp.json does not pin @wezzard/mcp-relay@${pkg.version}`);
   check(has('.mcp.json') && has('dist/server.mjs'), '.mcp.json or dist/server.mjs is missing');
-  check(json('.claude-plugin/marketplace.json').name === 'mcp-vm-relay', 'the Claude Code marketplace is not named mcp-vm-relay');
+  check(json('.claude-plugin/marketplace.json').name === 'mcp-relay', 'the Claude Code marketplace is not named mcp-relay');
 
   // 2. Host command files: present, byte-identical to the generator, nothing extra.
   const expected = hostCommandFiles();
@@ -75,7 +75,7 @@ try {
   check(!has('skills') && !has('hooks'), 'the package ships skills/ or hooks/');
 
   // 5. The packed server starts, offers every tool a command names, and no MCP prompts.
-  const transport = new StdioClientTransport({ command: process.execPath, args: [join(root, 'dist', 'server.mjs')], cwd: work, env: { ...process.env, MCP_VM_RELAY_PROJECT: work, MCP_VM_RELAY_SESSION: 'verify-package' }, stderr: 'ignore' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(root, 'dist', 'server.mjs')], cwd: work, env: { ...process.env, MCP_RELAY_PROJECT: work, MCP_RELAY_SESSION: 'verify-package' }, stderr: 'ignore' });
   const client = new Client({ name: 'verify-package', version: '1' });
   await client.connect(transport);
   try {

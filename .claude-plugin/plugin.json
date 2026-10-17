@@ -1,9 +1,9 @@
 {
-  "name": "mcp-vm-relay",
+  "name": "mcp-relay",
   "version": "0.11.0",
   "description": "Recorded, snapshot-evidenced computer-use and browser-use in a fresh disposable VM, through the relay_* MCP tools",
   "author": {
     "name": "WeZZard"
   },
-  "repository": "https://github.com/WeZZard/mcp-vm-relay"
+  "repository": "https://github.com/WeZZard/mcp-relay"
 }

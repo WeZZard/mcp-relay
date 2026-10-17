@@ -89,7 +89,7 @@ All pins are in `src/targets.ts`.
 On the first use of a browser target, the host does three things:
 
 1. It downloads each pinned npm tarball from the registry, or from the mirror
-   in `MCP_VM_RELAY_NPM_REGISTRY`.
+   in `MCP_RELAY_NPM_REGISTRY`.
 2. It checks each tarball against its pinned `sha512` integrity, which is the
    value npm publishes, and caches it under the relay state root.
 3. It pushes each tarball with the same hash-checked transfer that

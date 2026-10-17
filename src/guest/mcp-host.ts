@@ -157,7 +157,7 @@ export async function serveHost(configPath: string): Promise<void> {
     const args = [...launch.args, ...(launch.platformArgs?.[process.platform] ?? [])];
     const env = { ...process.env, ...(process.platform === "linux" ? await waitForDesktop(process.env, Math.min(config.startTimeoutMs! / 2, DESKTOP_WAIT_MS)) : {}), ...(launch.env ?? {}) } as Record<string, string>;
     const transport = new StdioClientTransport({ command: launch.command, args, cwd: launch.cwd, env, stderr: "pipe" });
-    const client = new Client({ name: "mcp-vm-relay-guest-host", version: "1" });
+    const client = new Client({ name: "mcp-relay-guest-host", version: "1" });
     const entry: Entry = { target, client, transport, alive: true, stderrTail: "", startedAt: new Date().toISOString() };
     transport.stderr?.on("data", (chunk: Buffer) => {
       const text = String(chunk);
@@ -165,7 +165,7 @@ export async function serveHost(configPath: string): Promise<void> {
       void appendFile(logFile(target), text).catch(() => {});
     });
     client.onclose = () => { entry.alive = false; entry.exitedAt ??= new Date().toISOString(); };
-    await appendFile(logFile(target), `[mcp-vm-relay] starting ${JSON.stringify([launch.command, ...args])} with DISPLAY=${env.DISPLAY ?? ""} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY ?? ""} at ${entry.startedAt}\n`).catch(() => {});
+    await appendFile(logFile(target), `[mcp-relay] starting ${JSON.stringify([launch.command, ...args])} with DISPLAY=${env.DISPLAY ?? ""} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY ?? ""} at ${entry.startedAt}\n`).catch(() => {});
     try {
       await client.connect(transport, { timeout: config.startTimeoutMs });
       entry.tools = await listAll(client, config.startTimeoutMs!);
@@ -490,7 +490,7 @@ export async function installPackages(nodeModules: string, specs: string[]): Pro
   for (const spec of specs) {
     const [name, tarball, expected] = spec.split("=");
     if (!name || !/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name) || !tarball || !isAbsolute(tarball) || !/^[a-f0-9]{64}$/.test(expected ?? "")) throw new Error(`invalid package spec ${spec}`);
-    const destination = join(nodeModules, name), marker = join(destination, ".mcp-vm-relay-installed.json");
+    const destination = join(nodeModules, name), marker = join(destination, ".mcp-relay-installed.json");
     try { if (JSON.parse(await readFile(marker, "utf8")).sha256 === expected) { installed.push({ name, sha256: expected, reused: true }); continue; } }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     if (sha256(await readFile(tarball)) !== expected) throw new Error(`${name} tarball hash mismatch; not installed`);

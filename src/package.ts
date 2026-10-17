@@ -365,7 +365,7 @@ function explainFinding(finding: string, steps: Step[], byExecution: Map<string,
   const ofExecution = (id: string) => byExecution.get(id) ?? [];
   const checkStep = "Check the step another way, by its output or the next step's before snapshot, or run the task again.";
   const checkRun = "Check the steps around it by their output, or run the task again.";
-  const report = "Nothing in this review depends on it. Report it as an mcp-vm-relay issue, with this package.";
+  const report = "Nothing in this review depends on it. Report it as an mcp-relay issue, with this package.";
   const rules: [RegExp, (m: RegExpExecArray) => Reason][] = [
     [/^request (\S+) has no retained guest execution$/, m => ({ stepIds: ofExecution(m[1]!),
       text: "The relay sent a request that the guest's event journal never recorded starting or finishing, so whether it ran is unknown.", action: "Look for its effect in the next step's before snapshot, or run the task again." })],
@@ -420,7 +420,7 @@ export async function deliverPackage(rootDir: string, options: DeliverPackageOpt
     created.push(path);
   };
   try {
-    await save("OPENING.txt", "Read this package's steps and verdicts with the review data export of the relay's npm package, @wezzard/mcp-vm-relay/review-data; pi-secretary's computer-use extension shows them beside the agent's session. The steps and verdicts are derived from the evidence when you review it. Snapshot completeness and execution are separate verdicts, and the review data says why each one is not complete or passed and what you can do. Originals are under state/, host metadata under host/, and declared extractions under extractions/. manifest.json checksums every artifact except itself.\n");
+    await save("OPENING.txt", "Read this package's steps and verdicts with the review data export of the relay's npm package, @wezzard/mcp-relay/review-data; pi-secretary's computer-use extension shows them beside the agent's session. The steps and verdicts are derived from the evidence when you review it. Snapshot completeness and execution are separate verdicts, and the review data says why each one is not complete or passed and what you can do. Originals are under state/, host metadata under host/, and declared extractions under extractions/. manifest.json checksums every artifact except itself.\n");
     const snapshotPaths = new Set(a.snapshots.map(s => s.path)), all = await filesUnder(root);
     await save("manifest.json", json(await buildManifest({ ...options, rootDir: root, media: [], segments: [], attempts: [],
       snapshots: a.snapshots.map(s => ({ ...s, absolutePath: join(root, s.path), packagePath: s.path })),
@@ -440,7 +440,7 @@ export async function verifyDeliveredPackage(rootDir: string): Promise<DeliveryR
   const root = await rootPath(rootDir), files = await filesUnder(root);
   const m = await readJson(root, "manifest.json");
   if (m.manifestVersion !== 1 || !Array.isArray(m.records) || !Array.isArray(m.media) || !Array.isArray(m.attempts) || !Array.isArray(m.segments) || (m.snapshots !== undefined && !Array.isArray(m.snapshots)) || (m.attachments !== undefined && !Array.isArray(m.attachments))) throw new Error("invalid package manifest schema");
-  if (m.media.length || m.segments.length || m.attempts.length) throw new Error("mcp-vm-relay snapshot package cannot claim video attempts or segments");
+  if (m.media.length || m.segments.length || m.attempts.length) throw new Error("mcp-relay snapshot package cannot claim video attempts or segments");
   const manifest = m as PackageManifest;
   const artifacts = [...manifest.records, ...(manifest.snapshots ?? []), ...(manifest.attachments ?? [])], seen = new Set<string>();
   for (const raw of artifacts) {

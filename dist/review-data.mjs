@@ -349,7 +349,7 @@ function explainFinding(finding, steps, byExecution) {
   const ofExecution = (id) => byExecution.get(id) ?? [];
   const checkStep = "Check the step another way, by its output or the next step's before snapshot, or run the task again.";
   const checkRun = "Check the steps around it by their output, or run the task again.";
-  const report = "Nothing in this review depends on it. Report it as an mcp-vm-relay issue, with this package.";
+  const report = "Nothing in this review depends on it. Report it as an mcp-relay issue, with this package.";
   const rules = [
     [/^request (\S+) has no retained guest execution$/, (m) => ({
       stepIds: ofExecution(m[1]),

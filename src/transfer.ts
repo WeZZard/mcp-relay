@@ -13,7 +13,7 @@ export interface VmChannel {
   pull(name: string, remotePath: string, localPath: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown>;
 }
 export interface TransferOptions {
-  /** Production: the lease's /var/tmp/<timestamp>-mcp-vm-relay-<task> root. */
+  /** Production: the lease's /var/tmp/<timestamp>-mcp-relay-<task> root. */
   guestRoot?: string;
   /** Temporary inventory frames, outside the delivered state/package. */
   hostTempRoot?: string;

@@ -12,10 +12,10 @@ test('the committed host command files are exactly what the build generates', as
   assert.deepEqual(present.sort(), Object.keys(expected).sort(), 'no extra files in the generated directories');
 });
 
-test('each host names the commands the same way: /mcp-vm-relay-<name> in pi, /mcp-vm-relay:<name> in Claude Code', () => {
+test('each host names the commands the same way: /mcp-relay-<name> in pi, /mcp-relay:<name> in Claude Code', () => {
   assert.deepEqual(Object.keys(hostCommandFiles()).sort(), [
     'commands/status.md',
-    'pi-prompts/mcp-vm-relay-status.md',
+    'pi-prompts/mcp-relay-status.md',
   ]);
 });
 

@@ -38,7 +38,7 @@ Do not change me.
 `;
 const row: RegistryRow = { machine: "pilot-test-123", os: "Ubuntu 24.04", taskName: "our-task", agent: "pi-test", project: "/our/project", startDate: "2026-09-13-10-00-00-Z" };
 async function setup(t: test.TestContext, contents = fixture) {
-  const dir = await mkdtemp(join(tmpdir(), "mcp-vm-relay-registry-"));
+  const dir = await mkdtemp(join(tmpdir(), "mcp-relay-registry-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, "AGENTS.md");
   await writeFile(path, contents);
@@ -172,7 +172,7 @@ test("selection preserves compatible home registry and otherwise uses managed st
   assert.equal(await readFile(path, "utf8"), fixture);
   const incompatible = fixture.replace("## Using VMs", "## Not VMs");
   await writeFile(path, incompatible);
-  const state = join(dir, ".local/state/mcp-vm-relay");
+  const state = join(dir, ".local/state/mcp-relay");
   const registry = new Registry({ home: dir, env });
   assert.equal(registry.path, join(state, "registry.md"));
   await assert.rejects(lstat(state), /ENOENT/);
@@ -187,18 +187,18 @@ test("selection preserves compatible home registry and otherwise uses managed st
 test("explicit path beats environment; missing and incompatible explicit documents never get created or repaired", async t => {
   const { dir, path } = await setup(t);
   const missing = join(dir, "missing.md");
-  assert.equal(new Registry({ path, env: { MCP_VM_RELAY_REGISTRY: missing } }).path, path);
-  assert.equal(new Registry({ home: dir, env: { MCP_VM_RELAY_REGISTRY: path } }).path, path);
-  for (const options of [{ path: missing }, { env: { MCP_VM_RELAY_REGISTRY: missing } }]) {
+  assert.equal(new Registry({ path, env: { MCP_RELAY_REGISTRY: missing } }).path, path);
+  assert.equal(new Registry({ home: dir, env: { MCP_RELAY_REGISTRY: path } }).path, path);
+  for (const options of [{ path: missing }, { env: { MCP_RELAY_REGISTRY: missing } }]) {
     assert.throws(() => new Registry({ home: dir, ...options }), /ENOENT/);
   }
   await assert.rejects(lstat(missing), /ENOENT/);
   await assert.rejects(lstat(`${missing}.mcp-vm-relay.lock`), /ENOENT/);
   await writeFile(path, "keep me");
   assert.throws(() => new Registry({ path }), /exactly one/);
-  assert.throws(() => new Registry({ env: { MCP_VM_RELAY_REGISTRY: path } }), /exactly one/);
+  assert.throws(() => new Registry({ env: { MCP_RELAY_REGISTRY: path } }), /exactly one/);
   assert.equal(await readFile(path, "utf8"), "keep me");
-  for (const options of [{ path: " " }, { env: { MCP_VM_RELAY_REGISTRY: "" } }]) {
+  for (const options of [{ path: " " }, { env: { MCP_RELAY_REGISTRY: "" } }]) {
     assert.throws(() => new Registry({ home: dir, ...options }), /nonblank/);
   }
 });
@@ -206,7 +206,7 @@ test("explicit path beats environment; missing and incompatible explicit documen
 test("managed initialization never truncates an existing incompatible file or follows a file symlink", async t => {
   const dir = await mkdtemp(join(tmpdir(), "relay-managed-existing-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const options = { home: dir, env: { MCP_VM_RELAY_STATE_DIR: join(dir, "state") } };
+  const options = { home: dir, env: { MCP_RELAY_STATE_DIR: join(dir, "state") } };
   const registry = new Registry(options);
   await mkdir(join(dir, "state"), {mode:0o700});
   await writeFile(registry.path, "not a registry");
@@ -223,7 +223,7 @@ test("managed initialization never truncates an existing incompatible file or fo
 test('managed state never chmods an existing public directory', async t => {
   const dir=await mkdtemp(join(tmpdir(),'relay-public-state-'));t.after(()=>rm(dir,{recursive:true,force:true}));
   await chmod(dir,0o755);
-  const registry=new Registry({home:dir,env:{MCP_VM_RELAY_STATE_DIR:dir}});
+  const registry=new Registry({home:dir,env:{MCP_RELAY_STATE_DIR:dir}});
   await assert.rejects(registry.add(row),/private/);
   assert.equal((await lstat(dir)).mode&0o777,0o755);
   assert.deepEqual(await readdir(dir),[]);
@@ -233,10 +233,10 @@ test("concurrent fresh default initialization is atomic, private, and supports l
   const dir = await mkdtemp(join(tmpdir(), "relay-managed-concurrent-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir };
-  delete env.MCP_VM_RELAY_STATE_DIR;
+  delete env.MCP_RELAY_STATE_DIR;
   delete env.XDG_STATE_HOME;
-  delete env.MCP_VM_RELAY_REGISTRY;
-  delete env.MCP_VM_RELAY_PYTHON;
+  delete env.MCP_RELAY_REGISTRY;
+  delete env.MCP_RELAY_PYTHON;
   const modulePath = fileURLToPath(new URL("../src/registry.ts", import.meta.url));
   await Promise.all(Array.from({ length: 10 }, async (_, i) => {
     const current = { ...row, taskName: `fresh-${i}` };
@@ -250,7 +250,7 @@ test("concurrent fresh default initialization is atomic, private, and supports l
   const text = await readFile(registry.path, "utf8");
   assert.equal(text.split("## Using VMs").length, 2);
   for (let i = 0; i < 10; i++) assert.equal(text.split(`| fresh-${i} |`).length, 2);
-  const state = join(dir, ".local/state/mcp-vm-relay");
+  const state = join(dir, ".local/state/mcp-relay");
   assert.equal((await lstat(state)).mode & 0o777, 0o700);
   assert.equal((await lstat(registry.path)).mode & 0o777, 0o600);
   assert.equal((await lstat(`${registry.path}.mcp-vm-relay.lock`)).mode & 0o777, 0o600);
@@ -266,9 +266,9 @@ test("registry rejects blank Python overrides and uses environment override", as
   const { path } = await setup(t);
   for (const value of ["", " \t"]) {
     assert.throws(() => new Registry({ path, pythonExecutable: value }), /nonblank/);
-    assert.throws(() => new Registry({ path, env: { MCP_VM_RELAY_PYTHON: value } }), /nonblank/);
+    assert.throws(() => new Registry({ path, env: { MCP_RELAY_PYTHON: value } }), /nonblank/);
   }
-  await assert.rejects(new Registry({ path, env: { MCP_VM_RELAY_PYTHON: "/no/such/python" } }).add(row), /Cannot start/);
+  await assert.rejects(new Registry({ path, env: { MCP_RELAY_PYTHON: "/no/such/python" } }).add(row), /Cannot start/);
   assert.equal(await readFile(path, "utf8"), fixture);
 });
 

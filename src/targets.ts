@@ -98,8 +98,8 @@ export function targetLaunches(context: LaunchContext): Record<Target, TargetLau
 
 /** The file name npm gives a package tarball, e.g. `playwright-mcp-0.0.82.tgz`. */
 export function tarballName(pin: PinnedPackage): string { return `${pin.name.replace(/^@/, '').replace('/', '-')}-${pin.version}.tgz`; }
-/** The registry URL of a pinned tarball. `MCP_VM_RELAY_NPM_REGISTRY` may point at a mirror; the integrity check is the same. */
-export function tarballUrl(pin: PinnedPackage, registry = process.env.MCP_VM_RELAY_NPM_REGISTRY ?? 'https://registry.npmjs.org'): string {
+/** The registry URL of a pinned tarball. `MCP_RELAY_NPM_REGISTRY` may point at a mirror; the integrity check is the same. */
+export function tarballUrl(pin: PinnedPackage, registry = process.env.MCP_RELAY_NPM_REGISTRY ?? 'https://registry.npmjs.org'): string {
   return `${registry.replace(/\/+$/, '')}/${pin.name}/-/${pin.name.split('/').at(-1)}-${pin.version}.tgz`;
 }
 /** True when `bytes` match an npm `sha512-<base64>` integrity string. */

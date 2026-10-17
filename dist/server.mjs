@@ -18545,7 +18545,7 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
-  const names = ["vm-service", "pilot-images", "mcp-vm-relay"];
+  const names = ["vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
   const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];
@@ -18614,9 +18614,9 @@ function relayStateRoot(options2 = {}) {
   const env = options2.env ?? process.env;
   const selected = selectedEnvironment(env, options2.home);
   if (selected) return selected.profile.relayStateDir;
-  if (env.MCP_VM_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_VM_RELAY_STATE_DIR, "MCP_VM_RELAY_STATE_DIR");
-  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-vm-relay");
-  return join2(absolute(options2.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-vm-relay");
+  if (env.MCP_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_RELAY_STATE_DIR, "MCP_RELAY_STATE_DIR");
+  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-relay");
+  return join2(absolute(options2.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-relay");
 }
 var GUEST_NETWORKS = ["nat", "internet"];
 function guestNetwork(env = process.env) {
@@ -18626,7 +18626,7 @@ function guestNetwork(env = process.env) {
   return value;
 }
 function pythonExecutable(env = process.env) {
-  return nonblank(env.MCP_VM_RELAY_PYTHON ?? "python3", "MCP_VM_RELAY_PYTHON");
+  return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
 }
 
 // src/manager.ts
@@ -19244,13 +19244,13 @@ function resolveRegistry(options2 = {}) {
   const env = options2.env ?? process.env;
   const root = options2.managedRoot ?? selectedEnvironment(env, options2.home)?.profile.relayStateDir;
   if (root !== void 0 && options2.path === void 0) return { path: join5(absolute(root, "managed registry root"), "registry.md"), managed: true };
-  const explicit = options2.path ?? env.MCP_VM_RELAY_REGISTRY;
+  const explicit = options2.path ?? env.MCP_RELAY_REGISTRY;
   const validate2 = (path) => {
     if (!statSync2(path).isFile()) throw new RegistryError("Registry target must be a regular file");
     table(readFileSync2(path, "utf8"));
   };
   if (explicit !== void 0) {
-    const path = options2.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_VM_RELAY_REGISTRY");
+    const path = options2.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_RELAY_REGISTRY");
     validate2(path);
     return { path, managed: false };
   }
@@ -19263,7 +19263,8 @@ function resolveRegistry(options2 = {}) {
   }
   return { path: join5(relayStateRoot(options2), "registry.md"), managed: true };
 }
-var MANAGED_REGISTRY = `# mcp-vm-relay task registry
+var REGISTRY_LOCK_SUFFIX = ".mcp-vm-relay.lock";
+var MANAGED_REGISTRY = `# mcp-relay task registry
 
 ## Using VMs
 
@@ -19350,7 +19351,7 @@ var Registry = class {
       if ((parent.mode & 63) !== 0) throw new RegistryError("Managed registry parent must be private (0700); choose a private state directory. Existing directory permissions are not changed automatically.");
     }
     const target2 = this.managed ? join5(await realpath(dirname3(this.path)), "registry.md") : await realpath(this.path);
-    const lock = await this.lock(`${target2}.mcp-vm-relay.lock`, signal);
+    const lock = await this.lock(`${target2}${REGISTRY_LOCK_SUFFIX}`, signal);
     const token2 = randomUUID();
     let temporary;
     try {
@@ -20732,7 +20733,7 @@ function explainFinding(finding, steps, byExecution) {
   const ofExecution = (id2) => byExecution.get(id2) ?? [];
   const checkStep = "Check the step another way, by its output or the next step's before snapshot, or run the task again.";
   const checkRun = "Check the steps around it by their output, or run the task again.";
-  const report = "Nothing in this review depends on it. Report it as an mcp-vm-relay issue, with this package.";
+  const report = "Nothing in this review depends on it. Report it as an mcp-relay issue, with this package.";
   const rules = [
     [/^request (\S+) has no retained guest execution$/, (m) => ({
       stepIds: ofExecution(m[1]),
@@ -20777,7 +20778,7 @@ async function deliverPackage(rootDir, options2) {
     created.push(path);
   };
   try {
-    await save("OPENING.txt", "Read this package's steps and verdicts with the review data export of the relay's npm package, @wezzard/mcp-vm-relay/review-data; pi-secretary's computer-use extension shows them beside the agent's session. The steps and verdicts are derived from the evidence when you review it. Snapshot completeness and execution are separate verdicts, and the review data says why each one is not complete or passed and what you can do. Originals are under state/, host metadata under host/, and declared extractions under extractions/. manifest.json checksums every artifact except itself.\n");
+    await save("OPENING.txt", "Read this package's steps and verdicts with the review data export of the relay's npm package, @wezzard/mcp-relay/review-data; pi-secretary's computer-use extension shows them beside the agent's session. The steps and verdicts are derived from the evidence when you review it. Snapshot completeness and execution are separate verdicts, and the review data says why each one is not complete or passed and what you can do. Originals are under state/, host metadata under host/, and declared extractions under extractions/. manifest.json checksums every artifact except itself.\n");
     const snapshotPaths = new Set(a.snapshots.map((s) => s.path)), all = await filesUnder(root);
     await save("manifest.json", json(await buildManifest({
       ...options2,
@@ -20799,7 +20800,7 @@ async function verifyDeliveredPackage(rootDir) {
   const root = await rootPath(rootDir), files = await filesUnder(root);
   const m = await readJson(root, "manifest.json");
   if (m.manifestVersion !== 1 || !Array.isArray(m.records) || !Array.isArray(m.media) || !Array.isArray(m.attempts) || !Array.isArray(m.segments) || m.snapshots !== void 0 && !Array.isArray(m.snapshots) || m.attachments !== void 0 && !Array.isArray(m.attachments)) throw new Error("invalid package manifest schema");
-  if (m.media.length || m.segments.length || m.attempts.length) throw new Error("mcp-vm-relay snapshot package cannot claim video attempts or segments");
+  if (m.media.length || m.segments.length || m.attempts.length) throw new Error("mcp-relay snapshot package cannot claim video attempts or segments");
   const manifest = m;
   const artifacts = [...manifest.records, ...manifest.snapshots ?? [], ...manifest.attachments ?? []], seen = /* @__PURE__ */ new Set();
   for (const raw of artifacts) {
@@ -28821,7 +28822,7 @@ import { createHash as createHash6 } from "node:crypto";
 import { deflateSync, inflateSync } from "node:zlib";
 var IMAGE_PRESENTATION_POLICY = Object.freeze({
   version: 1,
-  processor: "mcp-vm-relay/image-presentation",
+  processor: "mcp-relay/image-presentation",
   maxWidth: 2e3,
   maxHeight: 2e3,
   maxBytes: 4 * 1024 * 1024,
@@ -30018,7 +30019,7 @@ function targetLaunches(context) {
 function tarballName(pin) {
   return `${pin.name.replace(/^@/, "").replace("/", "-")}-${pin.version}.tgz`;
 }
-function tarballUrl(pin, registry2 = process.env.MCP_VM_RELAY_NPM_REGISTRY ?? "https://registry.npmjs.org") {
+function tarballUrl(pin, registry2 = process.env.MCP_RELAY_NPM_REGISTRY ?? "https://registry.npmjs.org") {
   return `${registry2.replace(/\/+$/, "")}/${pin.name}/-/${pin.name.split("/").at(-1)}-${pin.version}.tgz`;
 }
 function integrityMatches(bytes, integrity) {
@@ -30112,7 +30113,7 @@ var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
 var downloadKey = (target2) => `${target2.sessionId}/${target2.executionId}`;
 var stepId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 var instructions = "This server offers nineteen tools for one interruptive VM enclosure: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, relay_run, relay_gate, relay_tools, the command tools relay_exec/relay_script/relay_code, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_run sends the cua-driver, Playwright MCP or Chrome DevTools MCP tool calls you already know to that server inside the VM; evidence is automatic, and its after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Relay only interruptive computer-use or browser-use that would otherwise take over a real desktop or browser, judged for yourself from relay_probe facts; unknown is not idle, and non-disruptive or headless work stays with local tools. One task gets one enclosure: call relay_acquire once per task, never reused for a second task. Work an enclosure in order: relay_probe, then relay_acquire, then relay_stage, then relay_run or the command tools, then relay_image or relay_extract as needed, then relay_finish or relay_release. Always call relay_finish or relay_release explicitly before you return an answer; ending the session only pauses lease renewal, it does not destroy the VM, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
-var NO_OWNED_LEASE = "This session owns no lease, so nothing was released. Each server process has its own session identity (a new random one unless MCP_VM_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_VM_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
+var NO_OWNED_LEASE = "This session owns no lease, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
   constructor(options2) {
     this.options = options2;
@@ -30120,7 +30121,7 @@ var RelayManager = class {
     this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options2.tartHome ?? process.env.TART_HOME ?? join14(process.env.HOME ?? homedir4(), ".tart"));
     this.tartPath = this.environment?.profile.tartPath ?? options2.tartPath ?? process.env.TART ?? "tart";
     if (this.environment && (options2.stateRoot && canonicalPath(options2.stateRoot) !== this.environment.profile.relayStateDir || options2.tartHome && canonicalPath(options2.tartHome) !== this.tartHome || options2.tartPath && canonicalPath(options2.tartPath) !== this.tartPath)) throw new Error("Injected paths conflict with the selected environment");
-    this.vm = options2.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_VM_RELAY_URL, environment: this.environment });
+    this.vm = options2.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options2.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join14(this.environment?.profile.relayStateDir ?? options2.stateRoot ?? relayStateRoot(), hash(options2.sessionId).slice(0, 32));
     this.channel = {
@@ -30481,8 +30482,8 @@ var RelayManager = class {
       const startedAt = (/* @__PURE__ */ new Date()).toISOString();
       const stamp = startedAt.slice(0, 19).replace(/[T:]/g, "-") + "-Z";
       const hostRoot = join14(this.options.outputRoot ?? resolve9(this.options.project, "relay-evidence"), purpose);
-      const row = { machine: this.environment ? `${this.environment.profile.vmServiceUrl} (${this.environment.profile.id}; ${purpose})` : `127.0.0.1 (vm-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-vm-relay ${this.options.sessionId}`, project: resolve9(this.options.project), startDate: stamp };
-      this.enclosure = { backend: this.binding(), purpose, task: input.task, image: input.image, project: this.options.project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-vm-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+      const row = { machine: this.environment ? `${this.environment.profile.vmServiceUrl} (${this.environment.profile.id}; ${purpose})` : `127.0.0.1 (vm-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.options.sessionId}`, project: resolve9(this.options.project), startDate: stamp };
+      this.enclosure = { backend: this.binding(), purpose, task: input.task, image: input.image, project: this.options.project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
       await this.save();
       try {
         await this.registry.add(row);
@@ -31740,7 +31741,7 @@ function relayToolInput(name, args) {
   return { action: tool.action, ...tool.kind ? { kind: tool.kind } : {}, ...args };
 }
 var relayResultKind = "relay-image-result-v1";
-async function renderRelayResult(value, resultRoot = join15(tmpdir2(), "mcp-vm-relay-results"), indent = 2) {
+async function renderRelayResult(value, resultRoot = join15(tmpdir2(), "mcp-relay-results"), indent = 2) {
   const full = JSON.stringify(value, null, indent);
   const text4 = new TextDecoder().decode(Buffer.from(full.split("\n").slice(0, 2e3).join("\n")).subarray(0, 50 * 1024), { stream: true });
   if (text4 !== full) {
@@ -31837,7 +31838,7 @@ async function relayCall(host, raw, options2 = {}) {
 var SERVER_NAME = "relay";
 var SERVER_VERSION = true ? "0.11.0" : JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")).version;
 var STATUS_TOOL = "relay_status";
-var PLUGIN_TOOL_PREFIX = "mcp__plugin_mcp-vm-relay_relay__";
+var PLUGIN_TOOL_PREFIX = "mcp__plugin_mcp-relay_relay__";
 var message = (error2) => error2 instanceof Error ? error2.message : String(error2);
 var text3 = (value, isError = false) => ({ content: [{ type: "text", text: value }], isError });
 function relayContent(result2) {
@@ -31845,7 +31846,7 @@ function relayContent(result2) {
   return { content: [{ type: "text", text: result2.text }, ...passthrough, ...result2.image ? [{ type: "image", data: result2.image.data, mimeType: result2.image.mimeType }] : []], isError: result2.isError };
 }
 function projectDirectory(env = process.env, cwd = process.cwd()) {
-  const given = env.MCP_VM_RELAY_PROJECT;
+  const given = env.MCP_RELAY_PROJECT;
   return given && !given.includes("${") ? resolve10(given) : cwd;
 }
 var readOnlyStatus = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
@@ -31865,7 +31866,7 @@ function allToolDefinitions() {
 var SHUTDOWN_GRACE_MS = 12e4;
 var SHUTDOWN_CANCEL_MS = 5e3;
 function createRelayServer(options2 = {}) {
-  const sessionId = options2.sessionId ?? process.env.MCP_VM_RELAY_SESSION ?? randomUUID9();
+  const sessionId = options2.sessionId ?? process.env.MCP_RELAY_SESSION ?? randomUUID9();
   const project = options2.project ?? projectDirectory();
   let manager;
   const get = options2.manager ?? (() => {
@@ -31877,7 +31878,7 @@ function createRelayServer(options2 = {}) {
   });
   const statusPayload = () => {
     const environment = selectedEnvironment();
-    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_VM_RELAY_URL ?? "http://localhost:6240";
+    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? "http://localhost:6240";
     return { ...manager ? manager.status() : { active: false }, project, service, environment: environment?.identity };
   };
   const shutdownController = new AbortController();
@@ -31922,22 +31923,22 @@ async function main(args) {
   if (args.length) throw new Error("Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout");
   guestNetwork();
   const relay = createRelayServer();
-  const grace = Number(process.env.MCP_VM_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
-  if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_VM_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");
+  const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
+  if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");
   const settledWithin = (work, ms) => Promise.race([work.then(() => true), new Promise((done) => setTimeout(done, ms, false).unref())]);
   let closing;
   const shutdown = (reason2, code) => closing ??= (async () => {
     try {
       const cleanup = relay.cleanup(reason2);
       if (await settledWithin(cleanup, grace)) return;
-      process.stderr.write(`mcp-vm-relay: an operation was still running ${grace} ms after the session ended; cancelling it
+      process.stderr.write(`mcp-relay: an operation was still running ${grace} ms after the session ended; cancelling it
 `);
       relay.cancel(reason2);
       if (await settledWithin(cleanup, SHUTDOWN_CANCEL_MS)) return;
-      process.stderr.write("mcp-vm-relay: the cancelled operation did not stop; pausing renewal without it\n");
+      process.stderr.write("mcp-relay: the cancelled operation did not stop; pausing renewal without it\n");
       await relay.pauseNow(reason2);
     } catch (error2) {
-      process.stderr.write(`mcp-vm-relay: cleanup failed: ${message(error2)}
+      process.stderr.write(`mcp-relay: cleanup failed: ${message(error2)}
 `);
       code = 1;
     } finally {
@@ -31966,7 +31967,7 @@ async function main(args) {
 }
 if (process.argv[1] && await realpath2(process.argv[1]).catch(() => "") === await realpath2(new URL(import.meta.url)).catch(() => "")) {
   main(process.argv.slice(2)).catch((error2) => {
-    process.stderr.write(`mcp-vm-relay: ${message(error2)}
+    process.stderr.write(`mcp-relay: ${message(error2)}
 `);
     process.exitCode = 1;
   });

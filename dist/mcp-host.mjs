@@ -19068,7 +19068,7 @@ async function serveHost(configPath) {
     const args = [...launch.args, ...launch.platformArgs?.[process.platform] ?? []];
     const env = { ...process.env, ...process.platform === "linux" ? await waitForDesktop(process.env, Math.min(config2.startTimeoutMs / 2, DESKTOP_WAIT_MS)) : {}, ...launch.env ?? {} };
     const transport = new StdioClientTransport({ command: launch.command, args, cwd: launch.cwd, env, stderr: "pipe" });
-    const client = new Client({ name: "mcp-vm-relay-guest-host", version: "1" });
+    const client = new Client({ name: "mcp-relay-guest-host", version: "1" });
     const entry = { target, client, transport, alive: true, stderrTail: "", startedAt: (/* @__PURE__ */ new Date()).toISOString() };
     transport.stderr?.on("data", (chunk) => {
       const text = String(chunk);
@@ -19080,7 +19080,7 @@ async function serveHost(configPath) {
       entry.alive = false;
       entry.exitedAt ??= (/* @__PURE__ */ new Date()).toISOString();
     };
-    await appendFile(logFile(target), `[mcp-vm-relay] starting ${JSON.stringify([launch.command, ...args])} with DISPLAY=${env.DISPLAY ?? ""} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY ?? ""} at ${entry.startedAt}
+    await appendFile(logFile(target), `[mcp-relay] starting ${JSON.stringify([launch.command, ...args])} with DISPLAY=${env.DISPLAY ?? ""} WAYLAND_DISPLAY=${env.WAYLAND_DISPLAY ?? ""} at ${entry.startedAt}
 `).catch(() => {
     });
     try {
@@ -19485,7 +19485,7 @@ async function installPackages(nodeModules, specs) {
   for (const spec of specs) {
     const [name, tarball, expected] = spec.split("=");
     if (!name || !/^(@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name) || !tarball || !isAbsolute(tarball) || !/^[a-f0-9]{64}$/.test(expected ?? "")) throw new Error(`invalid package spec ${spec}`);
-    const destination = join(nodeModules, name), marker = join(destination, ".mcp-vm-relay-installed.json");
+    const destination = join(nodeModules, name), marker = join(destination, ".mcp-relay-installed.json");
     try {
       if (JSON.parse(await readFile(marker, "utf8")).sha256 === expected) {
         installed.push({ name, sha256: expected, reused: true });

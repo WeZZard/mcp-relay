@@ -45,8 +45,8 @@ writeFileSync(pluginJsonPath, JSON.stringify(plugin, null, 2) + '\n');
 
 const piMcpPath = join(ROOT, 'pi-mcp.json');
 const piMcpBefore = readFileSync(piMcpPath, 'utf8');
-const piMcpAfter = piMcpBefore.replace(/@wezzard\/mcp-vm-relay@[^"]+/, `@wezzard/mcp-vm-relay@${version}`);
-if (piMcpAfter === piMcpBefore) fail('pi-mcp.json did not contain a @wezzard/mcp-vm-relay@<version> pin to update');
+const piMcpAfter = piMcpBefore.replace(/@wezzard\/mcp-relay@[^"]+/, `@wezzard/mcp-relay@${version}`);
+if (piMcpAfter === piMcpBefore) fail('pi-mcp.json did not contain a @wezzard/mcp-relay@<version> pin to update');
 writeFileSync(piMcpPath, piMcpAfter);
 
 run('npm', ['install', '--package-lock-only']);

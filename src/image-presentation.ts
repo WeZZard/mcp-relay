@@ -11,7 +11,7 @@ import { deflateSync, inflateSync } from 'node:zlib';
  */
 export const IMAGE_PRESENTATION_POLICY = Object.freeze({
  version: 1,
- processor: 'mcp-vm-relay/image-presentation',
+ processor: 'mcp-relay/image-presentation',
  maxWidth: 2000,
  maxHeight: 2000,
  maxBytes: 4 * 1024 * 1024,
