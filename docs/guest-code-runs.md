@@ -83,7 +83,18 @@ flowchart LR
 - A cancelled call or the end of the session stops the wait at once. Nothing was acquired, so the guest leaves the session as after any refusal, and a session that ends with `MCP_RELAY_ON_EXIT=release` still exits promptly.
 - When the wait runs out, `relay_acquire` refuses with vm-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
 
-## 10. Verification
+## 10. One way to relay an action (DC-23)
+
+- `relay_code` is the only tool that runs anything in a guest. It takes `guest`, `language` (`javascript`, `typescript` or `python`) and `code`, as today.
+- The code does what the other tools did:
+  - a command, through the language's own way of starting a process;
+  - a script, as the code itself, or as a file the agent staged into the workspace with `relay_stage` and the code runs;
+  - cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines, as the image lists them.
+- `relay_code` takes `diagnostic` from `relay_exec`: a diagnostic run records the code and its outcome without snapshots, and may run before `relay_stage`, to diagnose or repair a guest. A diagnostic run needs the language's runtime in the guest, and is never visual verification.
+- Removed: `relay_exec`, `relay_script`, `relay_run`, `relay_gate` and `relay_tools`; `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them; and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
+- The tools that manage a guest stay: `relay_search`, `relay_probe`, `relay_acquisition_capabilities`, `relay_acquire`, `relay_stage`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release`, `relay_status` and the console tools.
+
+## 11. Verification
 
 - Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
 - Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
