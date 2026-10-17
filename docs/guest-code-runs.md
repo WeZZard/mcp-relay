@@ -1,6 +1,6 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15 and DC-17 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
@@ -44,6 +44,13 @@ flowchart LR
 - The check is `assertHostPath` with the project folder as its root, so a path that leaves the folder, or holds a symlink at or below it, is refused.
 - The relay writes on the host only under the project folder, in `relay-evidence/`, and in its own state folder. This is unchanged.
 
-## 6. Verification
+## 6. The guest's network (DC-17)
 
-- Unit tests cover DC-13 and DC-15 with a fake backend, as `tests/console.test.ts` does.
+- `relay_acquire` passes vm-service the `network` that `MCP_RELAY_GUEST_NETWORK` names: `nat`, the default, or `internet`.
+- With `internet`, the guest reaches the internet, and reaches neither the host nor any private network (vm-service's DC-13).
+- `relay_acquire` takes no network from the agent, so an agent cannot widen what its guest reaches.
+- A vm-service that cannot give `internet` refuses the acquisition with its reason. The relay never falls back to `nat`.
+
+## 7. Verification
+
+- Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
