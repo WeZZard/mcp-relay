@@ -1,6 +1,6 @@
 {
   "name": "mcp-relay",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "description": "Runs an agent's code on fresh, isolated VMs, several at once, each run recorded with evidence",
   "author": {
     "name": "WeZZard"
