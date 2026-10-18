@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { RelayManager } from './manager.js';
-import { relayParameters, toolInputSchema, validateRelayInput, type RelayAction, type RunKind } from './schema.js';
+import { relayParameters, toolInputSchema, validateRelayInput, type RelayAction } from './schema.js';
 import type { ImageResult } from './images.js';
 
 /**
@@ -11,18 +11,16 @@ import type { ImageResult } from './images.js';
  * every tool but relay_status, the action dispatch and the bounded result
  * rendering. The MCP server (`src/server.ts`) wraps exactly this and adds
  * relay_status, so every MCP client (Claude Code, pi through pi-mcp-adapter,
- * or a bare MCP client) sees the same fifteen tools with the same schemas,
+ * or a bare MCP client) sees the same fourteen tools with the same schemas,
  * results and error semantics.
  */
 export interface RelayToolAnnotations { readOnlyHint: boolean; destructiveHint: boolean; idempotentHint: boolean; openWorldHint: boolean }
-export interface RelayTool { name: string; title: string; description: string; annotations: RelayToolAnnotations; action: RelayAction; kind?: RunKind }
+export interface RelayTool { name: string; title: string; description: string; annotations: RelayToolAnnotations; action: RelayAction }
 
 /** Read-only tools: they never change the VM, and calling one again changes nothing new. */
 const readOnly: RelayToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 /** A tool that acts on the VM. `destructive` is true only for the two tools that destroy it; `openWorld` is true only for the tools that run guest code, which may reach the network. */
 const acts = (openWorld: boolean, destructive = false): RelayToolAnnotations => ({ readOnlyHint: false, destructiveHint: destructive, idempotentHint: false, openWorldHint: openWorld });
-
-const runShared = 'Evidence is automatic, as for relay_command, whose optional `reason`, `step`, `snapshots` and `timeoutMs` it shares.';
 
 export const relayTools: readonly RelayTool[] = [
   {
@@ -31,7 +29,7 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_probe', action: 'probe', title: 'Probe host and guest readiness', annotations: readOnly,
-    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_command or relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.',
+    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`/bin/sh`, `node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.',
   },
   {
     name: 'relay_acquisition_capabilities', action: 'acquisition-capabilities', title: 'Read acquisition capabilities', annotations: readOnly,
@@ -39,19 +37,15 @@ export const relayTools: readonly RelayTool[] = [
   },
   {
     name: 'relay_acquire', action: 'acquire', title: 'Acquire a VM', annotations: acts(false),
-    description: 'Acquire one fresh VM, a guest, and start its ownership heartbeat. The result\'s `guest` is the guest\'s name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session\'s limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result\'s `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend\'s reason and the time waited. The backend\'s other refusals pass through at once. Continue with relay_stage, relay_command or relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input.',
+    description: 'Acquire one fresh VM, a guest, and start its ownership heartbeat. The result\'s `guest` is the guest\'s name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session\'s limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result\'s `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend\'s reason and the time waited. The backend\'s other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input.',
   },
   {
     name: 'relay_stage', action: 'stage', title: 'Stage the guest runtime', annotations: acts(false),
     description: 'Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto the acquired guest that `guest` names. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result\'s `snapshots` says which. When the image lists cua-driver, staging waits up to 120 s for it to take a screenshot, since the image starts its daemon at login, and refuses if it never does. `cuaDriver` names the guest cua-driver the snapshots use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording\'s evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held.',
   },
   {
-    name: 'relay_command', action: 'run', kind: 'exec', title: 'Run a guest command', annotations: acts(true),
-    description: 'Run one guest command (`argv`) as one recorded operation; never hide several interactions in one call. Evidence is automatic: the relay records a step derived from the command and, when the image lists cua-driver, snapshots the display before and after. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true` records a diagnosis or repair without snapshots, even before relay_stage; it is never visual verification, and its result has one `output` field with stdout and stderr combined.',
-  },
-  {
-    name: 'relay_script', action: 'run', kind: 'script', title: 'Run a guest script', annotations: acts(true),
-    description: `Run one guest script as this call's single recorded operation; the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. ${runShared} Requires \`language\` (\`javascript\`, \`typescript\` or \`python\`) and \`inline\`: with \`inline: true\` give the script itself as \`code\` (up to 1 MiB); with \`inline: false\` give \`localPath\`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one \`inline\` names; any other call is refused. It runs in the staged workspace: JavaScript with the guest's Node.js, TypeScript with \`tsx\` from the guest's PATH or else the guest Node.js's own type stripping (22.6 or later), and Python with \`python3\` from the guest's PATH (relay_probe scope=guest reports which run); a missing runtime refuses the run before it starts.`,
+    name: 'relay_script', action: 'run', title: 'Run a guest script', annotations: acts(true),
+    description: 'Run one guest script as one recorded operation; never hide several interactions in one call. A command is a shell script. The script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines, and its exit status says whether it succeeded, so a script that calls cua-driver checks the driver\'s answer itself. Requires `language` (`shell`, `javascript`, `typescript` or `python`) and `inline`: with `inline: true` give the script itself as `code` (up to 1 MiB); with `inline: false` give `localPath`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one `inline` names; any other call is refused. It runs in the staged workspace: shell with `/bin/sh`, JavaScript with the guest\'s Node.js, TypeScript with `tsx` from the guest\'s PATH or else the guest Node.js\'s own type stripping (22.6 or later), and Python with `python3` from the guest\'s PATH (relay_probe scope=guest reports which run); a missing runtime refuses the run before it starts. Evidence is automatic: the relay records a step derived from the call and, when the image lists cua-driver, snapshots the display before and after. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true`, for shell scripts only, records a diagnosis or repair without snapshots, even before relay_stage, running the script as `/bin/sh -c`; it is never visual verification, and its result has one `output` field with stdout and stderr combined.',
   },
   {
     name: 'relay_image', action: 'image', title: 'Retrieve a saved image', annotations: readOnly,
@@ -83,16 +77,16 @@ export const relayTools: readonly RelayTool[] = [
   },
 ];
 
-/** A tool's own input schema, derived fresh from the strict contract branch its `action`/`kind` selects. */
+/** A tool's own input schema, derived fresh from the strict contract branch its `action` selects. */
 export function relayToolInputSchema(tool: RelayTool): Record<string, unknown> {
-  return toolInputSchema(tool.action, tool.kind);
+  return toolInputSchema(tool.action);
 }
 
-/** Map one MCP call's tool name and arguments back to the strict contract's action shape, e.g. `relay_command` args become `{ action: 'run', kind: 'exec', ...args }`, then dispatched through `relayCall` exactly as the retired single `relay` tool was. */
+/** Map one MCP call's tool name and arguments back to the strict contract's action shape, e.g. `relay_script` args become `{ action: 'run', ...args }`, then dispatched through `relayCall` exactly as the retired single `relay` tool was. */
 export function relayToolInput(name: string, args: Record<string, unknown>): unknown {
   const tool = relayTools.find(candidate => candidate.name === name);
   if (!tool) throw new Error(`Unknown relay tool: ${name}`);
-  return { action: tool.action, ...(tool.kind ? { kind: tool.kind } : {}), ...args };
+  return { action: tool.action, ...args };
 }
 
 /** The tool's input schema as plain JSON (TypeBox symbol keys dropped), for front ends that hand JSON Schema to a runtime. */

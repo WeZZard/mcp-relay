@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { validateRelayInput } from '../src/schema.js';
 import { probeLocal } from '../src/probe.js';
 
-const run = { action: 'run', kind: 'exec', guest: 'check-1', reason: 'Inspect the owned guest', argv: ['true'], step: { id: 'check', title: 'Check', expected: 'Exit zero', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } };
+const run = { action: 'run', guest: 'check-1', reason: 'Inspect the owned guest', language: 'shell', inline: true, code: 'true', step: { id: 'check', title: 'Check', expected: 'Exit zero', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } };
 
 test('execution timeout is bounded independently from screenshot timing and TTL', () => {
   for (const timeoutMs of [1, 120000, 3600000]) assert.doesNotThrow(() => validateRelayInput({ ...run, timeoutMs }));
@@ -12,10 +12,12 @@ test('execution timeout is bounded independently from screenshot timing and TTL'
   assert.doesNotThrow(() => validateRelayInput(run));
 });
 
-test('diagnostic execution is explicit, relay_command-only, and cannot join a screenshot group', () => {
+test('diagnostic execution is explicit, for shell scripts only, and cannot join a screenshot group', () => {
   assert.doesNotThrow(() => validateRelayInput({ ...run, diagnostic: true }));
-  assert.throws(() => validateRelayInput({ ...run, argv: undefined, diagnostic: true, kind: 'script', inline: true, code: '1', language: 'javascript' }), /Invalid relay input/, 'relay_script takes no diagnostic (DC-23)');
-  assert.throws(() => validateRelayInput({ ...run, argv: undefined, diagnostic: true, kind: 'code', code: '1', language: 'javascript' }), /Invalid relay input/, 'relay_code is gone (DC-23)');
+  assert.doesNotThrow(() => validateRelayInput({ ...run, inline: false, code: undefined, localPath: 'repair.sh', diagnostic: true }));
+  for (const language of ['javascript', 'typescript', 'python']) assert.throws(() => validateRelayInput({ ...run, diagnostic: true, code: '1', language }), /only a shell script may be diagnostic/, language);
+  assert.throws(() => validateRelayInput({ ...run, diagnostic: true, kind: 'exec' }), /Invalid relay input/, 'a run takes no kind (DC-26)');
+  assert.throws(() => validateRelayInput({ ...run, code: undefined, inline: undefined, argv: ['true'] }), /Invalid relay input/, 'relay_command is gone (DC-26)');
   assert.throws(() => validateRelayInput({ ...run, diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }));
   assert.throws(() => validateRelayInput({ action: 'stage', diagnostic: true }));
 });

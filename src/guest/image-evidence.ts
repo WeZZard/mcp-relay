@@ -11,7 +11,12 @@ import type { FramedRequest } from "@wezzard/relay-driver-host-sdk";
  * (cua-driver): it takes no snapshots, and their absence is not a gap
  * (docs/guest-code-runs.md §3). Absent means capture, as before.
  */
-export type GuestRequest = FramedRequest & { readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly capture?: boolean };
+/**
+ * The request the guest receives: a script, given inline as `code` or as an
+ * uploaded `remotePath`, with no kind (DC-26). The SDK's `kind` and `argv`
+ * may still be present; the receiver reads neither.
+ */
+export type GuestRequest = Omit<FramedRequest, "kind" | "language"> & { readonly kind?: string; readonly language?: "shell" | "javascript" | "typescript" | "python"; readonly because: string; readonly timeoutMs?: number; readonly diagnostic?: boolean; readonly capture?: boolean };
 
 export const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 
@@ -37,7 +42,7 @@ export interface GuestImageEvidence {
 }
 
 export function afterRequested(request: GuestRequest): boolean {
-  return !(request?.kind === "exec" && request.diagnostic === true) && request?.capture !== false &&
+  return request?.diagnostic !== true && request?.capture !== false &&
     !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
 }
 

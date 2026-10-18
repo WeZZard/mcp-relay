@@ -42,12 +42,12 @@ test('the JSON schema names every action and carries the strict branches; symbol
   const schema = relayJsonSchema();
   assert.equal(schema.type, 'object');
   assert.deepEqual((schema.properties as any).action.enum, [...relayActions]);
-  assert.equal((schema.anyOf as unknown[]).length, 14); // thirteen actions, run in two kinds
+  assert.equal((schema.anyOf as unknown[]).length, 13); // thirteen actions, one branch each (DC-26)
   assert.equal(Object.getOwnPropertySymbols(schema).length, 0);
 });
 
-test('the fourteen action-backed relay_* tools each derive a plain-object schema with no action, no kind and no root combinator', () => {
-  assert.equal(relayTools.length, 14);
+test('the thirteen action-backed relay_* tools each derive a plain-object schema with no action, no kind and no root combinator', () => {
+  assert.equal(relayTools.length, 13);
   assert.deepEqual(relayTools.map(t => t.name), [...new Set(relayTools.map(t => t.name))], 'tool names are unique');
   for (const tool of relayTools) {
     assert.match(tool.name, /^relay_[a-z_]+$/);
@@ -58,30 +58,23 @@ test('the fourteen action-backed relay_* tools each derive a plain-object schema
     assert.equal(schema.additionalProperties, false);
     for (const combinator of ['anyOf', 'oneOf', 'allOf']) assert.ok(!(combinator in schema), `${tool.name} has a root ${combinator}`);
     assert.ok(!('action' in (schema.properties as object)), `${tool.name} exposes action`);
-    if (tool.kind) assert.ok(!('kind' in (schema.properties as object)), `${tool.name} exposes kind`);
+    assert.ok(!('kind' in (schema.properties as object)), `${tool.name} exposes kind`);
   }
   const runTools = relayTools.filter(t => t.action === 'run');
-  assert.deepEqual(runTools.map(t => [t.name, t.kind]), [['relay_command', 'exec'], ['relay_script', 'script']]);
-  for (const name of ['relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools', 'relay_cua', 'relay_browser']) assert.ok(!relayTools.some(t => t.name === name), `${name} is gone (DC-23)`);
+  assert.deepEqual(runTools.map(t => t.name), ['relay_script'], 'one run tool (DC-26)');
+  for (const name of ['relay_command', 'relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools', 'relay_cua', 'relay_browser']) assert.ok(!relayTools.some(t => t.name === name), `${name} is gone (DC-23, DC-26)`);
   const scriptSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_script')!);
   assert.deepEqual(scriptSchema.required, ['guest', 'language', 'inline']);
-  assert.deepEqual(Object.keys(scriptSchema.properties as object).sort(), ['code', 'guest', 'inline', 'language', 'localPath', 'reason', 'snapshots', 'step', 'timeoutMs']);
-  const commandSchema = relayToolInputSchema(relayTools.find(t => t.name === 'relay_command')!);
-  assert.deepEqual(commandSchema.required, ['guest', 'argv']);
-  assert.ok('diagnostic' in (commandSchema.properties as object), 'relay_command keeps diagnostic');
-  assert.ok(!('diagnostic' in (scriptSchema.properties as object)), 'relay_script has no diagnostic');
-  for (const name of ['relay_command', 'relay_script']) {
-    const required = relayToolInputSchema(relayTools.find(t => t.name === name)!).required as string[];
-    assert.ok(!required.some(key => ['reason', 'step', 'snapshots'].includes(key)), `${name} no longer requires the evidence fields`);
-  }
+  assert.deepEqual(Object.keys(scriptSchema.properties as object).sort(), ['code', 'diagnostic', 'guest', 'inline', 'language', 'localPath', 'reason', 'snapshots', 'step', 'timeoutMs']);
+  assert.deepEqual((scriptSchema.properties as any).language.enum, ['shell', 'javascript', 'typescript', 'python']);
+  assert.ok(!(scriptSchema.required as string[]).some(key => ['reason', 'step', 'snapshots', 'diagnostic'].includes(key)), 'relay_script requires no evidence field and no diagnostic');
 });
 
-test('relayToolInput maps each tool name back to the action shape relayCall dispatches, e.g. relay_command becomes action=run kind=exec', () => {
+test('relayToolInput maps each tool name back to the action shape relayCall dispatches, e.g. relay_script becomes action=run with no kind', () => {
   assert.deepEqual(relayToolInput('relay_search', { name: 'Firefox' }), { action: 'search', name: 'Firefox' });
   assert.deepEqual(relayToolInput('relay_probe', { scope: 'guest' }), { action: 'probe', scope: 'guest' });
-  assert.deepEqual(relayToolInput('relay_command', { argv: ['true'] }), { action: 'run', kind: 'exec', argv: ['true'] });
-  assert.deepEqual(relayToolInput('relay_script', { language: 'python', inline: true, code: 'print(1)' }), { action: 'run', kind: 'script', language: 'python', inline: true, code: 'print(1)' });
-  for (const name of ['relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools']) assert.throws(() => relayToolInput(name, {}), /Unknown relay tool/, name);
+  assert.deepEqual(relayToolInput('relay_script', { language: 'python', inline: true, code: 'print(1)' }), { action: 'run', language: 'python', inline: true, code: 'print(1)' });
+  for (const name of ['relay_command', 'relay_exec', 'relay_code', 'relay_run', 'relay_gate', 'relay_tools']) assert.throws(() => relayToolInput(name, {}), /Unknown relay tool/, name);
   assert.deepEqual(relayToolInput('relay_finish', {}), { action: 'finish' });
   assert.throws(() => relayToolInput('relay_dance', {}), /Unknown relay tool/);
 });
@@ -94,21 +87,27 @@ function fakeManager(run: unknown, image?: unknown): RelayManager {
     acquisitionCapabilities: record('acquisitionCapabilities'), consoleResolve: record('consoleResolve'), consoleOpen: record('consoleOpen'), consoleCancel: record('consoleCancel') } as unknown as RelayManager;
 }
 const step = { id: 'step', title: 'Fixture', expected: 'Completes', inputMode: 'ordinary' };
-const run = { action: 'run', guest: 'core-1', reason: 'Exercise dispatch without a VM', kind: 'exec', argv: ['node', '--version'], step, snapshots: { afterIntervalMs: 0 } };
+const run = { action: 'run', guest: 'core-1', reason: 'Exercise dispatch without a VM', language: 'shell', inline: true, code: 'node --version', step, snapshots: { afterIntervalMs: 0 } };
 
 test('relayCall validates, dispatches by action, and flags a refused, uncertain or nonzero run as an error result', async () => {
   let obtained = 0;
   await assert.rejects(relayCall(() => { obtained++; return fakeManager({}); }, { action: 'dance' }), /Invalid relay input/);
   assert.equal(obtained, 0); // invalid input never obtains a manager
-  // The evidence fields are optional now; a bare exec is valid and the manager derives the record.
+  // The evidence fields are optional; a bare shell script is valid and the manager derives the record.
   const bare = fakeManager({ executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } });
-  assert.equal((await relayCall(bare, { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'] })).isError, false);
-  assert.deepEqual((bare as any).calls[0], { kind: 'exec', guest: 'core-1', argv: ['true'] });
-  await assert.rejects(relayCall(bare, { action: 'run', kind: 'exec', argv: ['true'] }), /Invalid relay input/, 'a run names its guest (DC-20)');
+  assert.equal((await relayCall(bare, { action: 'run', guest: 'core-1', language: 'shell', inline: true, code: 'true' })).isError, false);
+  assert.deepEqual((bare as any).calls[0], { guest: 'core-1', language: 'shell', inline: true, code: 'true' });
+  await assert.rejects(relayCall(bare, { action: 'run', language: 'shell', inline: true, code: 'true' }), /Invalid relay input/, 'a run names its guest (DC-20)');
+  for (const kind of ['exec', 'script', 'code']) await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind, guest: 'core-1', language: 'shell', inline: true, code: 'true' }), /Invalid relay input/, `a run takes no kind, ${kind} included (DC-26)`);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'run', guest: 'core-1', argv: ['true'] }), /Invalid relay input/, 'a command is a shell script, not argv (DC-26)');
   await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'mcp', guest: 'core-1', target: 'cua', tool: 'x' }), /Invalid relay input/);
   await assert.rejects(relayCall(fakeManager({}), { action: 'gate', guest: 'core-1', hold: 'h', decision: 'go' }), /Invalid relay input/);
   await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'code', guest: 'core-1', language: 'python', code: 'print(1)' }), /Invalid relay input/);
-  await assert.rejects(relayCall(fakeManager({}), { action: 'run', kind: 'exec', guest: 'core-1', argv: ['true'], diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic commands cannot join/);
+  await assert.rejects(relayCall(fakeManager({}), { action: 'run', guest: 'core-1', language: 'shell', inline: true, code: 'true', diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic scripts cannot join/);
+  for (const language of ['javascript', 'typescript', 'python']) await assert.rejects(relayCall(fakeManager({}), { action: 'run', guest: 'core-1', language, inline: true, code: '1', diagnostic: true }), /only a shell script may be diagnostic/, language);
+  const diagnostic = fakeManager({ executionId: 'd', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } });
+  assert.equal((await relayCall(diagnostic, { action: 'run', guest: 'core-1', language: 'shell', inline: false, localPath: 'repair.sh', diagnostic: true })).isError, false);
+  assert.deepEqual((diagnostic as any).calls[0], { guest: 'core-1', language: 'shell', inline: false, localPath: 'repair.sh', diagnostic: true });
   const probe = await relayCall(fakeManager({}), { action: 'probe' });
   assert.deepEqual(probe, { text: JSON.stringify({ probed: true }, null, 2), details: { probed: true }, isError: false });
   const completed = await relayCall(fakeManager({ executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } }), run);
@@ -118,7 +117,7 @@ test('relayCall validates, dispatches by action, and flags a refused, uncertain 
     const result = await relayCall(manager, run);
     assert.equal(result.isError, true, JSON.stringify(outcome));
     assert.match(result.text, new RegExp(outcome.kind));
-    assert.deepEqual(Object.keys((manager as any).calls[0]).sort(), ['argv', 'because', 'guest', 'kind', 'snapshots', 'step']); // reason travels as because
+    assert.deepEqual(Object.keys((manager as any).calls[0]).sort(), ['because', 'code', 'guest', 'inline', 'language', 'snapshots', 'step']); // reason travels as because
   }
 });
 
@@ -130,12 +129,12 @@ const descriptor = { imageId: `image-${'a'.repeat(64)}`, source: 'display', encl
 test('relay_script takes exactly the one of code and localPath that inline names; any other call is refused before the manager runs it', async () => {
   const ok = { executionId: 'x', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
   const inline = fakeManager(ok);
-  assert.equal((await relayCall(inline, { action: 'run', kind: 'script', guest: 'core-1', language: 'python', inline: true, code: 'print(1)' })).isError, false);
-  assert.deepEqual((inline as any).calls[0], { kind: 'script', guest: 'core-1', language: 'python', inline: true, code: 'print(1)' });
+  assert.equal((await relayCall(inline, { action: 'run', guest: 'core-1', language: 'python', inline: true, code: 'print(1)' })).isError, false);
+  assert.deepEqual((inline as any).calls[0], { guest: 'core-1', language: 'python', inline: true, code: 'print(1)' });
   const file = fakeManager(ok);
-  assert.equal((await relayCall(file, { action: 'run', kind: 'script', guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' })).isError, false);
-  assert.deepEqual((file as any).calls[0], { kind: 'script', guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' });
-  const base = { action: 'run', kind: 'script', guest: 'core-1', language: 'javascript' };
+  assert.equal((await relayCall(file, { action: 'run', guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' })).isError, false);
+  assert.deepEqual((file as any).calls[0], { guest: 'core-1', language: 'typescript', inline: false, localPath: 'tools/check.ts' });
+  const base = { action: 'run', guest: 'core-1', language: 'javascript' };
   for (const bad of [{ ...base, inline: true }, { ...base, inline: true, localPath: 'a.js' }, { ...base, inline: true, code: '1', localPath: 'a.js' }, { ...base, inline: false }, { ...base, inline: false, code: '1' }, { ...base, inline: false, code: '1', localPath: 'a.js' }]) {
     const manager = fakeManager(ok);
     await assert.rejects(relayCall(manager, bad), /Invalid relay input: relay_script with inline/, JSON.stringify(bad));
@@ -204,5 +203,5 @@ test('console and capability actions dispatch with their fields, and console-ope
   for (const bad of [{ ...open, userRequested: false }, { ...open, userRequested: undefined }, { ...open, expected: ' ' }, { ...open, reason: undefined }, { action: 'console-resolve', reason: 'rejected' }, { action: 'acquisition-capabilities', vnc: true }, { action: 'probe', scope: 'vm' }]) {
     await assert.rejects(relayCall(manager, bad), /Invalid relay input/);
   }
-  await assert.rejects(relayCall(manager, { ...run, kind: 'exec', diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic commands cannot join snapshot groups/);
+  await assert.rejects(relayCall(manager, { ...run, diagnostic: true, snapshots: { group: { groupId: 'g', phase: 'first' } } }), /Diagnostic scripts cannot join snapshot groups/);
 });

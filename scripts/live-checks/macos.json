@@ -32,32 +32,24 @@
   "show": 300
  },
  {
-  "tool": "relay_command",
+  "tool": "relay_script",
   "label": "cua get_screen_size",
   "args": {
    "guest": "live-check-macos-1",
-   "argv": [
-    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
-    "call",
-    "get_screen_size",
-    "--json",
-    "{}"
-   ]
+   "language": "shell",
+   "inline": true,
+   "code": "/Applications/CuaDriver.app/Contents/MacOS/cua-driver call get_screen_size --json '{}'"
   },
   "show": 200
  },
  {
-  "tool": "relay_command",
+  "tool": "relay_script",
   "label": "cua launch Calculator",
   "args": {
    "guest": "live-check-macos-1",
-   "argv": [
-    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
-    "call",
-    "launch_app",
-    "--json",
-    "{\"bundle_id\": \"com.apple.calculator\"}"
-   ]
+   "language": "shell",
+   "inline": true,
+   "code": "/Applications/CuaDriver.app/Contents/MacOS/cua-driver call launch_app --json '{\"bundle_id\": \"com.apple.calculator\"}'"
   },
   "show": 200,
   "stopOnError": true

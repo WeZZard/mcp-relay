@@ -102,17 +102,16 @@ only lifecycle exception. Other actions reject `reason`.
 | `console-open` | Required `console_id`, `attempt_id`, `userRequested: true`, `reason`, and `expected`. It opens the service-host viewer only following an explicit user request. |
 | `console-cancel` | Required `console_id` and `attempt_id`. It cancels managed viewing resources without releasing the lease. |
 | `stage` | Optional `workspace`, `files`, `nodePath`, `cuaDriver`, `browser`, and explicit `resetRecording`. |
-| `run` | Required `reason`, `kind`, `step`, `snapshots`, and kind-specific fields; optional `timeoutMs`. |
+| `run` | Required `language` and `inline`, and the one of `code` and `localPath` that `inline` names; optional `diagnostic` for a shell script, `reason`, `step`, `snapshots` and `timeoutMs`. A run has no kind ([guest-code-runs.md §10](guest-code-runs.md#10-every-run-is-a-script-dc-23-dc-25-dc-26)). |
 | `image` | Required closed `target`: display `{source:"display", sessionId, executionId, phase:"before"|"after"}`, application `{source:"application", name, path?}`, or reference `{source:"reference", imageId}`. |
 | `extract` | Required `names` |
 | `finish` | None |
 | `release` | None |
 
-`run.kind` remains `exec | script | code | cua | browser`, selecting respectively
-`argv`, `localPath`/`language`, `code`/`language`, `tool`/`args`, or `browser`.
+Every run is a script in `shell`, `javascript`, `typescript` or `python`; a command is a shell script (DC-26).
 
-- The existing `exec` branch accepts optional `diagnostic: true` for explicitly requested diagnosis or repair without screenshot evidence. It uses the owned vm-service command channel before or after staging, so damaged capture or guest recording state cannot prevent diagnosis. It keeps required intent, step, and standalone snapshot metadata for a consistent request shape, but records that screenshots were not requested.
-- Diagnostic commands cannot join screenshot groups. Their output and receipts are retained on the host, and evidence review identifies them as command-only rather than visual verification.
+- A shell script accepts optional `diagnostic: true` for explicitly requested diagnosis or repair without screenshot evidence. It uses the owned vm-service command channel before or after staging, so damaged capture or guest recording state cannot prevent diagnosis. It keeps required intent, step, and standalone snapshot metadata for a consistent request shape, but records that screenshots were not requested.
+- Diagnostic scripts cannot join screenshot groups. Their output and receipts are retained on the host, and evidence review identifies them as command-only rather than visual verification.
 - `stage.resetRecording: true` archives the previous guest recording state and host evidence, starts a new recording session in the same VM, and returns references to previous evidence. It does not delete a receiver lock or imply that historical damaged evidence passed verification. An interrupted reset is reconciled using its persisted identity.
 
 `browser.action` selects `navigate | click | type | press | read`; it is not the

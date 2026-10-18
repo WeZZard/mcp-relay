@@ -33,32 +33,24 @@
   "show": 300
  },
  {
-  "tool": "relay_command",
+  "tool": "relay_script",
   "label": "cua get_screen_size",
   "args": {
    "guest": "live-check-ubuntu-1",
-   "argv": [
-    "/usr/local/bin/cua-driver",
-    "call",
-    "get_screen_size",
-    "--json",
-    "{}"
-   ]
+   "language": "shell",
+   "inline": true,
+   "code": "/usr/local/bin/cua-driver call get_screen_size --json '{}'"
   },
   "show": 200
  },
  {
-  "tool": "relay_command",
+  "tool": "relay_script",
   "label": "cua list_apps",
   "args": {
    "guest": "live-check-ubuntu-1",
-   "argv": [
-    "/usr/local/bin/cua-driver",
-    "call",
-    "list_apps",
-    "--json",
-    "{}"
-   ]
+   "language": "shell",
+   "inline": true,
+   "code": "/usr/local/bin/cua-driver call list_apps --json '{}'"
   },
   "show": 200
  },
@@ -85,15 +77,13 @@
   "show": 200
  },
  {
-  "tool": "relay_command",
+  "tool": "relay_script",
   "label": "diagnostic",
   "args": {
    "guest": "live-check-ubuntu-1",
-   "argv": [
-    "/bin/sh",
-    "-c",
-    "uname -a; ls"
-   ],
+   "language": "shell",
+   "inline": true,
+   "code": "uname -a; ls",
    "diagnostic": true
   },
   "show": 1500

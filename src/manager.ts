@@ -36,12 +36,13 @@ export interface ConsoleOpenInput extends ConsoleAttemptInput { userRequested: t
 export interface StageInput extends GuestSelector { resetRecording?: boolean; workspace?: string; files?: Array<{ local: string; path: string }>; nodePath?: string; cuaDriver?: string }
 /**
  * One run. `because`, `step` and `snapshots` are optional: whatever is left
- * out is derived from the call (see `derive`). `kind: 'exec'` is
- * relay_command, `argv`, which alone may be `diagnostic`; `kind: 'script'` is
- * relay_script, whose `inline` says whether the script is `code` or the host
- * file `localPath` (DC-23).
+ * out is derived from the call (see `derive`). Every run is a script, with
+ * no kind (DC-26): `inline` says whether the script is `code` or the host
+ * file `localPath`, and only a `shell` script may be `diagnostic`.
  */
-export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; kind: 'exec' | 'script'; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; argv?: string[]; inline?: boolean; localPath?: string; language?: 'javascript' | 'typescript' | 'python'; code?: string }
+export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; inline: boolean; localPath?: string; language: 'shell' | 'javascript' | 'typescript' | 'python'; code?: string }
+/** The file name extension of a script file the relay uploads, by language. */
+const SCRIPT_EXTENSIONS = { shell: 'sh', javascript: 'js', typescript: 'ts', python: 'py' } as const;
 interface BackendBinding { endpoint: string; tartHome: string; environmentFingerprint?: string }
 /** One guest's durable ownership record, `guests/<guest>/lease.json` in the session's state directory. */
 interface Enclosure {
@@ -145,13 +146,13 @@ async function settleEach(work: Array<Promise<unknown>>) {
   if (failed) throw failed.reason;
 }
 /**
- * The server's MCP `instructions`: the rules that cut across all fifteen
+ * The server's MCP `instructions`: the rules that cut across all fourteen
  * tools rather than belonging to one of them (see each tool's own
  * description for its specific contract). A compact version of the same
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers fifteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tools relay_command and relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_command runs one command; relay_script runs a JavaScript, TypeScript or Python script, given inline or as a project file, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_command or relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers fourteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
 export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
@@ -623,8 +624,8 @@ class Guest {
   async probe() {
     const e = this.current();
     const checks = [];
-    // Only Node.js is required, by staging; the other runtimes are facts (DC-13).
-    for (const [name, language, argv] of [['node', 'javascript', [e.node ?? 'node', '--version']], ['tsx', 'typescript', ['tsx', '--version']], ['python3', 'python', ['python3', '--version']]] as const) {
+    // Only Node.js is required, by staging; the other runtimes are facts (DC-13). `/bin/sh` has no portable --version, so it runs `exit 0`.
+    for (const [name, language, argv] of [['node', 'javascript', [e.node ?? 'node', '--version']], ['tsx', 'typescript', ['tsx', '--version']], ['python3', 'python', ['python3', '--version']], ['sh', 'shell', ['/bin/sh', '-c', 'exit 0']]] as const) {
       const required = name === 'node';
       try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, language, required, ...r, ready: r.code === 0 }); }
       catch (error) { checks.push({ name, language, required, ready: false, diagnostic: String(error) }); }
@@ -639,7 +640,7 @@ class Guest {
       software = listed ? { image: e.image, applications: listed.applications } : { image: e.image, applications: [], diagnostic: `The catalog does not list ${e.image}.` };
     } catch (error) { software = { image: e.image, diagnostic: `The image catalog could not be read: ${message(error)}` }; }
     const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
-    const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, software, snapshots, note: 'A ready runtime means its --version exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.', captureVerified: false, browserVerified: false };
+    const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, software, snapshots, note: 'A ready runtime means its --version, or for /bin/sh `exit 0`, exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.', captureVerified: false, browserVerified: false };
     await this.log('guest-readiness', undefined, facts); return facts;
   }
   private async consoleOwner(signal?: AbortSignal) {
@@ -881,7 +882,7 @@ class Guest {
     const e = this.current();
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.resetRecording || e.pendingReset) await this.resetRecording();
-    if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use relay_command with diagnostic: true for repairs, or stage with only corrected executable paths');
+    if (e.staged && (input.workspace || input.files?.length)) throw new Error('Runtime already staged; use a shell relay_script with diagnostic: true for repairs, or stage with only corrected executable paths');
     // Every host path is checked before anything reaches the guest (DC-15).
     const project = resolve(this.m.options.project);
     const files = [];
@@ -946,7 +947,7 @@ class Guest {
       } catch (error) {
         if (signal?.aborted) throw error;
         const waited = Date.now() - since;
-        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1000)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error)}. Diagnose or start it with relay_command and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error });
+        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1000)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error)}. Diagnose or start it with a shell relay_script and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error });
         await new Promise<void>(done => {
           const timer = setTimeout(done, retryMs);
           signal?.addEventListener('abort', () => { clearTimeout(timer); done(); }, { once: true });
@@ -965,11 +966,11 @@ class Guest {
     const e = this.current();
     const timeoutMs = input.timeoutMs ?? 120000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new Error('timeoutMs must be an integer from 1 to 3600000');
-    if (input.diagnostic && input.kind !== 'exec') throw new Error('diagnostic is only supported for relay_command');
+    if (input.diagnostic && input.language !== 'shell') throw new Error('Only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver');
     if (e.delivered) throw new Error('Evidence already sealed; release this VM explicitly');
     if (input.diagnostic) return this.diagnostic(input, timeoutMs, signal);
-    if (e.pendingReset) throw new Error('Recording reset is pending; retry stage to reconcile it, or use relay_command with diagnostic: true');
-    if (!e.staged || !this.session || !this.transport) throw new Error('Use relay_stage before a run, or relay_command with diagnostic: true for setup diagnosis and repair');
+    if (e.pendingReset) throw new Error('Recording reset is pending; retry stage to reconcile it, or use a shell relay_script with diagnostic: true');
+    if (!e.staged || !this.session || !this.transport) throw new Error('Use relay_stage before a run, or a shell relay_script with diagnostic: true for setup diagnosis and repair');
     const record = this.derive(e, input);
     await this.save();
     this.transport.because = record.because;
@@ -978,21 +979,16 @@ class Guest {
     // A cancelled run stops waiting for the receiver's answer; its outcome is then uncertain, never replayed.
     this.transport.signal = signal;
     const options = { step: record.step, snapshots: record.snapshots, cwd: join(e.guestRoot, 'workspace') };
+    // The SDK frames the request; the transport writes it for the guest without a kind (DC-26).
     let result;
-    if (input.kind === 'exec') {
-      if (!input.argv?.length) throw new Error('relay_command requires argv');
-      result = await this.session.exec(input.argv, options);
-    } else if (input.kind === 'script') {
-      if (!input.language) throw new Error('relay_script requires language');
-      if (input.inline) {
-        if (typeof input.code !== 'string' || input.localPath !== undefined) throw new Error('relay_script with inline: true takes the script as code, and no localPath');
-        result = await this.session.runCode(input.code, input.language, options);
-      } else {
-        if (!input.localPath || input.code !== undefined) throw new Error('relay_script with inline: false takes the script file as localPath, and no code');
-        const local = await this.m.projectPath(input.localPath, 'localPath');
-        result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${input.language === 'python' ? 'py' : input.language === 'typescript' ? 'ts' : 'js'}`), input.language, options);
-      }
-    } else throw new Error('Unknown operation kind');
+    if (input.inline) {
+      if (typeof input.code !== 'string' || input.localPath !== undefined) throw new Error('relay_script with inline: true takes the script as code, and no localPath');
+      result = await this.session.runCode(input.code, input.language as 'javascript', options);
+    } else {
+      if (!input.localPath || input.code !== undefined) throw new Error('relay_script with inline: false takes the script file as localPath, and no code');
+      const local = await this.m.projectPath(input.localPath, 'localPath');
+      result = await this.session.runScript(local, join(e.guestRoot, 'scripts', `${randomUUID()}.${SCRIPT_EXTENSIONS[input.language]}`), input.language as 'javascript', options);
+    }
     const outcome = result.outcome;
     if (outcome.kind !== 'completed' || outcome.exitStatus.code !== 0 || outcome.exitStatus.signal) {
       await this.log('execution-failed', record.because, result);
@@ -1009,19 +1005,21 @@ class Guest {
   }
   /**
    * The step record for a run, from the call itself: a title such as
-   * `exec node -e …`, an expected result, an input mode, a default
+   * `shell ls -al`, `code (python)` or `script check.py`, an expected result, an input mode, a default
    * after-snapshot wait and a reason. Anything the caller gave overrides it.
    */
   private derive(e: Enclosure, input: RunInput): { because: string; step: StepDescription; snapshots: SnapshotsRequest } {
     const seq = e.runSeq = (e.runSeq ?? 0) + 1;
     const stepId = (prefix: string) => `${prefix.replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^[^A-Za-z0-9]+/, '').slice(0, 100) || 'run'}-${seq}`;
-    const title = input.step?.title ?? (input.kind === 'exec' ? `exec ${(input.argv ?? []).map((arg, index) => index === 0 ? arg.split('/').at(-1) : arg).join(' ')}` : input.inline ? `code (${input.language ?? 'unknown'})` : `script ${input.localPath?.split('/').at(-1) ?? ''}`).slice(0, 500);
+    // A shell script given inline is usually one command, so its first line names the step, as the command did.
+    const firstLine = input.code?.split('\n').find(line => line.trim())?.trim();
+    const title = input.step?.title ?? (input.inline ? input.language === 'shell' && firstLine ? `shell ${firstLine}` : `code (${input.language})` : `script ${input.localPath?.split('/').at(-1) ?? ''}`).slice(0, 500);
     const snapshots: SnapshotsRequest = { ...(input.snapshots ?? {}) };
     const group = snapshots.group;
     if (!group ? snapshots.afterIntervalMs === undefined : group.phase === 'last' && group.afterIntervalMs === undefined && snapshots.afterIntervalMs === undefined) Object.assign(snapshots, { afterIntervalMs: DEFAULT_AFTER_INTERVAL_MS });
     return {
       because: input.because ?? `Relay ${title} (no reason given)`.slice(0, 4000),
-      step: { id: input.step?.id ?? stepId(input.kind === 'exec' ? 'exec' : input.inline ? 'code' : 'script'), title: title || input.kind, expected: input.step?.expected ?? 'Exits with status 0', inputMode: input.step?.inputMode ?? 'ordinary' },
+      step: { id: input.step?.id ?? stepId(input.inline ? 'code' : 'script'), title: title || 'script', expected: input.step?.expected ?? 'Exits with status 0', inputMode: input.step?.inputMode ?? 'ordinary' },
       snapshots,
     };
   }
@@ -1295,14 +1293,18 @@ class Guest {
   }
   private async diagnostic(input: RunInput, timeoutMs: number, signal?: AbortSignal) {
     const e = this.current();
-    if (!input.argv?.length || input.snapshots?.group) throw new Error('Diagnostic exec requires argv and cannot join a snapshot group');
+    if (input.language !== 'shell' || input.snapshots?.group) throw new Error('A diagnostic run is a shell script and cannot join a snapshot group');
+    // vm-service runs the script itself, so a script file is read here and sent as its text (DC-26).
+    const script = input.inline ? input.code : await readFile(await this.m.projectPath(input.localPath ?? '', 'localPath'), 'utf8');
+    if (typeof script !== 'string') throw new Error('relay_script with inline: true takes the script as code, and no localPath');
     const executionId = `diagnostic-${randomUUID()}`;
     const { guest: _guest, ...requested } = input;
-    const request = { executionId, at: new Date().toISOString(), evidenceMode: 'diagnostic', timeoutMs, ...requested };
+    // The command vm-service runs, recorded with the request so the review names it.
+    const argv = e.staged ? ['/bin/sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'relay-diagnostic', join(e.guestRoot, 'workspace'), '/bin/sh', '-c', script] : ['/bin/sh', '-c', script];
+    const request = { executionId, at: new Date().toISOString(), evidenceMode: 'diagnostic', timeoutMs, ...requested, argv };
     await jsonFile(join(e.hostRoot, 'host', 'diagnostics', `${executionId}.request.json`), request);
     let result;
     try {
-      const argv = e.staged ? ['/bin/sh', '-c', 'cd "$1" || exit; shift; exec "$@"', 'relay-diagnostic', join(e.guestRoot, 'workspace'), ...input.argv] : input.argv;
       // A cancelled command stops waiting for the guest; the outcome is then uncertain.
       const r = await this.m.channel.exec(e.lease!.vm, argv, timeoutMs, { signal });
       // vm-service returns one stream with stdout and stderr interleaved; report it once, as what it is.

@@ -1,12 +1,12 @@
 # Code runs in any guest
 
-This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-23 in [decisions.md](decisions.md#code-runs-in-any-guest).
+This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-26 in [decisions.md](decisions.md#code-runs-in-any-guest).
 
 ## 1. Context
 
 - An agent runs on a host. It works on the host with its own tools, and in a guest through the relay.
 - A guest is a VM from vm-service, macOS or Linux.
-- The agent runs commands and code in the guest, with `relay_command` and `relay_script`. The code drives the software the image lists, such as cua-driver, Playwright and Chrome DevTools.
+- The agent runs scripts in the guest with `relay_script`: shell, JavaScript, TypeScript or Python. A command is a shell script. The scripts drive the software the image lists, such as cua-driver, Playwright and Chrome DevTools.
 - The agent picks the image by the software it lists, with `relay_search`.
 - An application that hosts agents, such as The Desk, starts the relay as a stdio MCP server for each of its agents, and passes the agent's working folder as `MCP_RELAY_PROJECT` and its task as `MCP_RELAY_SESSION`.
 
@@ -32,7 +32,7 @@ flowchart LR
   - When the image lists capture software, snapshots are taken and checked as today.
   - The host decides once per lease, at the first `relay_stage`, from the image's applications in the catalog, and tells the receiver with each run. A catalog that cannot be read refuses the stage, so a run never loses its snapshots by mistake.
   - When the image lists capture software, `relay_stage` waits until cua-driver takes a screenshot before it returns, asking every 2 s for up to 120 s (DC-24). The image starts cua-driver's daemon at login, which can follow the guest's readiness by tens of seconds.
-  - A daemon that never answers refuses the stage with its error. The guest is kept, so the agent can start the daemon with a diagnostic `relay_command` and stage again.
+  - A daemon that never answers refuses the stage with its error. The guest is kept, so the agent can start the daemon with a diagnostic shell script and stage again.
 
 ## 4. Where the relay is used (DC-14)
 
@@ -84,21 +84,36 @@ flowchart LR
 - A cancelled call or the end of the session stops the wait at once. Nothing was acquired, so the guest leaves the session as after any refusal, and a session that ends with `MCP_RELAY_ON_EXIT=release` still exits promptly.
 - When the wait runs out, `relay_acquire` refuses with vm-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
 
-## 10. Two ways to relay an action (DC-23)
+## 10. Every run is a script (DC-23, DC-25, DC-26)
 
-- Two tools run anything in a guest, `relay_command` and `relay_script`. Each takes `guest`, and the optional `reason`, `step`, `snapshots` and `timeoutMs`.
-- `relay_command` runs one command, `argv`. It is `relay_exec` renamed, with the same behaviour.
-  - With `diagnostic: true`, the run records the command and its outcome without snapshots, and may run before `relay_stage`, to diagnose or repair a guest. The guest runs the command through vm-service directly, not through the receiver. The result has one `output` field with stdout and stderr together. A diagnostic run is never visual verification.
-- `relay_script` runs a script in `language` `javascript`, `typescript` or `python`. `inline` is required:
-  - `inline: true` takes the script itself, `code`, up to 1 MiB. This is what `relay_code` did.
-  - `inline: false` takes `localPath`, a file in the project folder (DC-15). This is what `relay_script` did.
+- One tool runs anything in a guest, `relay_script`. It takes `guest`, `language` and `inline`, the script, and the optional `diagnostic`, `reason`, `step`, `snapshots` and `timeoutMs`.
+- `language` is `shell`, `javascript`, `typescript` or `python`. A command is a shell script: `ls -al` is the shell script `ls -al`.
+- `inline` says where the script is:
+  - `inline: true` takes the script itself, `code`, up to 1 MiB.
+  - `inline: false` takes `localPath`, a file in the project folder (DC-15).
   - A call gives exactly the one of `code` and `localPath` that `inline` names. Any other call is refused before it reaches the guest.
-  - The guest runs JavaScript with the Node.js that runs the receiver, and Python with `python3` from the guest's `PATH`.
-  - The guest runs TypeScript with `tsx` from its `PATH`. When it has none, the receiver's Node.js runs the script with its own type stripping, which needs Node.js 22.6 or later (DC-25).
+- The guest runs each language with its own runtime:
+  - A shell script runs with `/bin/sh`, on macOS and on Linux. A script that needs another shell starts it itself, such as `exec /bin/zsh -c '…'`.
+  - JavaScript runs with the Node.js that runs the receiver.
+  - Python runs with `python3` from the guest's `PATH`.
+  - TypeScript runs with `tsx` from the guest's `PATH`. When the guest has none, the receiver's Node.js runs the script with its own type stripping, which needs Node.js 22.6 or later (DC-25).
   - A run whose runtime is missing is refused before anything starts, so it never ends `uncertain`.
+- `diagnostic: true` records a diagnosis or repair without snapshots, and may run before `relay_stage`.
+  - Only a shell script may be diagnostic, because a diagnostic run goes through vm-service directly, not through the receiver, so it cannot rely on Node.js.
+  - The guest runs the script as `/bin/sh -c <script>`. A script file is read on the host and sent the same way.
+  - After `relay_stage`, the script runs in the recording workspace; before it, in the guest's default directory.
+  - The result has one `output` field with stdout and stderr together. A diagnostic run cannot join a snapshot group, and it is never visual verification.
+- A run has no kind. The tool call, the relay's run input, the request the guest receives and the run's events in the guest's journal name none:
+  - The relay tells a script given inline from a script file by `inline`.
+  - The guest tells them by the request: a request that holds `code` and its SHA-256 is a script given inline, and a request that names an uploaded `remotePath` and its SHA-256 is a script file.
+  - The host SDK, relay-driver's, still names a kind and an interpreter when it frames a request. The relay's transport leaves both out of the request file it writes for the guest, so the guest's command comes only from the language and the verified script.
+  - The guest builds the command that runs the script from `language` and the verified file. It never runs a command the request names, so no interpreter option can run other bytes than the verified script.
 - A script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines.
-- Removed: `relay_exec` and `relay_code`, under their old names; `relay_run`, `relay_gate` and `relay_tools`; `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them; `relay_stage`'s `browserExecutable`, which only those servers used; and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
-- `relay_probe` with `scope: "guest"` reports, as facts, whether each language's runtime runs in the guest, and the software the image lists in the catalog. TypeScript is ready when `tsx` runs or the guest's Node.js strips types.
+  - The script decides whether it succeeded, by its exit status. A script that calls cua-driver reads the driver's answer itself and exits nonzero when the driver reports an error, even one it returned with exit status 0.
+  - The receiver no longer reads the answer of a command that called `cua-driver call`, because no run is a bare command any more.
+- The result of a run that is not diagnostic has the shape it had for both earlier tools: the outcome with its exit status, bounded `stdout` and `stderr`, `outputTruncated`, the step, the snapshots and the after-image's delivery.
+- Removed: `relay_command`; and before it, `relay_exec` and `relay_code` under their old names, `relay_run`, `relay_gate` and `relay_tools`, `relay_run`'s MCP targets, the guest MCP host and the pinned servers the relay staged for them, `relay_stage`'s `browserExecutable`, which only those servers used, and `relay_image`'s `relay-run` application files. `relay_image` keeps the display snapshots and the declared application files.
+- `relay_probe` with `scope: "guest"` reports, as facts, whether each language's runtime runs in the guest, `/bin/sh` included, and the software the image lists in the catalog. TypeScript is ready when `tsx` runs or the guest's Node.js strips types.
 - The tools that manage a guest stay: `relay_search`, `relay_probe`, `relay_acquisition_capabilities`, `relay_acquire`, `relay_stage`, `relay_image`, `relay_extract`, `relay_finish`, `relay_release`, `relay_status` and the console tools.
 
 ## 11. Verification
@@ -109,4 +124,4 @@ flowchart LR
 - Unit tests cover DC-22 with the fake vm-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.
 - Unit tests cover DC-24 with the fake vm-service: a cua-driver that fails three times and then answers is waited for, and the first run completes; one that never answers refuses the stage, keeps the guest, and a later stage succeeds; an image that lists no capture software asks for no screenshot.
 - Unit tests cover DC-25: the receiver picks `tsx`, then Node.js type stripping, for TypeScript, and refuses a script whose runtime is missing; a TypeScript script runs without `tsx` and completes.
-- Unit tests cover DC-23: `tools/list` serves `relay_command` and `relay_script` and none of `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools`; `relay_script` runs inline code and a project file in each language, and refuses a call whose `code` or `localPath` does not match `inline`; `relay_command` runs a command, and a diagnostic command runs before and after `relay_stage` without snapshots.
+- Unit tests cover DC-23 and DC-26: `tools/list` serves `relay_script` and none of `relay_command`, `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools`; `relay_script` runs inline code and a project file in each language, shell included, and refuses a call whose `code` or `localPath` does not match `inline`; a diagnostic shell script runs before and after `relay_stage` without snapshots, inline and from a file; a diagnostic script in any other language is refused; a guest without `/bin/sh` refuses a shell script before it starts; and no request the guest receives, and no event the guest journals for a run, names a kind of run.

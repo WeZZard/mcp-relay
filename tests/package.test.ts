@@ -290,7 +290,7 @@ test("guest receiver's real SDK journal and action records deliver end-to-end wi
   const root = await mkdtemp(join(await realpath(tmpdir()), "pi-relay-package-sdk-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const response = await receive({
-    kind: "exec", sessionId: options.sessionId, attemptId: "attempt-1", executionId: "execution-1", argv: ["fake-input"],
+    sessionId: options.sessionId, attemptId: "attempt-1", executionId: "execution-1", language: "shell", code: "fake-input", codeSha256: "b848f6cd4ab9d584c691d04969f712f84d72725ec6eb48f62a2a270ccb311aa9",
     because: "Avoid interrupting the active display", snapshots: { afterIntervalMs: 0 }, step: { id: "click", title: "Click Save", expected: "Saved" },
   }, { root, capture: async path => { await writeFile(path, png); }, dispatch: async () => ({ exitStatus: { code: 0, signal: null }, stdout: "saved" }) });
   assert.equal(response.outcome.kind, "completed");
@@ -312,19 +312,20 @@ async function originalBytes(root: string, prefix = ""): Promise<Map<string, Buf
   return originals;
 }
 
-for (const scenario of ["driver-refused", "driver-uncertain", "transport-uncertain"] as const) {
+// The receiver no longer reads a cua-driver answer (DC-26), so only the transport can disagree with a completed subprocess.
+for (const scenario of ["transport-uncertain"] as const) {
   test(`real receiver receipts correct step and viewer: ${scenario}`, async t => {
     const { receive } = await import("../src/guest/receiver.js");
     const root = await mkdtemp(join(await realpath(tmpdir()), "pi-relay-package-receipt-"));
     t.after(() => rm(root, { recursive: true, force: true }));
-    const stdout = scenario === "transport-uncertain" ? "saved" : JSON.stringify({ code: scenario === "driver-refused" ? "desktop_escalation_required" : "driver_unknown_error" });
+    const stdout = "saved";
     const subprocess = { exitStatus: { code: 0, signal: null }, stdout };
     const response = await receive({
-      kind: "exec", sessionId: options.sessionId, attemptId: "attempt-1", executionId: "execution-1", argv: ["cua-driver", "call", "click"],
+      sessionId: options.sessionId, attemptId: "attempt-1", executionId: "execution-1", language: "shell", code: "cua-driver call click", codeSha256: "32fecd861216074fc35560ff3024782cdd893867d4b3b13455a1add807d5916c",
       because: "Retain authoritative driver result", snapshots: { afterIntervalMs: 0 }, step: { id: "click", title: "Click Save", expected: "Saved" },
     }, { root, cuaDriver: "cua-driver", capture: async path => { await writeFile(path, png); }, dispatch: async () => subprocess });
-    const expected = scenario === "driver-refused" ? "refused" : "uncertain";
-    assert.equal(response.outcome.kind, scenario === "transport-uncertain" ? "completed" : expected);
+    const expected: string = "uncertain";
+    assert.equal(response.outcome.kind, "completed");
     if (scenario === "transport-uncertain") {
       // Actual transport layout: original guest frame plus transport verdict.
       await save(root, "host/receiver-receipts/execution-1.json", response);
@@ -416,7 +417,7 @@ test("repeated valid step IDs retain each real receiver execution's reason and e
   t.after(() => rm(root, { recursive: true, force: true }));
   for (const i of [1, 2]) {
     const request = {
-      kind: "exec", sessionId: options.sessionId, attemptId: "attempt-1", executionId: `execution-${i}`, argv: ["fake-input"],
+      sessionId: options.sessionId, attemptId: "attempt-1", executionId: `execution-${i}`, language: "shell", code: "fake-input", codeSha256: "b848f6cd4ab9d584c691d04969f712f84d72725ec6eb48f62a2a270ccb311aa9",
       because: `Reason${i}`, snapshots: { afterIntervalMs: 0 }, step: { id: "repeated", title: `Click ${i}`, expected: `Expected${i}` },
     };
     assert.equal((await receive(request, { root, capture: async path => { await writeFile(path, png); }, dispatch: async () => ({ exitStatus: { code: 0, signal: null }, stdout: "saved" }) })).outcome.kind, "completed");

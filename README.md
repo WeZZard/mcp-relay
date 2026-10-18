@@ -4,10 +4,10 @@ The Model Context Protocol front end of the VM relay, packaged as a Claude Code
 plugin and as a pi package. [pi-vm-relay](https://github.com/WeZZard/pi-vm-relay),
 which gave pi a native `relay` tool directly, is retired; mcp-relay replaces
 it for both Claude Code and pi, the latter loaded through `pi-mcp-adapter`. It
-is an MCP server: fifteen `relay_*` tools, each with its own schema, title
+is an MCP server: fourteen `relay_*` tools, each with its own schema, title
 and annotations, and the server's `instructions`. The user command, status,
 ships as one small command file per host (see "Commands"). There is no skill and no hook. Together they offer recorded,
-snapshot-evidenced commands and scripts in a fresh, dedicated VM, for any work
+snapshot-evidenced scripts, commands included as shell scripts, in a fresh, dedicated VM, for any work
 the agent chooses to run there; a script drives the desktop or a browser
 through the software the image lists, such as cua-driver or Playwright. Nothing here executes local computer-use, spawns
 subagents, targets physical machines, records video, or attaches to existing
@@ -48,7 +48,7 @@ adds nothing Claude-Code-specific beyond the marketplace packaging and the
 
 | In pi-vm-relay (retired, native pi extension) | Here (MCP server) |
 |---|---|
-| a registered `relay` tool with thirteen actions | fifteen `relay_*` MCP tools from the server `relay`, each with its own schema, title and annotations |
+| a registered `relay` tool with thirteen actions | fourteen `relay_*` MCP tools from the server `relay`, each with its own schema, title and annotations |
 | doctrine injected before each agent turn | the server's MCP `instructions`, plus a compact version in the `relay_probe` and `relay_acquire` descriptions for clients that do not surface `instructions` |
 | `/relay-status` command | `/mcp-relay-status` in pi, `/mcp-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
 | prompt-composed guest operator | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
@@ -73,7 +73,7 @@ Or add this repository as a marketplace and install the plugin from it:
 /plugin install mcp-relay@mcp-relay
 ```
 
-Once loaded, the model sees the fifteen tools as
+Once loaded, the model sees the fourteen tools as
 `mcp__plugin_mcp-relay_relay__relay_search`,
 `mcp__plugin_mcp-relay_relay__relay_probe`, and so on through
 `mcp__plugin_mcp-relay_relay__relay_status` (see "The tools" below for
@@ -128,20 +128,20 @@ and no `action` field, derived directly from the strict per-action contract in
 `target`, are unaffected). A call is mapped back to that contract's shape and
 dispatched exactly as the retired single `relay` tool was, so behaviour,
 results, image blocks and `isError` semantics are unchanged from before this
-split. Two tools run anything in a guest: `relay_command` runs one command, and
-`relay_script` runs a JavaScript, TypeScript or Python script, given inline or
-as a project file. Both take the optional `reason`, `step`, `snapshots` and
-`timeoutMs`, and their evidence is automatic: see "Runs" below.
+split. One tool runs anything in a guest: `relay_script` runs a shell,
+JavaScript, TypeScript or Python script, given inline or as a project file. A
+command is a shell script. It takes the optional `reason`, `step`, `snapshots`,
+`timeoutMs` and, for a shell script, `diagnostic`, and its evidence is
+automatic: see "Runs" below.
 
-| Tool | Title | Replaces (`action`, `kind`) | Purpose |
+| Tool | Title | Replaces (`action`) | Purpose |
 |---|---|---|---|
 | `relay_search` | Search installed applications | `search` | Find installed applications from image inventories by name and optional OS. |
-| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and every guest the session holds, with its state. `scope: "guest"` with `guest` checks Node.js, which staging requires, and reports as facts whether each `relay_script` language's runtime runs (`node`, `tsx`, `python3`), the software the image lists in the catalog and whether runs take snapshots, on that guest, without installing, starting or claiming capture readiness. |
+| `relay_probe` | Probe host and guest readiness | `probe` | Default `scope: "host"` reports host facts, service availability and every guest the session holds, with its state. `scope: "guest"` with `guest` checks Node.js, which staging requires, and reports as facts whether each `relay_script` language's runtime runs (`/bin/sh`, `node`, `tsx`, `python3`), the software the image lists in the catalog and whether runs take snapshots, on that guest, without installing, starting or claiming capture readiness. |
 | `relay_acquisition_capabilities` | Read acquisition capabilities | `acquisition-capabilities` | Read versioned acquisition options (VNC backends) without allocation or ownership recovery. |
 | `relay_acquire` | Acquire a VM | `acquire` | Register the task, acquire a fresh VM, a guest, on the network `MCP_RELAY_GUEST_NETWORK` names and start its heartbeat; declare outputs before work. Answers `guest`, the guest's name in the session, which every later call on it names. Optional `vnc` prepares sharing without opening a viewer. |
 | `relay_stage` | Stage the guest runtime | `stage` | Push and hash-check the runtime, support files and an opt-in workspace, all from the project folder. Needs only Node.js in the guest, and reports whether runs take snapshots (only when the image lists cua-driver). Failed staging can be retried; a staged runtime accepts corrected executable paths; `resetRecording: true` archives the recording and starts a new one on the same VM. |
-| `relay_command` | Run a guest command | `run`, `exec` | One recorded guest command (`argv`). `diagnostic: true` records command diagnosis or repair without screenshot evidence, including before staging. Was `relay_exec`. |
-| `relay_script` | Run a guest script | `run`, `script` | One recorded guest script in `language` (`javascript`, `typescript` or `python`). `inline: true` takes the script as `code`, up to 1 MiB (was `relay_code`); `inline: false` takes `localPath`, a file in the project folder (was `relay_script`). |
+| `relay_script` | Run a guest script | `run` | One recorded guest script in `language` (`shell`, `javascript`, `typescript` or `python`); a command is a shell script. `inline: true` takes the script as `code`, up to 1 MiB; `inline: false` takes `localPath`, a file in the project folder. `diagnostic: true`, for a shell script only, records diagnosis or repair without screenshot evidence, including before staging. |
 | `relay_image` | Retrieve a saved image | `image` | Retrieve one saved display image, declared application image or immutable image reference without input, capture, directory export or acquisition. |
 | `relay_extract` | Extract declared outputs | `extract` | Pull only declared files or directories with source and host checksum verification. |
 | `relay_finish` | Finish and deliver evidence | `finish` | Extract the guest's declared outputs, deliver and verify its snapshot package, destroy its VM and unregister it; the session's other guests keep running. |
@@ -154,19 +154,21 @@ as a project file. Both take the optional `reason`, `step`, `snapshots` and
 `readOnlyHint`/`idempotentHint` are true for `relay_search`, `relay_probe`,
 `relay_acquisition_capabilities`, `relay_console_resolve`, `relay_image` and
 `relay_status`; `destructiveHint` is true only for `relay_finish` and
-`relay_release`, which destroy a guest's VM; `openWorldHint` is true only for the
-two run tools, whose guest code may reach the network.
+`relay_release`, which destroy a guest's VM; `openWorldHint` is true only for
+`relay_script`, whose guest code may reach the network.
 
-`relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools` are
-gone (DC-23, `docs/guest-code-runs.md` §10). `relay_exec` is `relay_command`,
-and `relay_code` is `relay_script` with `inline: true`. In place of
+`relay_command`, `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and
+`relay_tools` are gone (DC-23, DC-26, `docs/guest-code-runs.md` §10). A
+command is a shell script: `{"argv":["ls","-al"]}` becomes
+`{"language":"shell","inline":true,"code":"ls -al"}`. `relay_code` is
+`relay_script` with `inline: true`. A run carries no kind. In place of
 `relay_run`'s forwarded MCP tool calls, a script drives cua-driver, Playwright
 or Chrome DevTools through their own libraries or command lines, as the image
 lists them; the relay no longer stages MCP servers in the guest.
 
 A run's result carries the execution identity and outcome, the derived step
 record, and, when the snapshot plan captured the after phase and delivery
-succeeded, the saved after-image as an MCP image content block. A command's
+succeeded, the saved after-image as an MCP image content block. A run's
 result also carries the guest's bounded standard output and error. The full
 receipt stays in the evidence package.
 
@@ -199,16 +201,16 @@ tarball it checked.
 - While the session is live, the relay tracks the lease's own deadline (its start plus `ttlHours`) and renews vm-service only 15 minutes ahead at a time, never past that deadline, and stops renewing at it. A client that crashes without ending its session therefore leaves its VM leased for at most about 15 minutes, plus the backend's grace period, rather than its whole TTL.
 - A restarted server with the same `MCP_RELAY_SESSION` reconciles each guest's durable ownership and reattaches its recording session without replaying prior work; every guest keeps its name. A session state written by a relay before several guests is restored as one guest named from its task. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
 - A run tool's `timeoutMs` defaults to 120,000 ms and accepts integers up to 3,600,000 ms. It bounds command execution, not the snapshot delay or the lease lifetime. A timeout reports confirmed termination or uncertainty and keeps the VM available.
-- `relay_command` with `diagnostic: true` records command diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. Before staging it runs through vm-service in the guest's default directory; after staging in the recording workspace. It cannot join a snapshot group and is not visual verification.
+- A shell `relay_script` with `diagnostic: true` records diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. It runs through vm-service as `/bin/sh -c <script>`, a script file read on the host first: before staging in the guest's default directory, after staging in the recording workspace. Only a shell script may be diagnostic, because no receiver or Node.js is involved. It cannot join a snapshot group and is not visual verification.
 - After diagnosing damaged recording state, `relay_stage` with `resetRecording: true` archives the old recording and starts a new recording session in the same VM. An existing receiver lock refuses the reset until its operation is reconciled. Prior evidence paths remain in the owned status.
 
 ## Runs
 
-`relay_command` runs one command and `relay_script` one script, each as one
-recorded operation:
+`relay_script` runs one script as one recorded operation; a command is a
+shell script:
 
 ```json
-{"guest":"login-test-1","argv":["/usr/bin/xdg-open","https://example.com"]}
+{"guest":"login-test-1","language":"shell","inline":true,"code":"/usr/bin/xdg-open https://example.com"}
 {"guest":"login-test-1","language":"python","inline":true,"code":"import subprocess\nprint(subprocess.run(['cua-driver','call','list_apps'],capture_output=True,text=True).stdout)"}
 {"guest":"login-test-1","language":"typescript","inline":false,"localPath":"checks/login.ts"}
 ```
@@ -216,15 +218,18 @@ recorded operation:
 - **Evidence is automatic.** Every run is admitted by the guest receiver,
   journaled, and, when the image lists cua-driver, bracketed by a before and an
   after display snapshot. The step record is derived from the call: the title
-  is the command (`exec <argv>`), `code (<language>)` or `script <file>`, and
+  is a shell script's first line (`shell <line>`), `code (<language>)` or
+  `script <file>`, and
   the expected result is "Exits with status 0". `reason`, `step` and
   `snapshots` are optional overrides; the default wait before the
   after-snapshot is 500 ms.
 - **Scripts.** A `relay_script` with `inline: true` streams its `code` to the
   guest with its hash; with `inline: false` its `localPath`, a file in the
   project folder, is pushed hash-checked. The script runs in the staged
-  workspace: JavaScript with the guest's Node.js, TypeScript with `tsx`,
-  Python with `python3`. A call that gives `code` and `localPath` other than
+  workspace: shell with `/bin/sh`, JavaScript with the guest's Node.js,
+  TypeScript with `tsx` or Node.js type stripping, Python with `python3`. The
+  script's exit status says whether it succeeded: a script that calls
+  cua-driver reads the driver's answer and exits nonzero on an error. A call that gives `code` and `localPath` other than
   as `inline` names is refused before anything reaches the guest.
 - **One interaction per run.** A run is one recorded operation; consecutive
   keystrokes may form an explicit text group with `snapshots.group`. A script
@@ -244,9 +249,9 @@ flight. They put the steps still queued, and every other file the host lacks,
 into one archive of their own, and copy the files the step downloads already
 brought instead of pulling them again. `relay_status` counts the steps whose
 download a lifecycle operation took over as `coalesced`. A first or intermediate
-group event and a diagnostic command do not invent an image. Execution and
+group event and a diagnostic script do not invent an image. Execution and
 image delivery are independent outcomes: a pending image does not turn a
-failed command into a successful one. The delivery identity leads the result
+failed run into a successful one. The delivery identity leads the result
 text so it survives truncation. The design is `docs/screenshot-delivery.md`
 §10.
 

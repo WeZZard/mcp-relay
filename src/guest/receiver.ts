@@ -82,10 +82,9 @@ async function optionalJson<T>(path: string): Promise<T | undefined> {
 function validate(request: GuestRequest): void {
   if (!safeId(request.executionId) || !safeId(request.sessionId) || !safeId(request.attemptId)) throw new Error("safe executionId, sessionId and attemptId are required");
   if (typeof request.because !== "string" || !request.because.trim() || request.because.length > 16_384) throw new Error("nonblank because is required (maximum 16384 characters)");
-  if (!["exec", "script", "code"].includes(request.kind)) throw new Error("kind must be exec, script or code");
   if (request.cwd !== undefined && (!text(request.cwd) || !isAbsolute(request.cwd))) throw new Error("cwd must be an absolute path");
   if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > MAX_TIMEOUT_MS)) throw new Error("timeoutMs must be an integer from 1 to 3600000");
-  if (request.diagnostic !== undefined && (typeof request.diagnostic !== "boolean" || request.kind !== "exec")) throw new Error("diagnostic is allowed only for exec and must be boolean");
+  if (request.diagnostic !== undefined && (typeof request.diagnostic !== "boolean" || request.language !== "shell")) throw new Error("diagnostic is allowed only for a shell script and must be boolean");
   if (request.step !== undefined && (!request.step || !safeId(request.step.id) || !text(request.step.title) || (request.step.expected !== undefined && typeof request.step.expected !== "string") || (request.step.inputMode !== undefined && !["ordinary", "accessibility"].includes(request.step.inputMode)))) throw new Error("invalid step metadata");
   const snapshots = request.snapshots;
   if (!snapshots || typeof snapshots !== "object" || Array.isArray(snapshots)) throw new Error("snapshots are required; no implicit interval");
@@ -97,11 +96,13 @@ function validate(request: GuestRequest): void {
     if (group.afterIntervalMs !== undefined && !interval(group.afterIntervalMs)) throw new Error("invalid group afterIntervalMs");
     if (group.phase === "last" && !interval(group.afterIntervalMs ?? snapshots.afterIntervalMs)) throw new Error("last group member requires afterIntervalMs");
   } else if (!interval(snapshots.afterIntervalMs)) throw new Error("afterIntervalMs is required; no default");
-  if (request.kind !== "code" && (!Array.isArray(request.argv) || request.argv.length === 0 || request.argv.length > 256 || !request.argv.every((arg, index) => typeof arg === "string" && !arg.includes("\0") && (index > 0 || arg.length > 0)))) throw new Error("argv must be a nonempty string vector without NULs (maximum 256 entries)");
-  if (request.kind !== "exec" && !["javascript", "typescript", "python"].includes(request.language ?? "")) throw new Error("script/code language is required");
-  if (request.kind === "code" && (typeof request.code !== "string" || !/^[a-f0-9]{64}$/.test(request.codeSha256 ?? ""))) throw new Error("code and its SHA-256 are required");
+  if (!["shell", "javascript", "typescript", "python"].includes(request.language ?? "")) throw new Error("language must be shell, javascript, typescript or python");
+  // A script is given inline, as its code, or as an uploaded file; the request says which by what it holds (DC-26).
+  const inline = request.code !== undefined, file = request.remotePath !== undefined;
+  if (inline === file) throw new Error("a request holds either the script's code or its uploaded remotePath");
+  if (inline && (typeof request.code !== "string" || !/^[a-f0-9]{64}$/.test(request.codeSha256 ?? ""))) throw new Error("code and its SHA-256 are required");
   if (request.capture !== undefined && typeof request.capture !== "boolean") throw new Error("capture must be boolean");
-  if (request.kind === "script" && (!text(request.remotePath) || !isAbsolute(request.remotePath) || !/^[a-f0-9]{64}$/.test(request.scriptSha256 ?? ""))) throw new Error("absolute remotePath and script SHA-256 are required");
+  if (file && (!text(request.remotePath) || !isAbsolute(request.remotePath) || !/^[a-f0-9]{64}$/.test(request.scriptSha256 ?? ""))) throw new Error("absolute remotePath and script SHA-256 are required");
 }
 
 export function groupAbsentFromProcessTable(group: number, table: string): boolean {
@@ -190,6 +191,11 @@ async function runArgv(argv: readonly string[], options: { cwd?: string; env: No
   });
 }
 
+/** Whether `path` is an executable file. */
+async function executable(path: string): Promise<boolean> {
+  try { await access(path, constants.X_OK); return true; } catch { return false; }
+}
+
 /** Whether an executable named `name` lies on the guest's PATH. */
 async function onPath(name: string): Promise<boolean> {
   for (const dir of (process.env.PATH ?? "").split(":")) {
@@ -200,12 +206,16 @@ async function onPath(name: string): Promise<boolean> {
 }
 
 /**
- * The argv that runs a script file in its language (DC-25): JavaScript with
- * this Node.js, Python with `python3` from PATH, and TypeScript with `tsx`
+ * The argv that runs a script file in its language (DC-25, DC-26): shell
+ * with `/bin/sh`, JavaScript with this Node.js, Python with `python3` from PATH, and TypeScript with `tsx`
  * from PATH or else this Node.js's own type stripping (22.6 or later). A
  * missing runtime refuses the run before anything starts.
  */
-export async function interpreterArgv(language: string | undefined, path: string, find: (name: string) => Promise<boolean> = onPath, node: { execPath: string; version: string; strips: boolean } = { execPath: process.execPath, version: process.versions.node, strips: Boolean((process.features as { typescript?: unknown }).typescript) }): Promise<string[]> {
+export async function interpreterArgv(language: string | undefined, path: string, find: (name: string) => Promise<boolean> = onPath, node: { execPath: string; version: string; strips: boolean } = { execPath: process.execPath, version: process.versions.node, strips: Boolean((process.features as { typescript?: unknown }).typescript) }, shell: (path: string) => Promise<boolean> = executable): Promise<string[]> {
+  if (language === "shell") {
+    if (!(await shell("/bin/sh"))) throw new Error("the guest has no /bin/sh, so a shell script cannot run");
+    return ["/bin/sh", path];
+  }
   if (language === "python") {
     if (!(await find("python3"))) throw new Error("python3 is not on the guest's PATH, so a Python script cannot run; relay_probe scope=guest reports which runtimes the guest has");
     return ["python3", path];
@@ -234,7 +244,7 @@ async function captureWithDriver(outFile: string, driver: string, dispatch: type
 export async function receive(input: unknown, options: ReceiveOptions = {}): Promise<GuestResponse> {
   const request = input as GuestRequest;
   const executionId = request && safeId(request.executionId) ? request.executionId : "unknown";
-  const evidenceMode = request?.kind === "exec" && request.diagnostic === true ? "diagnostic" as const : undefined;
+  const evidenceMode = request?.diagnostic === true ? "diagnostic" as const : undefined;
   // The image lists no capture software: no snapshots are taken or owed.
   const uncaptured = request?.capture === false;
   const timeoutMs = request?.timeoutMs ?? 120_000;
@@ -267,6 +277,8 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
   };
   let reconcileGroup: ((diagnostic: string) => Promise<void>) | undefined;
   let dispatchResult: DispatchResult | undefined;
+  /** The command the receiver built for the script; unset until the script is verified. */
+  let argv: readonly string[] | undefined;
   const output = (): Partial<GuestResponse> => dispatchResult ? { stdout: bounded(dispatchResult.stdout), stderr: bounded(dispatchResult.stderr), timedOut: !!dispatchResult.timedOut, outputTruncated: !!dispatchResult.outputTruncated, terminationConfirmed: dispatchResult.terminationConfirmed } : {};
   try {
     await mkdir(root, { recursive: true });
@@ -344,7 +356,7 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
       // Match receipt JSON exactly, including omission of unknown fields.
       result = JSON.parse(JSON.stringify({ ...result, imageEvidence, evidenceMode, timeoutMs, ...output() })) as GuestResponse;
       if (result.outcome.kind !== "completed" || result.outcome.exitStatus.code !== 0) await reconcileGroup?.("operation failed or incomplete");
-      await store!.putExecution({ executionId, ...ids, state: result.outcome.kind === "completed" ? "recorded" : result.outcome.kind, argv: request.argv, scriptId: request.scriptId, exitStatus: result.outcome.kind === "completed" ? result.outcome.exitStatus : undefined });
+      await store!.putExecution({ executionId, ...ids, state: result.outcome.kind === "completed" ? "recorded" : result.outcome.kind, argv, scriptId: request.scriptId, exitStatus: result.outcome.kind === "completed" ? result.outcome.exitStatus : undefined });
       await store!.appendJournal({ kind: "execution-completion", ...ids, executionId, state: result.outcome.kind === "completed" ? "recorded" : result.outcome.kind, response: result }, { durable: true });
       await durableJson(receiptPath, result);
       return result;
@@ -368,21 +380,17 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
     if (groups.active && (!group || group.groupId !== groups.active.groupId || request.sessionId !== groups.active.sessionId || request.attemptId !== groups.active.attemptId || group.phase === "first")) return await refuse("coalescing group is open; unrelated input is forbidden until its last member");
     if (!groups.active && group && (group.phase !== "first" || groups.used.includes(group.groupId))) return await refuse("coalescing group must begin with a fresh first member; group IDs cannot be reused");
     reconcileGroup = abandonGroup;
-    let argv: readonly string[] = request.argv ?? [];
+    // The receiver builds the command from the language and the verified file, and never runs one the request names,
+    // so no interpreter option can run other bytes than the verified script.
     try {
-      if (request.kind === "script") {
-        const info = await stat(request.remotePath!);
+      if (request.remotePath !== undefined) {
+        const info = await stat(request.remotePath);
         if (!info.isFile() || info.size > MAX_SCRIPT_BYTES) throw new Error("script missing or exceeds size bound");
-        if (hash(await readFile(request.remotePath!)) !== request.scriptSha256) throw new Error("script hash mismatch");
-        // Deliberately accept only [interpreter, verified-file]. Interpreter
-        // eval/module/preload options can execute unrelated bytes instead.
-        const expected = request.language === "python" ? "python3" : request.language === "typescript" ? "tsx" : "node";
-        if (argv.length !== 2 || argv[0]!.split("/").at(-1) !== expected || argv[1] !== request.remotePath) throw new Error("script argv must be [interpreter, verified remotePath]");
-        argv = await interpreterArgv(request.language, request.remotePath!);
-      } else if (request.kind === "code") {
+        if (hash(await readFile(request.remotePath)) !== request.scriptSha256) throw new Error("script hash mismatch");
+        argv = await interpreterArgv(request.language, request.remotePath);
+      } else {
         if (hash(request.code!) !== request.codeSha256) throw new Error("streamed code hash mismatch");
-        const extension = request.language === "python" ? "py" : request.language === "typescript" ? "ts" : "js";
-        const path = join(root, "streamed", `${executionId}.${extension}`);
+        const path = join(root, "streamed", `${executionId}.${{ shell: "sh", python: "py", typescript: "ts", javascript: "js" }[request.language!]}`);
         await mkdir(dirname(path), { recursive: true });
         const file = await open(path, "wx", 0o600);
         try { await file.writeFile(request.code!); await file.sync(); } finally { await file.close(); }
@@ -390,7 +398,8 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
         argv = await interpreterArgv(request.language, path);
       }
     } catch (error) { return await refuse(message(error)); }
-    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...(uncaptured ? { capture: false } : {}), scriptIdentity: request.kind === "exec" ? undefined : { sha256: request.kind === "code" ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
+    const command = argv;
+    await store.appendJournal({ kind: "execution-start", ...ids, executionId, state: "admitted", argv, cwd: request.cwd, step: request.step, evidenceMode, timeoutMs, ...(uncaptured ? { capture: false } : {}), scriptIdentity: { sha256: request.remotePath === undefined ? request.codeSha256 : request.scriptSha256, language: request.language, remotePath: argv.at(-1) } }, { durable: true });
     if (group?.phase === "first") {
       groups.active = { groupId: group.groupId, ...ids }; groups.used.push(group.groupId);
       await durableJson(groupPath, groups);
@@ -412,8 +421,8 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
         try {
           const dispatchOptions = { cwd: request.cwd, env: process.env, timeoutMs };
           dispatchResult = options.dispatch
-            ? await options.dispatch(argv, dispatchOptions)
-            : await runOwned(argv, dispatchOptions);
+            ? await options.dispatch(command, dispatchOptions)
+            : await runOwned(command, dispatchOptions);
           return dispatchResult;
         } finally {
           if (dispatchResult && dispatchResult.terminationConfirmed !== false && !keepLock) { pendingSpawn = false; await markLock(false); }
@@ -424,20 +433,6 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
       if (captureFailure || engine.evidenceFailure || (!evidenceMode && !uncaptured && engine.actionSnapshots?.length !== expectedCount)) {
         const diagnostic = captureFailure ?? engine.evidenceFailure ?? "missing required snapshot evidence";
         return await retain(response("uncertain", diagnostic));
-      }
-      // cua-driver can return a structured refusal with process exit zero.
-      // Preserve the actual subprocess result in the admission journal, but do
-      // not mislabel that response as successful input. Unknown driver errors
-      // are uncertain (possibly partial); only a proven pre-input refusal is
-      // classified refused. Generic exec stdout is never interpreted this way.
-      const driver = options.cuaDriver ?? process.env.RELAY_CUA_DRIVER;
-      if (request.kind === 'exec' && driver && argv[0] === driver && argv[1] === 'call' && outcome.exitStatus.code === 0) {
-        let value: any;
-        try { value = JSON.parse(outcome.stdout ?? ''); } catch { /* Non-JSON output remains a subprocess result. */ }
-        if (value && typeof value === 'object' && (value.isError === true || value.error || (typeof value.code === 'string' && value.code.length > 0))) {
-          const diagnostic = `CUA structured failure: ${JSON.stringify(value)}`;
-          return await retain({ ...response(value.code === 'desktop_escalation_required' ? 'refused' : 'uncertain', diagnostic), stdout: bounded(outcome.stdout), stderr: bounded(outcome.stderr) });
-        }
       }
       const result: GuestResponse = outcome.spawnError || outcome.timedOut || outcome.outputTruncated
         ? response("uncertain", outcome.spawnError ?? (outcome.timedOut ? "execution timed out" : "execution exceeded output bound"))

@@ -101,13 +101,13 @@ test('refusal: an invalid relay call is an error result from the strict contract
   assert.deepEqual(await f.requests(), [], 'invalid input never reaches the service');
 });
 
-test('lifecycle: acquire, stage, run one command and one inline script, finish; the verified package and the artifact land in the project and the lease is released', { skip, timeout: 600_000 }, async t => {
+test('lifecycle: acquire, stage, run one shell script and one inline JavaScript script, finish; the verified package and the artifact land in the project and the lease is released', { skip, timeout: 600_000 }, async t => {
   const f = await fixture(t);
   const steps: Array<[string, unknown]> = [
     ['relay_acquire', { task: 'e2e-exec', image: 'ubuntu2404', extractions: [{ path: 'artifact.txt', name: 'artifact' }] }],
     // relay_acquire names the guest after its task and a counter (DC-20).
     ['relay_stage', { guest: 'e2e-exec-1', nodePath: f.info.node, cuaDriver: f.info.driver }],
-    ['relay_command', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', argv: [f.info.node, '-e', "require('fs').writeFileSync('artifact.txt','headless package')"], step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
+    ['relay_script', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', language: 'shell', inline: true, code: "printf 'headless package' > artifact.txt", step: { id: 'write', title: 'Write the artifact', expected: 'artifact.txt exists in the workspace', inputMode: 'ordinary' }, snapshots: { afterIntervalMs: 0 } }],
     ['relay_script', { guest: 'e2e-exec-1', reason: 'End-to-end fixture run; no real desktop is touched', language: 'javascript', inline: true, code: "require('fs').appendFileSync('artifact.txt',' and script')", snapshots: { afterIntervalMs: 0 } }],
     ['relay_finish', { guest: 'e2e-exec-1' }],
   ];

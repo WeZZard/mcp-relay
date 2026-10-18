@@ -53,7 +53,7 @@ async function setup(t: TestContext) {
   transfer: new Transfer(channel, 'local-fixture', process.execPath, { guestRoot }),
   ensureGuest: async () => { calls.ensure++; if (controls.offline) throw new Error('connection unavailable'); },
  };
- const request: GuestRequest = { kind: 'exec', executionId: target.executionId, sessionId: target.sessionId, attemptId: 'attempt-one', because: 'fixture', argv: ['fixture'], snapshots: { afterIntervalMs: 0 }, step: { id: 'step-one', title: 'fixture' } };
+ const request: GuestRequest = { executionId: target.executionId, sessionId: target.sessionId, attemptId: 'attempt-one', because: 'fixture', language: 'shell', code: 'fixture', codeSha256: '0'.repeat(64), snapshots: { afterIntervalMs: 0 }, step: { id: 'step-one', title: 'fixture' } };
  const snapshot: GuestSnapshotDescriptor = {
   sessionId: target.sessionId, attemptId: 'attempt-one', executionId: target.executionId, actionId: 'action-one', stepId: 'step-one',
   phase: 'after', capturedAt: '2026-09-21T00:00:00.000Z', sha256: hash(original), bytes: original.length,

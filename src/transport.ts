@@ -30,7 +30,10 @@ export class VmTransport implements SessionTransport {
     if (!this.because.trim()) throw new Error('Run execution intent is required');
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(request.executionId)) throw new Error('Invalid execution identity');
     this.response = undefined;
-    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...(this.diagnostic ? { diagnostic: true } : {}), ...(this.capture ? {} : { capture: false }) };
+    // The SDK names a kind and an interpreter when it frames a request; the guest builds the command from the
+    // language and the verified script, so the request file has neither (DC-26).
+    const { kind: _kind, argv: _argv, ...framed } = request;
+    const payload = { ...framed, because: this.because, timeoutMs: this.timeoutMs, ...(this.diagnostic ? { diagnostic: true } : {}), ...(this.capture ? {} : { capture: false }) };
     const local = join(this.hostRoot, 'requests', `${request.executionId}.json`);
     const remote = join(this.guestRoot, 'requests', `${request.executionId}.json`);
     await assertHostPath(this.hostRoot, local, true);

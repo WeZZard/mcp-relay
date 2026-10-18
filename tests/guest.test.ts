@@ -11,7 +11,15 @@ import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, interpreterArgv, receive, validate
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO/8AAAAASUVORK5CYII=", "base64");
 const success: DispatchResult = { exitStatus: { code: 0, signal: null }, stdout: "done" };
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
-const request = (id: string, patch: Partial<GuestRequest> = {}): GuestRequest => ({ kind: "exec", executionId: id, sessionId: "session-test", attemptId: "attempt-test", argv: ["cua-driver", "call", "click", "--json", '{"x":10,"y":20}'], because: "A foreground interaction would interrupt the user", snapshots: { afterIntervalMs: 0 }, step: { id: "step-test", title: "Click", expected: "Button activates", inputMode: "ordinary" }, ...patch });
+/** A command as a shell script (DC-26): each argument single-quoted. */
+const sh = (argv: readonly string[]): string => argv.map(arg => `'${arg.replace(/'/g, `'\\''`)}'`).join(" ");
+const DEFAULT_CODE = sh(["cua-driver", "call", "click", "--json", '{"x":10,"y":20}']);
+/** A guest request: a shell script given inline unless the patch names a file, with no kind (DC-26). */
+const request = (id: string, patch: Partial<GuestRequest> = {}): GuestRequest => {
+  const code = "code" in patch ? patch.code : "remotePath" in patch ? undefined : DEFAULT_CODE;
+  return requestWith(id, code, patch);
+};
+const requestWith = (id: string, code: string | undefined, patch: Partial<GuestRequest>): GuestRequest => ({ executionId: id, sessionId: "session-test", attemptId: "attempt-test", language: "shell", ...(code === undefined ? {} : { code, codeSha256: sha256(code) }), because: "A foreground interaction would interrupt the user", snapshots: { afterIntervalMs: 0 }, step: { id: "step-test", title: "Click", expected: "Button activates", inputMode: "ordinary" }, ...patch });
 async function setup(t: { after(fn: () => Promise<unknown>): void }): Promise<{ root: string; options: ReceiveOptions }> {
   const root = await mkdtemp(join(tmpdir(), "pi-relay-guest-"));
   t.after(() => rm(root, { force: true, recursive: true }));
@@ -25,25 +33,40 @@ async function actions(root: string): Promise<Array<Record<string, any>>> {
   return Promise.all((await readdir(dir)).filter((f) => f.endsWith(".json")).map(async (f) => JSON.parse(await readFile(join(dir, f), "utf8"))));
 }
 
-test('exit-zero CUA pre-input refusal is retained and allows a new operation', async t => {
-  const { root, options } = await setup(t);
-  options.cuaDriver = 'cua-driver';
-  let dispatches = 0;
-  options.dispatch = async () => { dispatches++; return { ...success, stdout: JSON.stringify({ code: 'desktop_escalation_required', desktop_unlocked: false }) }; };
-  const refused = await receive(request('driver-refused'), options);
-  assert.equal(refused.outcome.kind, 'refused');
-  assert.match(refused.stdout!, /desktop_escalation_required/);
-  options.dispatch = async () => { dispatches++; return success; };
-  const next = await receive(request('after-driver-refusal'), options);
-  assert.equal(next.outcome.kind, 'completed'); assert.equal(dispatches, 2);
-  assert.ok((await journal(root)).some(event => event.kind === 'execution-completion' && event.state === 'refused'));
+test("a script decides its own success: a cua-driver error answer with exit status 0 is a completed run, not read by the receiver (DC-26)", async t => {
+  const { options } = await setup(t); options.cuaDriver = "cua-driver";
+  options.dispatch = async () => ({ ...success, stdout: JSON.stringify({ code: "desktop_escalation_required", isError: true }) });
+  const result = await receive(request("driver-answer"), options);
+  assert.deepEqual(result.outcome, { kind: "completed", exitStatus: { code: 0, signal: null } });
+  assert.match(result.stdout!, /desktop_escalation_required/);
 });
 
-test('generic CUA errors are uncertain, while generic exec JSON is not interpreted as CUA', async t => {
-  const { options } = await setup(t); options.cuaDriver = 'cua-driver';
-  options.dispatch = async () => ({ ...success, stdout: JSON.stringify({ isError: true, error: 'possibly partial' }) });
-  assert.equal((await receive(request('ordinary-exec', { argv: ['program'] }), options)).outcome.kind, 'completed');
-  assert.equal((await receive(request('driver-error'), options)).outcome.kind, 'uncertain');
+test("a request carries no kind: inline code and an uploaded file are told apart by what the request holds, and a kind is ignored (DC-26)", async t => {
+  const { root, options } = await setup(t);
+  const seen: string[][] = []; options.dispatch = async argv => { seen.push([...argv]); return success; };
+  const path = join(root, "file.sh"); await writeFile(path, "echo file");
+  assert.equal((await receive(request("inline"), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("file", { remotePath: path, scriptSha256: sha256("echo file") }), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("legacy-kind", { kind: "exec", argv: ["/bin/rm", "-rf", "/"] } as Partial<GuestRequest>), options)).outcome.kind, "completed");
+  assert.deepEqual(seen.map(argv => argv[0]), ["/bin/sh", "/bin/sh", "/bin/sh"]);
+  assert.equal(seen[0]![1], join(root, "streamed", "inline.sh")); assert.equal(seen[1]![1], path);
+  assert.equal(seen[2]![1], join(root, "streamed", "legacy-kind.sh"), "the request's argv is never run");
+  for (const [index, patch] of [{ code: undefined }, { remotePath: path, scriptSha256: sha256("echo file"), code: "echo both" }, { language: "ruby" }].entries()) {
+    assert.equal((await receive(request(`neither-or-both-${index}`, patch as Partial<GuestRequest>), options)).outcome.kind, "refused", JSON.stringify(patch));
+  }
+  const events = await journal(root);
+  assert.equal(events.find(event => event.kind === "execution-start" && event.executionId === "inline")!.argv[0], "/bin/sh");
+  assert.ok(events.every(event => !Object.values(event).some(value => ["exec", "script", "code"].includes(value as string))), "no event names a kind of run");
+  assert.equal(seen.length, 3);
+});
+
+test("a shell script runs with /bin/sh, and a guest without it refuses the script before it starts (DC-26)", async t => {
+  assert.deepEqual(await interpreterArgv("shell", "s.sh", undefined, undefined, async () => true), ["/bin/sh", "s.sh"]);
+  await assert.rejects(interpreterArgv("shell", "s.sh", undefined, undefined, async () => false), /no \/bin\/sh/);
+  const { options } = await setup(t); delete options.dispatch;
+  const result = await receive(request("real-shell", { code: "printf '%s' \"$0\" >/dev/null; echo shell-ran; exit 3" }), options);
+  assert.deepEqual(result.outcome, { kind: "completed", exitStatus: { code: 3, signal: null } });
+  assert.equal(result.stdout, "shell-ran\n");
 });
 
 test("admission uses substrate pairs, journals routing before dispatch, binds parent and metadata", async (t) => {
@@ -51,7 +74,7 @@ test("admission uses substrate pairs, journals routing before dispatch, binds pa
   let dispatched = 0;
   options.dispatch = async (argv) => {
     dispatched++;
-    assert.deepEqual(argv, request("exec-one").argv);
+    assert.deepEqual(argv, ["/bin/sh", join(root, "streamed", "exec-one.sh")]);
     const history = await journal(root);
     assert.equal(history[0]!.annotationType, "routing-decision");
     assert.equal(history[0]!.because, request("exec-one").because);
@@ -84,7 +107,7 @@ test("admission uses substrate pairs, journals routing before dispatch, binds pa
 test("required reason, snapshots and interval validation produce durable substrate refusals", async (t) => {
   const { root, options } = await setup(t);
   let dispatched = 0; options.dispatch = async () => { dispatched++; return success; };
-  const patches = [{ because: "  " }, { snapshots: undefined }, { snapshots: {} }, { snapshots: { afterIntervalMs: -1 } }, { snapshots: { afterIntervalMs: Infinity } }, { snapshots: { afterIntervalMs: 300001 } }, { argv: [] }];
+  const patches = [{ because: "  " }, { snapshots: undefined }, { snapshots: {} }, { snapshots: { afterIntervalMs: -1 } }, { snapshots: { afterIntervalMs: Infinity } }, { snapshots: { afterIntervalMs: 300001 } }, { code: undefined }];
   for (const [index, patch] of patches.entries()) assert.equal((await receive(request(`bad-${index}`, patch), options)).outcome.kind, "refused");
   assert.equal(dispatched, 0);
   assert.equal((await journal(root)).filter((e) => e.kind === "action-refusal").length, patches.length);
@@ -98,9 +121,9 @@ test("script and streamed-code identity mismatch refuse before capture or execut
   const path = join(root, "test.mjs");
   await writeFile(path, "console.log('hello')");
   for (const req of [
-    request("bad-code", { kind: "code", language: "javascript", code: "hello", codeSha256: "0".repeat(64) }),
-    request("bad-script", { kind: "script", language: "javascript", remotePath: path, argv: ["node", path], scriptSha256: "0".repeat(64) }),
-    request("wrong-script", { kind: "script", language: "javascript", remotePath: path, argv: ["node", "/tmp/not-the-verified-script.js"], scriptSha256: sha256("console.log('hello')") }),
+    request("bad-code", { language: "javascript", code: "hello", codeSha256: "0".repeat(64) }),
+    request("bad-script", { language: "javascript", remotePath: path, scriptSha256: "0".repeat(64) }),
+    request("missing-script", { language: "javascript", remotePath: join(root, "absent.mjs"), scriptSha256: sha256("console.log('hello')") }),
   ]) assert.equal((await receive(req, options)).outcome.kind, "refused");
   assert.equal(captures, 0);
   assert.equal((await journal(root)).filter((e) => e.kind === "action-refusal").length, 3);
@@ -110,11 +133,11 @@ test("verified streamed code and uploaded scripts execute with the normal admiss
   const { root, options } = await setup(t);
   delete options.dispatch;
   const code = "console.log('streamed-result')";
-  const result = await receive(request("stream", { kind: "code", language: "javascript", code, codeSha256: sha256(code) }), options);
+  const result = await receive(request("stream", { language: "javascript", code }), options);
   assert.equal(result.outcome.kind, "completed");
   assert.equal(result.stdout, "streamed-result\n");
   const path = join(root, "uploaded.mjs"); await writeFile(path, code);
-  const upload = await receive(request("uploaded", { kind: "script", language: "javascript", remotePath: path, argv: [process.execPath, path], scriptSha256: sha256(code) }), options);
+  const upload = await receive(request("uploaded", { language: "javascript", remotePath: path, scriptSha256: sha256(code) }), options);
   assert.equal(upload.outcome.kind, "completed");
   assert.equal(upload.stdout, "streamed-result\n");
 });
@@ -210,15 +233,15 @@ test("started identities and concurrent invocations fail closed without replay",
   unblock(); assert.equal((await first).outcome.kind, "completed");
 });
 
-test("argv is not shell-interpreted; timeout and output bounds stop child execution", async (t) => {
+test("a script's quoted arguments reach it literally; timeout and output bounds stop child execution", async (t) => {
   const { options } = await setup(t); delete options.dispatch;
   const literal = "$(touch /tmp/should-not-run); spaced argument";
-  const argResult = await receive(request("literal", { argv: [process.execPath, "-e", "console.log(process.argv[1])", literal] }), options);
+  const argResult = await receive(request("literal", { code: sh([process.execPath, "-e", "console.log(process.argv[1])", literal]) }), options);
   assert.equal(argResult.stdout, `${literal}\n`);
-  const timeout = await receive(request("timeout", { argv: [process.execPath, "-e", "setTimeout(()=>{},10000)"], timeoutMs: 50 }), options);
+  const timeout = await receive(request("timeout", { code: sh([process.execPath, "-e", "setTimeout(()=>{},10000)"]), timeoutMs: 50 }), options);
   assert.equal(timeout.outcome.kind, "uncertain");
   assert.equal(timeout.timedOut, true);
-  const flood = await receive(request("flood", { argv: [process.execPath, "-e", "process.stdout.write('x'.repeat(2000000)); setTimeout(()=>{},10000)"] }), options);
+  const flood = await receive(request("flood", { code: sh([process.execPath, "-e", "process.stdout.write('x'.repeat(2000000)); setTimeout(()=>{},10000)"]) }), options);
   assert.equal(flood.outcome.kind, "uncertain");
   assert.equal(flood.outputTruncated, true);
   assert.ok(Buffer.byteLength(flood.stdout ?? "") <= MAX_OUTPUT_BYTES);
@@ -229,16 +252,16 @@ test("bounded request and path-safe identities are rejected without creating uns
   assert.equal((await receive(request("huge", { because: "a".repeat(MAX_REQUEST_BYTES + 1) }), options)).outcome.kind, "refused");
   assert.equal((await receive(request("../escape"), options)).outcome.kind, "refused");
   assert.equal((await receive(null, options)).outcome.kind, "refused");
-  assert.equal((await receive({ ...request("nul"), argv: ["node\0"] }, options)).outcome.kind, "refused");
+  assert.equal((await receive({ ...request("nul"), remotePath: "/tmp/a\0b", code: undefined, codeSha256: undefined, scriptSha256: "0".repeat(64) }, options)).outcome.kind, "refused");
 });
 
-test("explicit diagnostic exec repairs capture without fabricating snapshot evidence", async t => {
+test("an explicit diagnostic shell script repairs capture without fabricating snapshot evidence", async t => {
   const { root, options } = await setup(t);
   let ready = false, dispatches = 0;
   options.capture = async out => { if (!ready) throw new Error("capture unavailable"); await writeFile(out, png); };
-  options.dispatch = async argv => { dispatches++; if (argv[0] === "repair") ready = true; return { ...success, stderr: "retained stderr" }; };
+  options.dispatch = async argv => { dispatches++; if ((await readFile(argv[1]!, "utf8")) === "repair") ready = true; return { ...success, stderr: "retained stderr" }; };
   assert.equal((await receive(request("capture-broken"), options)).outcome.kind, "refused");
-  const diagnostic = await receive(request("repair", { diagnostic: true, argv: ["repair"] }), options);
+  const diagnostic = await receive(request("repair", { diagnostic: true, code: "repair" }), options);
   assert.equal(diagnostic.outcome.kind, "completed");
   assert.equal(diagnostic.evidenceMode, "diagnostic");
   assert.equal(diagnostic.stdout, "done");
@@ -247,30 +270,30 @@ test("explicit diagnostic exec repairs capture without fabricating snapshot evid
   const events = (await journal(root)).filter(e => e.executionId === "repair");
   assert.equal(events[0]!.annotationType, "routing-decision");
   assert.equal(events[0]!.evidenceMode, "diagnostic");
-  assert.deepEqual(events.find(e => e.kind === "execution-start")!.argv, ["repair"]);
+  assert.deepEqual(events.find(e => e.kind === "execution-start")!.argv, ["/bin/sh", join(root, "streamed", "repair.sh")]);
   assert.equal(events.some(e => e.kind === "snapshot-captured"), false);
   const action = (await actions(root)).find(a => a.executionId === "repair")!;
   assert.equal(action.snapshots, undefined);
   assert.equal(action.snapshotRole, undefined);
-  assert.deepEqual(await receive(request("repair", { diagnostic: true }), options), diagnostic);
+  assert.deepEqual(await receive(request("repair", { diagnostic: true, code: "repair" }), options), diagnostic);
   assert.equal(dispatches, 1);
   assert.equal((await receive(request("capture-repaired"), options)).outcome.kind, "completed");
   assert.equal(dispatches, 2);
 });
 
-test("diagnostic is exec-only and still requires explicit intent and snapshot metadata", async t => {
+test("diagnostic is for shell scripts only and still requires explicit intent and snapshot metadata", async t => {
   const { options } = await setup(t);
   options.dispatch = async () => { assert.fail("invalid diagnostic dispatched"); };
   for (const [index, patch] of [
-    { diagnostic: true, kind: "code", language: "javascript", code: "", codeSha256: sha256("") },
-    { diagnostic: true, kind: "script", language: "javascript" },
+    { diagnostic: true, language: "javascript", code: "" },
+    { diagnostic: true, language: "python", code: "" },
     { diagnostic: true, snapshots: undefined },
     { diagnostic: true, because: "" },
     { diagnostic: "yes" },
   ].entries()) assert.equal((await receive(request(`diagnostic-bad-${index}`, patch as Partial<GuestRequest>), options)).outcome.kind, "refused");
 });
 
-test("timeout validation and effective deadlines cover every dispatch kind", async t => {
+test("timeout validation and effective deadlines cover inline, file and diagnostic scripts", async t => {
   const { root, options } = await setup(t);
   const seen: number[] = [];
   options.dispatch = async (_argv, config) => { seen.push(config.timeoutMs); return success; };
@@ -280,8 +303,8 @@ test("timeout validation and effective deadlines cover every dispatch kind", asy
   const path = join(root, "timeout-script.js"); await writeFile(path, "");
   for (const [index, patch] of [
     {}, { diagnostic: true },
-    { kind: "code", language: "javascript", code: "", codeSha256: sha256("") },
-    { kind: "script", language: "javascript", remotePath: path, argv: ["node", path], scriptSha256: sha256("") },
+    { language: "javascript", code: "" },
+    { language: "javascript", remotePath: path, scriptSha256: sha256("") },
   ].entries()) {
     const result = await receive(request(`long-timeout-${index}`, { ...patch, timeoutMs: 3600000 } as Partial<GuestRequest>), options);
     assert.equal(result.outcome.kind, "completed"); assert.equal(result.timeoutMs, 3600000);
@@ -291,14 +314,14 @@ test("timeout validation and effective deadlines cover every dispatch kind", asy
 
 test("timeout retains subprocess output and confirmed termination and permits diagnosis", async t => {
   const { options } = await setup(t); delete options.dispatch;
-  const result = await receive(request("real-timeout", { diagnostic: true, argv: [process.execPath, "-e", "console.log('before timeout');console.error('error output');setTimeout(()=>{},10000)"], timeoutMs: 200 }), options);
+  const result = await receive(request("real-timeout", { diagnostic: true, code: sh([process.execPath, "-e", "console.log('before timeout');console.error('error output');setTimeout(()=>{},10000)"]), timeoutMs: 200 }), options);
   assert.equal(result.outcome.kind, "uncertain");
   assert.equal(result.timedOut, true);
   assert.equal(result.timeoutMs, 200);
   assert.equal(result.terminationConfirmed, true);
   assert.equal(result.stdout, "before timeout\n");
   assert.equal(result.stderr, "error output\n");
-  assert.equal((await receive(request("after-timeout", { diagnostic: true, argv: [process.execPath, "-e", ""] }), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("after-timeout", { diagnostic: true, code: sh([process.execPath, "-e", ""]) }), options)).outcome.kind, "completed");
 });
 
 test("failed coalescing groups are abandoned without rewriting their historical records", async t => {
@@ -454,7 +477,7 @@ test("image evidence distinguishes partial pairs, failed execution, and unknown 
   assert.equal(nonzero.imageEvidence?.status, "available");
   assert.deepEqual(nonzero.imageEvidence?.snapshots.map(s => s.phase), ["before", "after"]);
   assert.equal(nonzero.imageEvidence?.snapshots[0]?.stepId, undefined);
-  const refused = await receive(request("images-invalid", { argv: [] }), options);
+  const refused = await receive(request("images-invalid", { code: undefined }), options);
   assert.deepEqual(refused.imageEvidence, { status: "capture-unknown", snapshots: [] });
   options.dispatch = async () => { throw new Error("dispatch failed"); };
   const thrown = await receive(request("images-thrown"), options);
@@ -536,7 +559,7 @@ test("file-argument CLI emits exactly one framed response and captures through c
   await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs'); if(process.argv[2]!=='call'||process.argv[3]!=='get_desktop_state'||process.argv[4]!=='--json')process.exit(2);const args=JSON.parse(process.argv[5]);fs.writeFileSync(args.screenshot_out_file,Buffer.from('${png.toString("base64")}','base64'));console.log(JSON.stringify({screenshot_file_path:args.screenshot_out_file}));`);
   await chmod(driver, 0o700);
   const path = join(root, "request.json");
-  await writeFile(path, JSON.stringify(request("cli", { argv: [process.execPath, "-e", "console.log('cli result')"] })));
+  await writeFile(path, JSON.stringify(request("cli", { code: sh([process.execPath, "-e", "console.log('cli result')"]) })));
   const env = { ...process.env, RELAY_RUNTIME_ROOT: root, RELAY_CUA_DRIVER: driver };
   const result = await cli(path, env);
   assert.equal(result.code, 0); assert.equal(result.stderr, "");
@@ -552,7 +575,7 @@ test("a run on an image without capture software takes no snapshots, owes none a
   const { root, options } = await setup(t);
   let captures = 0;
   options.capture = async (out) => { captures++; await writeFile(out, png); };
-  const result = await receive(request("uncaptured", { capture: false, argv: ["program"] }), options);
+  const result = await receive(request("uncaptured", { capture: false, code: "program" }), options);
   assert.deepEqual(result.outcome, { kind: "completed", exitStatus: { code: 0, signal: null } });
   assert.deepEqual(result.imageEvidence, { status: "not-requested", snapshots: [] });
   assert.equal(captures, 0, "nothing was captured");
@@ -561,12 +584,12 @@ test("a run on an image without capture software takes no snapshots, owes none a
   assert.equal(events.find(event => event.kind === "action-start")?.snapshotPlan, undefined, "no snapshot plan is declared");
   assert.equal(events.find(event => event.kind === "execution-start")?.capture, false, "the record says the run took no snapshots by design");
   // A coalescing group needs capture; without it the group is not opened, so a later run is not refused.
-  assert.equal((await receive(request("uncaptured-group", { capture: false, argv: ["program"], snapshots: { group: { groupId: "g1", phase: "first" } } }), options)).outcome.kind, "completed");
-  assert.equal((await receive(request("uncaptured-next", { capture: false, argv: ["program"] }), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("uncaptured-group", { capture: false, code: "program", snapshots: { group: { groupId: "g1", phase: "first" } } }), options)).outcome.kind, "completed");
+  assert.equal((await receive(request("uncaptured-next", { capture: false, code: "program" }), options)).outcome.kind, "completed");
   assert.equal(captures, 0);
   // Saved image evidence that claims a snapshot for such a run is invalid.
   assert.throws(() => validateImageEvidence({ status: "available", snapshots: [] }, request("x", { capture: false })), /invalid image evidence/);
-  assert.equal((await receive(request("bad-capture", { capture: "no" as never, argv: ["program"] }), options)).outcome.kind, "refused");
+  assert.equal((await receive(request("bad-capture", { capture: "no" as never, code: "program" }), options)).outcome.kind, "refused");
 });
 
 test("a script runs with its language's runtime, TypeScript with tsx or else Node.js type stripping, and a missing runtime is refused (DC-25)", async () => {

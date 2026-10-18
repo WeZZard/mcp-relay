@@ -9,7 +9,7 @@ export type { ManagerOptions, AcquireInput, StageInput, RunInput, RunResult, Ext
 export { Registry, RegistryError, resolveRegistry, validateRegistryText } from './registry.js';
 export type { RegistryRow, RegistryOptions, RegistryResolution } from './registry.js';
 export { relayContract, relayParameters, relayActions, validateRelayInput, toolInputSchema } from './schema.js';
-export type { RelayInput, RelayAction, RunKind } from './schema.js';
+export type { RelayInput, RelayAction } from './schema.js';
 export { relayTools, relayToolInput, relayToolInputSchema, relayResultKind, relayJsonSchema, relayCall, renderRelayResult } from './surface.js';
 export type { RelayTool, RelayToolAnnotations, RelayCallResult, RelayRendered, RelayImageContent } from './surface.js';
 export { deliverPackage, verifyDeliveredPackage } from './package.js';

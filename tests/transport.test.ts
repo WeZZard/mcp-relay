@@ -10,7 +10,7 @@ import { command, hash } from '../src/util.js';
 
 const request = (patch: Partial<FramedRequest> = {}): FramedRequest => ({
   executionId: 'execution-1', sessionId: 'session-1', attemptId: 'attempt-1',
-  kind: 'exec', argv: ['fixture-command'], snapshots: { afterIntervalMs: 0 }, ...patch,
+  kind: 'code', language: 'javascript', code: 'fixture()', codeSha256: '0'.repeat(64), snapshots: { afterIntervalMs: 0 }, ...patch,
 });
 const completed = { executionId: 'execution-1', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
 
@@ -70,6 +70,9 @@ test('explicit execution timeout and diagnostic flag reach the durable receiver 
   await f.transport.send(request());
   const sent = JSON.parse(await readFile(join(f.host, 'requests/execution-1.json'), 'utf8'));
   assert.equal(sent.timeoutMs, 3600000); assert.equal(sent.diagnostic, true);
+  assert.equal('kind' in sent, false, 'the SDK names a kind; the request the guest reads has none (DC-26)');
+  assert.equal('argv' in sent, false, 'nor the interpreter the SDK guessed');
+  assert.equal(sent.code, 'fixture()');
   assert.equal(f.dispatched[0].timeout, 3780000);
   assert.deepEqual(f.transport.response, completed);
 });

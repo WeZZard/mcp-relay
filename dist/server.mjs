@@ -17572,12 +17572,12 @@ var Session = class {
    * persisted before transmission; a transport loss leaves the submission
    * inspectable as uncertain, never replayed.
    */
-  async exec(argv2, options = {}) {
+  async exec(argv, options = {}) {
     const executionId = formatId(allocateId("execution"));
     const submission = {
       executionId,
       sessionId: this.sessionId,
-      argv: argv2,
+      argv,
       submittedAt: (/* @__PURE__ */ new Date()).toISOString(),
       state: "pending"
     };
@@ -17587,7 +17587,7 @@ var Session = class {
       attemptId: "attempt-1",
       kind: "exec",
       executionId,
-      argv: argv2,
+      argv,
       cwd: options.cwd,
       step: options.step,
       snapshots: options.snapshots
@@ -17613,11 +17613,11 @@ var Session = class {
     const upload = await this.transport.upload(localPath, { remotePath });
     const executionId = formatId(allocateId("execution"));
     const interpreter = language2 === "python" ? "python3" : language2 === "typescript" ? "tsx" : "node";
-    const argv2 = [interpreter, ...options.interpreterArgs ?? [], remotePath];
+    const argv = [interpreter, ...options.interpreterArgs ?? [], remotePath];
     const submission = {
       executionId,
       sessionId: this.sessionId,
-      argv: argv2,
+      argv,
       submittedAt: (/* @__PURE__ */ new Date()).toISOString(),
       state: "pending",
       script: {
@@ -17635,7 +17635,7 @@ var Session = class {
       executionId,
       remotePath,
       language: language2,
-      argv: argv2,
+      argv,
       cwd: options.cwd,
       step: options.step,
       snapshots: options.snapshots,
@@ -18331,20 +18331,20 @@ async function inventory(root) {
   await walk(root);
   return result2;
 }
-async function command(argv2, options = {}) {
+async function command(argv, options = {}) {
   options.signal?.throwIfAborted();
   return new Promise((resolve11, reject) => {
-    const child = spawn3(argv2[0], argv2.slice(1), { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], signal: options.signal });
+    const child = spawn3(argv[0], argv.slice(1), { cwd: options.cwd, env: options.env, stdio: ["ignore", "pipe", "pipe"], signal: options.signal });
     let stdout = "", stderr = "", size = 0;
     let failure2;
     const timer = setTimeout(() => {
-      failure2 = new Error(`Command timed out: ${argv2[0]}`);
+      failure2 = new Error(`Command timed out: ${argv[0]}`);
       child.kill("SIGKILL");
     }, options.timeoutMs ?? 1e4);
     const consume = (channel, chunk) => {
       size += chunk.length;
       if (size > (options.maxBytes ?? 128 * 1024)) {
-        failure2 = new Error(`Command output exceeded limit: ${argv2[0]}`);
+        failure2 = new Error(`Command output exceeded limit: ${argv[0]}`);
         child.kill("SIGKILL");
         return;
       }
@@ -18596,8 +18596,8 @@ var Transfer = class {
       }
     }
   }
-  async checked(argv2, timeoutMs2, signal) {
-    const framed = argv2[0] === this.node && argv2[1] === "-e" ? [argv2[0], argv2[1], `try { ${argv2[2]} } catch(error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode=1; }`, ...argv2.slice(3)] : argv2;
+  async checked(argv, timeoutMs2, signal) {
+    const framed = argv[0] === this.node && argv[1] === "-e" ? [argv[0], argv[1], `try { ${argv[2]} } catch(error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode=1; }`, ...argv.slice(3)] : argv;
     for (let attempt = 1; ; attempt++) {
       const result2 = await (signal ? this.vm.exec(this.name, framed, timeoutMs2, { signal, ...timeoutMs2 ? { timeoutMs: timeoutMs2 } : {} }) : this.vm.exec(this.name, framed, timeoutMs2));
       if (result2.code === 0) return result2.stdout;
@@ -18988,8 +18988,8 @@ var Transfer = class {
       await assertHostPath(localRoot, local);
       const staging = await mkdtemp(join7(local, ".relay-archive-"));
       try {
-        const argv2 = [this.node, "-e", ARCHIVE, remote, approvedRoot, archive, guestRoot, options.present ? "present" : "all", ...chunk.map((file) => file.path)];
-        const fact = JSON.parse(await this.checked(argv2, scanTimeoutMs(2 * (bytes ?? 0)), options.signal));
+        const argv = [this.node, "-e", ARCHIVE, remote, approvedRoot, archive, guestRoot, options.present ? "present" : "all", ...chunk.map((file) => file.path)];
+        const fact = JSON.parse(await this.checked(argv, scanTimeoutMs(2 * (bytes ?? 0)), options.signal));
         const size = fact?.bytes;
         if (fact?.path !== archive || !Number.isSafeInteger(size) || bytes !== void 0 && size !== bytes) throw new Error("Invalid remote archive fact");
         const staged = join7(staging, "archive");
@@ -19125,7 +19125,8 @@ var VmTransport = class {
     if (!this.because.trim()) throw new Error("Run execution intent is required");
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(request.executionId)) throw new Error("Invalid execution identity");
     this.response = void 0;
-    const payload = { ...request, because: this.because, timeoutMs: this.timeoutMs, ...this.diagnostic ? { diagnostic: true } : {}, ...this.capture ? {} : { capture: false } };
+    const { kind: _kind, argv: _argv, ...framed } = request;
+    const payload = { ...framed, because: this.because, timeoutMs: this.timeoutMs, ...this.diagnostic ? { diagnostic: true } : {}, ...this.capture ? {} : { capture: false } };
     const local = join8(this.hostRoot, "requests", `${request.executionId}.json`);
     const remote = join8(this.guestRoot, "requests", `${request.executionId}.json`);
     await assertHostPath(this.hostRoot, local, true);
@@ -19421,12 +19422,12 @@ async function analyze(root, options, files) {
     const actionReceipts = receipts.filter((r) => (r.actionId === id2 || executionId && r.executionId === executionId) && (r.actionId === void 0 || r.actionId === id2) && (r.executionId === void 0 || executionId === void 0 || r.executionId === executionId));
     execution2 = reconcileOutcome(execution2, actionReceipts);
     const completion = completions.get(id2);
-    const argv2 = events.find((e) => e.kind === "execution-start" && executionId && e.executionId === executionId && Array.isArray(e.argv))?.argv;
+    const argv = events.find((e) => e.kind === "execution-start" && executionId && e.executionId === executionId && Array.isArray(e.argv))?.argv;
     details.set(stepId2, {
       at: source.writtenAt ?? before?.capturedAt,
       beforeAt: before?.capturedAt,
       afterAt: after?.capturedAt,
-      ...argv2?.every((w) => typeof w === "string") ? { argv: argv2 } : {},
+      ...argv?.every((w) => typeof w === "string") ? { argv } : {},
       output: commandOutput(actionReceipts.find((r) => commandOutput(r)) ?? completion?.toolOutcome?.value)
     });
     const originalObserved = refusal?.diagnostic ?? completion?.diagnostic ?? (completion?.toolOutcome ? JSON.stringify(completion.toolOutcome) : void 0);
@@ -19609,13 +19610,13 @@ async function verifyDeliveredPackage(rootDir) {
 
 // src/probe.ts
 async function probeLocal(run = command, platform = process.platform) {
-  async function observe(argv2, parse7) {
+  async function observe(argv, parse7) {
     try {
-      const result2 = await run(argv2);
+      const result2 = await run(argv);
       if (result2.code) throw new Error(result2.stderr || `exit ${result2.code}`);
-      return { value: parse7(result2.stdout), source: argv2.join(" ") };
+      return { value: parse7(result2.stdout), source: argv.join(" ") };
     } catch (error2) {
-      return { value: null, source: argv2.join(" "), diagnostic: String(error2) };
+      return { value: null, source: argv.join(" "), diagnostic: String(error2) };
     }
   }
   const permissions = await observe(["cua-driver", "permissions", "status", "--json"], JSON.parse);
@@ -28000,7 +28001,7 @@ async function prepareImage(bytes, mimeType) {
 // src/guest/image-evidence.ts
 var safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 function afterRequested(request) {
-  return !(request?.kind === "exec" && request.diagnostic === true) && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
+  return request?.diagnostic !== true && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
 }
 function validateImageEvidence(value, request, authoritativeSnapshots) {
   const fail2 = () => {
@@ -28736,6 +28737,7 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
 }
 
 // src/manager.ts
+var SCRIPT_EXTENSIONS = { shell: "sh", javascript: "js", typescript: "ts", python: "py" };
 var RENEWAL_WINDOW_MS = 15 * 6e4;
 var MIN_RENEWAL_MS = 0.1 * 36e5;
 var DEFAULT_AFTER_INTERVAL_MS = 500;
@@ -28754,7 +28756,7 @@ async function settleEach(work) {
   const failed = (await Promise.allSettled(work)).find((result2) => result2.status === "rejected");
   if (failed) throw failed.reason;
 }
-var instructions = "This server offers fifteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tools relay_command and relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_command runs one command; relay_script runs a JavaScript, TypeScript or Python script, given inline or as a project file, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_command or relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
+var instructions = "This server offers fourteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
   constructor(options) {
@@ -28772,8 +28774,8 @@ var RelayManager = class {
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join13(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
     this.channel = {
-      exec: async (name, argv2, timeoutMs2 = 18e4, options2) => {
-        const result2 = await this.vm.exec(name, { argv: argv2, timeout: Math.ceil(timeoutMs2 / 1e3) }, { timeoutMs: options2?.timeoutMs ?? timeoutMs2 + 3e4, signal: options2?.signal });
+      exec: async (name, argv, timeoutMs2 = 18e4, options2) => {
+        const result2 = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3) }, { timeoutMs: options2?.timeoutMs ?? timeoutMs2 + 3e4, signal: options2?.signal });
         return { stdout: result2.output, stderr: result2.output, code: result2.rc };
       },
       push: (name, local_path, remote_path) => this.vm.push(name, { local_path, remote_path }),
@@ -29347,10 +29349,10 @@ var Guest = class {
   async probe() {
     const e = this.current();
     const checks = [];
-    for (const [name, language2, argv2] of [["node", "javascript", [e.node ?? "node", "--version"]], ["tsx", "typescript", ["tsx", "--version"]], ["python3", "python", ["python3", "--version"]]]) {
+    for (const [name, language2, argv] of [["node", "javascript", [e.node ?? "node", "--version"]], ["tsx", "typescript", ["tsx", "--version"]], ["python3", "python", ["python3", "--version"]], ["sh", "shell", ["/bin/sh", "-c", "exit 0"]]]) {
       const required2 = name === "node";
       try {
-        const r = await this.m.channel.exec(e.lease.vm, [...argv2], 1e4);
+        const r = await this.m.channel.exec(e.lease.vm, [...argv], 1e4);
         checks.push({ name, language: language2, required: required2, ...r, ready: r.code === 0 });
       } catch (error2) {
         checks.push({ name, language: language2, required: required2, ready: false, diagnostic: String(error2) });
@@ -29368,7 +29370,7 @@ var Guest = class {
       software = { image: e.image, diagnostic: `The image catalog could not be read: ${message(error2)}` };
     }
     const snapshots2 = e.capture === void 0 && !e.staged ? { taken: null, reason: "Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver)." } : this.snapshotFacts(e);
-    const facts = { scope: "guest", guest: this.name, observedAt: (/* @__PURE__ */ new Date()).toISOString(), owned: this.status(), checks, software, snapshots: snapshots2, note: "A ready runtime means its --version exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.", captureVerified: false, browserVerified: false };
+    const facts = { scope: "guest", guest: this.name, observedAt: (/* @__PURE__ */ new Date()).toISOString(), owned: this.status(), checks, software, snapshots: snapshots2, note: "A ready runtime means its --version, or for /bin/sh `exit 0`, exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.", captureVerified: false, browserVerified: false };
     await this.log("guest-readiness", void 0, facts);
     return facts;
   }
@@ -29683,7 +29685,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const e = this.current();
     if (e.delivered) throw new Error("Evidence already sealed; release this VM explicitly");
     if (input.resetRecording || e.pendingReset) await this.resetRecording();
-    if (e.staged && (input.workspace || input.files?.length)) throw new Error("Runtime already staged; use relay_command with diagnostic: true for repairs, or stage with only corrected executable paths");
+    if (e.staged && (input.workspace || input.files?.length)) throw new Error("Runtime already staged; use a shell relay_script with diagnostic: true for repairs, or stage with only corrected executable paths");
     const project = resolve9(this.m.options.project);
     const files = [];
     for (const file of input.files ?? []) files.push({ local: await this.m.projectPath(file.local, "files[].local"), path: file.path });
@@ -29762,7 +29764,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       } catch (error2) {
         if (signal?.aborted) throw error2;
         const waited = Date.now() - since;
-        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1e3)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error2)}. Diagnose or start it with relay_command and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error2 });
+        if (waited + retryMs > waitMs) throw new Error(`relay_stage waited ${Math.round(waited / 1e3)} s for ${e.image}'s cua-driver to take a screenshot, which each run's before and after snapshots need, and it never did: ${message(error2)}. Diagnose or start it with a shell relay_script and diagnostic: true, such as \`${cuaDriver} serve\` on Linux, then call relay_stage again.`, { cause: error2 });
         await new Promise((done) => {
           const timer = setTimeout(done, retryMs);
           signal?.addEventListener("abort", () => {
@@ -29782,11 +29784,11 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const e = this.current();
     const timeoutMs2 = input.timeoutMs ?? 12e4;
     if (!Number.isSafeInteger(timeoutMs2) || timeoutMs2 < 1 || timeoutMs2 > 36e5) throw new Error("timeoutMs must be an integer from 1 to 3600000");
-    if (input.diagnostic && input.kind !== "exec") throw new Error("diagnostic is only supported for relay_command");
+    if (input.diagnostic && input.language !== "shell") throw new Error("Only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver");
     if (e.delivered) throw new Error("Evidence already sealed; release this VM explicitly");
     if (input.diagnostic) return this.diagnostic(input, timeoutMs2, signal);
-    if (e.pendingReset) throw new Error("Recording reset is pending; retry stage to reconcile it, or use relay_command with diagnostic: true");
-    if (!e.staged || !this.session || !this.transport) throw new Error("Use relay_stage before a run, or relay_command with diagnostic: true for setup diagnosis and repair");
+    if (e.pendingReset) throw new Error("Recording reset is pending; retry stage to reconcile it, or use a shell relay_script with diagnostic: true");
+    if (!e.staged || !this.session || !this.transport) throw new Error("Use relay_stage before a run, or a shell relay_script with diagnostic: true for setup diagnosis and repair");
     const record3 = this.derive(e, input);
     await this.save();
     this.transport.because = record3.because;
@@ -29795,20 +29797,14 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     this.transport.signal = signal;
     const options = { step: record3.step, snapshots: record3.snapshots, cwd: join13(e.guestRoot, "workspace") };
     let result2;
-    if (input.kind === "exec") {
-      if (!input.argv?.length) throw new Error("relay_command requires argv");
-      result2 = await this.session.exec(input.argv, options);
-    } else if (input.kind === "script") {
-      if (!input.language) throw new Error("relay_script requires language");
-      if (input.inline) {
-        if (typeof input.code !== "string" || input.localPath !== void 0) throw new Error("relay_script with inline: true takes the script as code, and no localPath");
-        result2 = await this.session.runCode(input.code, input.language, options);
-      } else {
-        if (!input.localPath || input.code !== void 0) throw new Error("relay_script with inline: false takes the script file as localPath, and no code");
-        const local = await this.m.projectPath(input.localPath, "localPath");
-        result2 = await this.session.runScript(local, join13(e.guestRoot, "scripts", `${randomUUID6()}.${input.language === "python" ? "py" : input.language === "typescript" ? "ts" : "js"}`), input.language, options);
-      }
-    } else throw new Error("Unknown operation kind");
+    if (input.inline) {
+      if (typeof input.code !== "string" || input.localPath !== void 0) throw new Error("relay_script with inline: true takes the script as code, and no localPath");
+      result2 = await this.session.runCode(input.code, input.language, options);
+    } else {
+      if (!input.localPath || input.code !== void 0) throw new Error("relay_script with inline: false takes the script file as localPath, and no code");
+      const local = await this.m.projectPath(input.localPath, "localPath");
+      result2 = await this.session.runScript(local, join13(e.guestRoot, "scripts", `${randomUUID6()}.${SCRIPT_EXTENSIONS[input.language]}`), input.language, options);
+    }
     const outcome = result2.outcome;
     if (outcome.kind !== "completed" || outcome.exitStatus.code !== 0 || outcome.exitStatus.signal) {
       await this.log("execution-failed", record3.because, result2);
@@ -29823,19 +29819,20 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   /**
    * The step record for a run, from the call itself: a title such as
-   * `exec node -e …`, an expected result, an input mode, a default
+   * `shell ls -al`, `code (python)` or `script check.py`, an expected result, an input mode, a default
    * after-snapshot wait and a reason. Anything the caller gave overrides it.
    */
   derive(e, input) {
     const seq = e.runSeq = (e.runSeq ?? 0) + 1;
     const stepId2 = (prefix) => `${prefix.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^[^A-Za-z0-9]+/, "").slice(0, 100) || "run"}-${seq}`;
-    const title = input.step?.title ?? (input.kind === "exec" ? `exec ${(input.argv ?? []).map((arg, index) => index === 0 ? arg.split("/").at(-1) : arg).join(" ")}` : input.inline ? `code (${input.language ?? "unknown"})` : `script ${input.localPath?.split("/").at(-1) ?? ""}`).slice(0, 500);
+    const firstLine = input.code?.split("\n").find((line) => line.trim())?.trim();
+    const title = input.step?.title ?? (input.inline ? input.language === "shell" && firstLine ? `shell ${firstLine}` : `code (${input.language})` : `script ${input.localPath?.split("/").at(-1) ?? ""}`).slice(0, 500);
     const snapshots2 = { ...input.snapshots ?? {} };
     const group = snapshots2.group;
     if (!group ? snapshots2.afterIntervalMs === void 0 : group.phase === "last" && group.afterIntervalMs === void 0 && snapshots2.afterIntervalMs === void 0) Object.assign(snapshots2, { afterIntervalMs: DEFAULT_AFTER_INTERVAL_MS });
     return {
       because: input.because ?? `Relay ${title} (no reason given)`.slice(0, 4e3),
-      step: { id: input.step?.id ?? stepId2(input.kind === "exec" ? "exec" : input.inline ? "code" : "script"), title: title || input.kind, expected: input.step?.expected ?? "Exits with status 0", inputMode: input.step?.inputMode ?? "ordinary" },
+      step: { id: input.step?.id ?? stepId2(input.inline ? "code" : "script"), title: title || "script", expected: input.step?.expected ?? "Exits with status 0", inputMode: input.step?.inputMode ?? "ordinary" },
       snapshots: snapshots2
     };
   }
@@ -30163,15 +30160,17 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   async diagnostic(input, timeoutMs2, signal) {
     const e = this.current();
-    if (!input.argv?.length || input.snapshots?.group) throw new Error("Diagnostic exec requires argv and cannot join a snapshot group");
+    if (input.language !== "shell" || input.snapshots?.group) throw new Error("A diagnostic run is a shell script and cannot join a snapshot group");
+    const script = input.inline ? input.code : await readFile9(await this.m.projectPath(input.localPath ?? "", "localPath"), "utf8");
+    if (typeof script !== "string") throw new Error("relay_script with inline: true takes the script as code, and no localPath");
     const executionId = `diagnostic-${randomUUID6()}`;
     const { guest: _guest, ...requested } = input;
-    const request = { executionId, at: (/* @__PURE__ */ new Date()).toISOString(), evidenceMode: "diagnostic", timeoutMs: timeoutMs2, ...requested };
+    const argv = e.staged ? ["/bin/sh", "-c", 'cd "$1" || exit; shift; exec "$@"', "relay-diagnostic", join13(e.guestRoot, "workspace"), "/bin/sh", "-c", script] : ["/bin/sh", "-c", script];
+    const request = { executionId, at: (/* @__PURE__ */ new Date()).toISOString(), evidenceMode: "diagnostic", timeoutMs: timeoutMs2, ...requested, argv };
     await jsonFile(join13(e.hostRoot, "host", "diagnostics", `${executionId}.request.json`), request);
     let result2;
     try {
-      const argv2 = e.staged ? ["/bin/sh", "-c", 'cd "$1" || exit; shift; exec "$@"', "relay-diagnostic", join13(e.guestRoot, "workspace"), ...input.argv] : input.argv;
-      const r = await this.m.channel.exec(e.lease.vm, argv2, timeoutMs2, { signal });
+      const r = await this.m.channel.exec(e.lease.vm, argv, timeoutMs2, { signal });
       result2 = { executionId, outcome: { kind: "completed", exitStatus: { code: r.code, signal: null } }, output: r.stdout, outputStreams: "stdout and stderr combined" };
     } catch (error2) {
       result2 = { executionId, outcome: { kind: "uncertain", diagnostic: String(error2) }, output: "", outputStreams: "stdout and stderr combined" };
@@ -30355,8 +30354,7 @@ var imageTarget = typebox_exports.Union([
   typebox_exports.Object({ source: typebox_exports.Literal("application"), name: typebox_exports.String({ minLength: 1, maxLength: 101 }), path: typebox_exports.Optional(typebox_exports.String({ minLength: 1, maxLength: 4096 })) }, closed2),
   typebox_exports.Object({ source: typebox_exports.Literal("reference"), imageId: typebox_exports.String({ pattern: "^image-[a-f0-9]{64}$" }) }, closed2)
 ]);
-var argv = typebox_exports.Array(typebox_exports.String(), { minItems: 1, maxItems: 256 });
-var language = StringEnum(["javascript", "typescript", "python"]);
+var language = StringEnum(["shell", "javascript", "typescript", "python"]);
 var timeoutMs = typebox_exports.Optional(typebox_exports.Integer({ minimum: 1, maximum: 36e5, description: "Execution timeout in milliseconds, default 120000, maximum 3600000. Independent of snapshot delay and lease TTL." }));
 var runBase = { action: typebox_exports.Literal("run"), guest, reason: optionalReason, step: typebox_exports.Optional(step), snapshots: typebox_exports.Optional(snapshots), timeoutMs };
 var relayContract = typebox_exports.Union([
@@ -30385,15 +30383,14 @@ var relayContract = typebox_exports.Union([
     nodePath: typebox_exports.Optional(typebox_exports.String({ description: "Guest Node executable, default node; use image nvm path if needed." })),
     cuaDriver: typebox_exports.Optional(typebox_exports.String({ description: "Guest CUA executable; OS default when omitted." }))
   }, closed2),
-  typebox_exports.Object({ ...runBase, kind: typebox_exports.Literal("exec"), argv, diagnostic: typebox_exports.Optional(typebox_exports.Boolean({ description: "Explicit command diagnosis or repair without screenshot evidence, including before staging. Commands and outcomes remain recorded. Never claim visual verification." })) }, closed2),
-  // One branch for relay_script: `inline` selects which of `code` and `localPath` the call gives, checked in validateRelayInput.
+  // The one run branch, relay_script (DC-26): `inline` selects which of `code` and `localPath` the call gives, and `diagnostic` needs `shell`, both checked in validateRelayInput.
   typebox_exports.Object({
     ...runBase,
-    kind: typebox_exports.Literal("script"),
     language,
     inline: typebox_exports.Boolean({ description: "true: the script is `code`, given inline. false: the script is the host file `localPath`. Give exactly the one that inline names." }),
     code: typebox_exports.Optional(typebox_exports.String({ maxLength: 1048576, description: "With inline: true, the script itself, up to 1 MiB." })),
-    localPath: typebox_exports.Optional(typebox_exports.String({ minLength: 1, description: "With inline: false, a host script file in the project folder: relative to it, or absolute inside it; no symlinks." }))
+    localPath: typebox_exports.Optional(typebox_exports.String({ minLength: 1, description: "With inline: false, a host script file in the project folder: relative to it, or absolute inside it; no symlinks." })),
+    diagnostic: typebox_exports.Optional(typebox_exports.Boolean({ description: "Shell scripts only: explicit diagnosis or repair without screenshot evidence, including before staging. The script and its outcome remain recorded. Never claim visual verification." }))
   }, closed2),
   typebox_exports.Object({ action: typebox_exports.Literal("image"), guest, target: imageTarget }, closed2),
   typebox_exports.Object({ action: typebox_exports.Literal("extract"), guest, names: typebox_exports.Array(typebox_exports.String()) }, closed2),
@@ -30411,28 +30408,25 @@ for (const branch of relayContract.anyOf) {
 var parameterObject = typebox_exports.Object({
   action: StringEnum(["search", "probe", "acquire", "stage", "run", "image", "extract", "finish", "release", "acquisition-capabilities", "console-resolve", "console-open", "console-cancel"]),
   ...projected
-}, { ...closed2, anyOf: relayContract.anyOf, description: "Select exactly one action. Each closed branch defines allowed fields. Run selects a kind; console-open requires reason, expected and userRequested=true. No default action." });
+}, { ...closed2, anyOf: relayContract.anyOf, description: "Select exactly one action. Each closed branch defines allowed fields. Run takes a script; console-open requires reason, expected and userRequested=true. No default action." });
 var relayParameters = typebox_exports.Unsafe(parameterObject);
-function branchFor(action, kind) {
-  const found = relayContract.anyOf.find((branch) => {
-    const properties = branch.properties;
-    if (properties.action.const !== action) return false;
-    return kind === void 0 ? properties.kind === void 0 : properties.kind?.const === kind;
-  });
-  if (!found) throw new Error(`No contract branch for action ${action}${kind ? ` kind ${kind}` : ""}`);
+function branchFor(action) {
+  const found = relayContract.anyOf.find((branch) => branch.properties.action.const === action);
+  if (!found) throw new Error(`No contract branch for action ${action}`);
   return found;
 }
-function toolInputSchema(action, kind) {
-  const raw = JSON.parse(JSON.stringify(branchFor(action, kind)));
-  const { action: _action, kind: _kind, ...properties } = raw.properties;
-  const required2 = (raw.required ?? []).filter((key) => key !== "action" && key !== "kind");
+function toolInputSchema(action) {
+  const raw = JSON.parse(JSON.stringify(branchFor(action)));
+  const { action: _action, ...properties } = raw.properties;
+  const required2 = (raw.required ?? []).filter((key) => key !== "action");
   return { type: raw.type, properties, ...required2.length ? { required: required2 } : {}, additionalProperties: raw.additionalProperties ?? false };
 }
 function validateRelayInput(value) {
-  if (!Check2(relayContract, value)) throw new Error("Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action and run kind.");
+  if (!Check2(relayContract, value)) throw new Error("Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.");
   if (value.action === "probe" && value.scope === "guest" && value.guest === void 0) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
-  if (value.action === "run" && value.kind === "exec" && value.diagnostic && value.snapshots?.group) throw new Error("Diagnostic commands cannot join snapshot groups.");
-  if (value.action === "run" && value.kind === "script") {
+  if (value.action === "run") {
+    if (value.diagnostic && value.language !== "shell") throw new Error("Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver.");
+    if (value.diagnostic && value.snapshots?.group) throw new Error("Diagnostic scripts cannot join snapshot groups.");
     const given = value.inline ? value.code : value.localPath, other = value.inline ? value.localPath : value.code;
     if (given === void 0 || other !== void 0) throw new Error(value.inline ? "Invalid relay input: relay_script with inline: true takes the script as code, and no localPath." : "Invalid relay input: relay_script with inline: false takes the script file as localPath, and no code.");
   }
@@ -30445,7 +30439,6 @@ import { tmpdir as tmpdir2 } from "node:os";
 import { randomUUID as randomUUID7 } from "node:crypto";
 var readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 var acts = (openWorld, destructive = false) => ({ readOnlyHint: false, destructiveHint: destructive, idempotentHint: false, openWorldHint: openWorld });
-var runShared = "Evidence is automatic, as for relay_command, whose optional `reason`, `step`, `snapshots` and `timeoutMs` it shares.";
 var relayTools = [
   {
     name: "relay_search",
@@ -30459,7 +30452,7 @@ var relayTools = [
     action: "probe",
     title: "Probe host and guest readiness",
     annotations: readOnly,
-    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_command or relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.'
+    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`/bin/sh`, `node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.'
   },
   {
     name: "relay_acquisition_capabilities",
@@ -30473,7 +30466,7 @@ var relayTools = [
     action: "acquire",
     title: "Acquire a VM",
     annotations: acts(false),
-    description: "Acquire one fresh VM, a guest, and start its ownership heartbeat. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_command or relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
+    description: "Acquire one fresh VM, a guest, and start its ownership heartbeat. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
   },
   {
     name: "relay_stage",
@@ -30483,20 +30476,11 @@ var relayTools = [
     description: "Push and hash-check the guest runtime, plus an optional workspace and support files (`files`, landing under `support/`), onto the acquired guest that `guest` names. `workspace` and each `files[].local` lie in the project folder, relative to it or absolute inside it, with no symlinks. Staging needs only Node.js in the guest (`nodePath`, default `node`); an image without it is refused, because the relay pushes no runtime. Runs take before and after snapshots only when the image lists capture software (cua-driver); otherwise their records have none, and the result's `snapshots` says which. When the image lists cua-driver, staging waits up to 120 s for it to take a screenshot, since the image starts its daemon at login, and refuses if it never does. `cuaDriver` names the guest cua-driver the snapshots use. A failed stage can be retried; once staged, only corrected executable paths may be resubmitted, and staging does not prove capture readiness. `resetRecording: true` archives the current recording's evidence and starts a fresh recording on the same VM; it refuses while a receiver lock is held."
   },
   {
-    name: "relay_command",
-    action: "run",
-    kind: "exec",
-    title: "Run a guest command",
-    annotations: acts(true),
-    description: "Run one guest command (`argv`) as one recorded operation; never hide several interactions in one call. Evidence is automatic: the relay records a step derived from the command and, when the image lists cua-driver, snapshots the display before and after. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true` records a diagnosis or repair without snapshots, even before relay_stage; it is never visual verification, and its result has one `output` field with stdout and stderr combined."
-  },
-  {
     name: "relay_script",
     action: "run",
-    kind: "script",
     title: "Run a guest script",
     annotations: acts(true),
-    description: `Run one guest script as this call's single recorded operation; the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. ${runShared} Requires \`language\` (\`javascript\`, \`typescript\` or \`python\`) and \`inline\`: with \`inline: true\` give the script itself as \`code\` (up to 1 MiB); with \`inline: false\` give \`localPath\`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one \`inline\` names; any other call is refused. It runs in the staged workspace: JavaScript with the guest's Node.js, TypeScript with \`tsx\` from the guest's PATH or else the guest Node.js's own type stripping (22.6 or later), and Python with \`python3\` from the guest's PATH (relay_probe scope=guest reports which run); a missing runtime refuses the run before it starts.`
+    description: "Run one guest script as one recorded operation; never hide several interactions in one call. A command is a shell script. The script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines, and its exit status says whether it succeeded, so a script that calls cua-driver checks the driver's answer itself. Requires `language` (`shell`, `javascript`, `typescript` or `python`) and `inline`: with `inline: true` give the script itself as `code` (up to 1 MiB); with `inline: false` give `localPath`, a host file in the project folder (relative to it or absolute inside it, with no symlinks). Give exactly the one `inline` names; any other call is refused. It runs in the staged workspace: shell with `/bin/sh`, JavaScript with the guest's Node.js, TypeScript with `tsx` from the guest's PATH or else the guest Node.js's own type stripping (22.6 or later), and Python with `python3` from the guest's PATH (relay_probe scope=guest reports which run); a missing runtime refuses the run before it starts. Evidence is automatic: the relay records a step derived from the call and, when the image lists cua-driver, snapshots the display before and after. Optional `reason` (intent, never authorization), `step` (`id`, `title`, `expected`, `inputMode`) and `snapshots.afterIntervalMs` (default 500 ms) enrich or tune the record; consecutive keystrokes may form an explicit text group with `snapshots.group` (`first`/`member`/`last`). `timeoutMs` bounds execution (default 120000, up to 3600000). The result carries the outcome and bounded stdout/stderr; it names the after-snapshot as `pending` with its `imageId` while the image downloads in the background, so call relay_image with that `imageId` to see it. A refused, uncertain or nonzero result keeps the VM; never replay input whose effect is uncertain. `diagnostic: true`, for shell scripts only, records a diagnosis or repair without snapshots, even before relay_stage, running the script as `/bin/sh -c`; it is never visual verification, and its result has one `output` field with stdout and stderr combined."
   },
   {
     name: "relay_image",
@@ -30549,12 +30533,12 @@ var relayTools = [
   }
 ];
 function relayToolInputSchema(tool) {
-  return toolInputSchema(tool.action, tool.kind);
+  return toolInputSchema(tool.action);
 }
 function relayToolInput(name, args) {
   const tool = relayTools.find((candidate) => candidate.name === name);
   if (!tool) throw new Error(`Unknown relay tool: ${name}`);
-  return { action: tool.action, ...tool.kind ? { kind: tool.kind } : {}, ...args };
+  return { action: tool.action, ...args };
 }
 var relayResultKind = "relay-image-result-v1";
 async function renderRelayResult(value, resultRoot = join14(tmpdir2(), "mcp-relay-results"), indent = 2) {

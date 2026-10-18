@@ -4,7 +4,7 @@
  * Everything the relay does lives in mcp-relay's host-agnostic core (the
  * manager, the vm-service client, the registry, the strict contract, the
  * action dispatch and the bounded result rendering). This file binds that
- * core to MCP over standard input and output: fifteen `relay_*` tools, each
+ * core to MCP over standard input and output: fourteen `relay_*` tools, each
  * with its own schema, title and annotations. The user command (status) is not
  * an MCP prompt: pi's adapter can only name those
  * `/mcp__<package>__<server>__<prompt>`, so each host gets its own command file
