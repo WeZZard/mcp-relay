@@ -26,7 +26,7 @@ test('real file transfer checks source and destination; rejects mutation and sym
  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('inventory frames survive the vm-service 64000-character stdout tail and are cleaned', async t => {
+test('inventory frames survive the machine-service 64000-character stdout tail and are cleaned', async t => {
  const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-frame-'))); t.after(() => rm(root, { recursive: true, force: true }));
  const guest = join(root, 'guest'), source = join(guest, 'workspace'), temp = join(root, 'host-temp');
  await mkdir(source, { recursive: true });
@@ -159,7 +159,7 @@ test('local helper bounds output and timeouts', async () => {
  await assert.rejects(command([process.execPath, '-e', 'setInterval(()=>{},100)'], { timeoutMs: 10 }), /timed out/);
 });
 
-/** The fake vm-service pull keeps holes, so a sparse stand-in for evidence uses no disk space when it is pulled. */
+/** The fake machine-service pull keeps holes, so a sparse stand-in for evidence uses no disk space when it is pulled. */
 async function sparseCopy(source: string, destination: string) {
  const input = await open(source, 'r'), output = await open(destination, 'wx');
  try {

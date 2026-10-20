@@ -26,11 +26,11 @@ class Tests(unittest.TestCase):
    with self.assertRaisesRegex(ValueError,'symlink path refused'):publisher.safe(link/'inventories/ubuntu2404.json')
   self.assertFalse(root.exists())
  def test_routes(self):
-  for p in ('/gc','/vms/foreign/release','/vms/owned/delete','/applications'):
+  for p in ('/gc','/machines/foreign/release','/machines/owned/delete','/applications'):
    self.assertFalse(m.admitted('POST',p,{},'owned',True))
   self.assertFalse(m.admitted('GET','/applications',{},'owned',True))
   for a in ('exec','push','pull','heartbeat','release'):
-   self.assertTrue(m.admitted('POST','/vms/owned/'+a,{},'owned',True))
+   self.assertTrue(m.admitted('POST','/machines/owned/'+a,{},'owned',True))
  def test_one_acquire(self):
   # Manager contract: `relay-${input.task}-${randomUUID().slice(0, 8)}`.
   b=dict(image='ubuntu2404',env='none',purpose='relay-real-base-chain-a8f394ab')

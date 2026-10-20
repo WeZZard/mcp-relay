@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { Transfer, assertHostPath } from './transfer.js';
 import { jsonFile, hash } from './util.js';
 
-/** Receiver stdout can contain escaped output larger than vm-service's 64000
+/** Receiver stdout can contain escaped output larger than machine-service's 64000
  * character tail. Discard it, retaining only a small dispatch acknowledgement;
  * the receiver's durable file is the authoritative response. */
 const INVOKE = `const {spawnSync}=require('child_process');const [receiver,request]=process.argv.slice(1);const result=spawnSync(process.execPath,[receiver,request],{stdio:['ignore','ignore','inherit']});if(result.error)throw result.error;if(result.status!==0)process.exit(result.status??1);console.log('{"receiverExited":true}');`;

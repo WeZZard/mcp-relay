@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { RelayManager, type ManagerOptions } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
-import { type VmBackend, type VmLease } from '../src/vm-service.js';
+import { type VmBackend, type VmLease } from '../src/machine-service.js';
 import { consoleStatus, acquisitionCapabilities } from '../src/console.js';
 import { validateRelayInput } from '../src/schema.js';
 
@@ -24,10 +24,10 @@ async function fixture(t: test.TestContext, kind: 'linux' | 'macos' = 'linux') {
   let loseOpen = false;
   const vm: VmBackend = {
     baseUrl: 'http://localhost:6240',
-    health: async () => ({ ok: true, service: 'fixture' }),
+    health: async () => ({ ok: true, service: 'machine-service' }),
     images: async () => ({ images: { linux: { kind: 'linux', base_available: true }, macos: { kind: 'macos', base_available: true } } } as any),
     get: async () => { calls.push('get'); return { ...lease!, actually_running: true, ttl_hours_remaining: 1 }; },
-    list: async () => ({ vms: lease ? { [lease.vm]: lease } : {} } as any),
+    list: async () => ({ machines: lease ? { [lease.vm]: lease } : {} } as any),
     acquire: async body => { calls.push('acquire'); acquisitions.push(body); lease = { vm: 'vm-1', lease_id: 'lease-1', purpose: body.purpose, image: body.image!, image_kind: kind, state: 'running', ttl_expires_at: Date.now() / 1000 + 3600, ...(body.vnc ? { console: consoleStatus(observation) } : {}) } as VmLease; return lease; },
     acquisitionCapabilities: async () => { calls.push('capabilities'); return capabilities; },
     consoleResolve: async (_vm, body) => { calls.push('resolve'); assert.deepEqual(body, { lease_id: 'lease-1' }); return observation; },

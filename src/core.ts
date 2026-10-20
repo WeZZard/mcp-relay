@@ -14,12 +14,12 @@ export { relayTools, relayToolInput, relayToolInputSchema, relayResultKind, rela
 export type { RelayTool, RelayToolAnnotations, RelayCallResult, RelayRendered, RelayImageContent } from './surface.js';
 export { deliverPackage, verifyDeliveredPackage } from './package.js';
 export type { DeliverPackageOptions, DeliveryResult } from './package.js';
-export { VmService, VmServiceError, AcquireIndeterminateError, capacityRefusal } from './vm-service.js';
-export type { VmLease, VmList, VmImages, VmServiceOptions, VmBackend } from './vm-service.js';
+export { MachineService, MachineServiceError, AcquireIndeterminateError, capacityRefusal, expectMachineService, SERVICE_NAME } from './machine-service.js';
+export type { VmLease, MachineList, VmImages, MachineServiceOptions, VmBackend } from './machine-service.js';
 export { probeLocal } from './probe.js';
 export { relayStateRoot, guestNetwork, GUEST_NETWORKS, maxGuests, DEFAULT_MAX_GUESTS, onExit, ON_EXIT, capacityWait, DEFAULT_CAPACITY_WAIT_S } from './config.js';
 export type { GuestNetwork, OnExit } from './config.js';
-export { loadEnvironment, selectedEnvironment, environmentVariables, matchesEnvironment, canonicalPath } from './environment.js';
+export { loadEnvironment, selectedEnvironment, environmentVariables, matchesEnvironment, canonicalPath, LEGACY_PROFILE } from './environment.js';
 export type { VmEnvironment, EnvironmentIdentity, SelectedEnvironment } from './environment.js';
 export { consoleStatus, acquisitionCapabilities } from './console.js';
 export type { ConsoleStatus, ConsoleAttemptStatus } from './console.js';

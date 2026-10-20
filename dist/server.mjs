@@ -17197,8 +17197,9 @@ import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
-var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "vmctlPath", "tartPath"];
+var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "machctlPath", "tartPath"];
 var mutable = ["tartHome", "serviceStateDir", "imageStateDir", "relayStateDir"];
+var LEGACY_PROFILE = "Environment profile is from before the machine-service rename, which reads only schemaVersion 2 with machctlPath: a profile at schemaVersion 1 or with vmctlPath is refused. Rename vmctlPath to machctlPath, naming the machctl executable, and set schemaVersion to 2.";
 function canonicalPath(value) {
   if (typeof value !== "string" || !isAbsolute(value) || !value.trim() || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(value)) throw new Error("Environment paths must be absolute and contain no control characters");
   let ancestor = resolve(value);
@@ -17259,19 +17260,20 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
     } else if (text4[i] === "{" || text4[i] === "[") depth++;
     else if (text4[i] === "}" || text4[i] === "]") depth--;
   }
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.schemaVersion === 1 || Object.hasOwn(raw, "vmctlPath"))) throw new Error(LEGACY_PROFILE);
   const fields = ["schemaVersion", "id", "vmServiceUrl", ...paths].sort();
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(fields)) throw new Error("Environment profile has missing or unknown fields");
   const p = raw;
-  if (p.schemaVersion !== 1 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
-  const profile = { schemaVersion: 1, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
+  if (p.schemaVersion !== 2 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
+  const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
   for (const key of paths) profile[key] = canonicalPath(p[key]);
   if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, "images")).isDirectory()) throw new Error("Selected imageRepository must contain images/");
-  for (const key of ["vmctlPath", "tartPath"]) {
+  for (const key of ["machctlPath", "tartPath"]) {
     if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
-  const names = ["vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
+  const names = ["machine-service", "vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
   const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];
@@ -17310,13 +17312,13 @@ function environmentVariables(selected) {
     VM_ENVIRONMENT_FINGERPRINT: selected.identity.fingerprint,
     PILOT_REPO: p.imageRepository,
     TART_HOME: p.tartHome,
-    VM_SERVICE_STATE: p.serviceStateDir,
+    MACHINE_SERVICE_STATE: p.serviceStateDir,
     PILOT_IMAGES_STATE_DIR: p.imageStateDir,
     VM_RELAY_STATE_DIR: p.relayStateDir,
     VM_RELAY_URL: p.vmServiceUrl,
-    VM_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
-    VM_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
-    VMCTL: p.vmctlPath,
+    MACHINE_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
+    MACHINE_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
+    MACHCTL: p.machctlPath,
     TART: p.tartPath
   };
 }
@@ -17744,14 +17746,14 @@ var Session = class {
 // node_modules/@wezzard/relay-driver-host-sdk/dist/src/index.js
 init_evidence_package();
 
-// src/vm-service.ts
+// src/machine-service.ts
 import { isIP as isIP2 } from "node:net";
-var VmServiceError = class extends Error {
+var MachineServiceError = class extends Error {
   constructor(message3, status, responseBody, options) {
     super(message3, options);
     this.status = status;
     this.responseBody = responseBody;
-    this.name = "VmServiceError";
+    this.name = "MachineServiceError";
   }
   status;
   responseBody;
@@ -17759,7 +17761,7 @@ var VmServiceError = class extends Error {
   capacity = false;
 };
 function capacityRefusal(error2) {
-  if (!(error2 instanceof VmServiceError) || error2.status !== 409 || !error2.responseBody) return false;
+  if (!(error2 instanceof MachineServiceError) || error2.status !== 409 || !error2.responseBody) return false;
   let body;
   try {
     body = JSON.parse(error2.responseBody);
@@ -17770,9 +17772,14 @@ function capacityRefusal(error2) {
   const { error: reason2, outcome } = body;
   return typeof reason2 === "string" && reason2.startsWith("macOS VM limit reached") && outcome !== "uncertain";
 }
-var AcquireIndeterminateError = class extends VmServiceError {
+var SERVICE_NAME = "machine-service";
+function expectMachineService(health, origin) {
+  if (health.service === SERVICE_NAME) return;
+  throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
+}
+var AcquireIndeterminateError = class extends MachineServiceError {
   constructor(purpose, cause) {
-    super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /vms before retrying or ending the enclosure`, void 0, void 0, { cause });
+    super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /machines before retrying or ending the enclosure`, void 0, void 0, { cause });
     this.purpose = purpose;
     this.name = "AcquireIndeterminateError";
   }
@@ -17789,7 +17796,7 @@ function isLease(value) {
   if (!record2(value)) return false;
   return ["vm", "purpose", "image"].every((k) => typeof value[k] === "string" && value[k] !== "") && ["macos", "linux"].includes(String(value.image_kind)) && ["pending", "provisioning", "running", "releasing"].includes(String(value.state)) && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k])) && ["cpu", "memory_mb", "disk_gb", "grace_until"].every((k) => value[k] === null || typeof value[k] === "number") && ["env", "ip"].every((k) => value[k] === null || typeof value[k] === "string") && typeof value.warned === "boolean";
 }
-var VmService = class {
+var MachineService = class {
   baseUrl;
   environment;
   timeoutMs;
@@ -17803,7 +17810,7 @@ var VmService = class {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
     if (!loopback || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("vm-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");
@@ -17814,7 +17821,7 @@ var VmService = class {
     return this.request("/health", void 0, options);
   }
   list(options = {}) {
-    return this.request("/vms", void 0, options);
+    return this.request("/machines", void 0, options);
   }
   images(options = {}) {
     return this.request("/images", void 0, options);
@@ -17838,7 +17845,7 @@ var VmService = class {
     try {
       return await this.request(path, body, options);
     } catch (error2) {
-      throw new VmServiceError(`Console API unavailable or request outcome unknown${error2 instanceof VmServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; resolve before another open`, error2 instanceof VmServiceError ? error2.status : void 0);
+      throw new MachineServiceError(`Console API unavailable or request outcome unknown${error2 instanceof MachineServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; resolve before another open`, error2 instanceof MachineServiceError ? error2.status : void 0);
     }
   }
   get(vm, options = {}) {
@@ -17857,12 +17864,12 @@ var VmService = class {
     const timeoutMs2 = positive(options.timeoutMs ?? this.acquireTimeoutMs, "timeoutMs");
     try {
       const lease = await this.request("/acquire", body, { timeoutMs: timeoutMs2 });
-      if (!isLease(lease)) throw new VmServiceError("Invalid vm-service acquire response");
+      if (!isLease(lease)) throw new MachineServiceError("Invalid machine-service acquire response");
       return lease;
     } catch (error2) {
-      const safeError = body.vnc ? new VmServiceError(`VNC acquisition refused or outcome unknown${error2 instanceof VmServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; inspect capabilities and reconcile ownership`, error2 instanceof VmServiceError ? error2.status : void 0) : error2;
-      if (safeError instanceof VmServiceError) safeError.capacity = capacityRefusal(error2);
-      if (error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) throw safeError;
+      const safeError = body.vnc ? new MachineServiceError(`VNC acquisition refused or outcome unknown${error2 instanceof MachineServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; inspect capabilities and reconcile ownership`, error2 instanceof MachineServiceError ? error2.status : void 0) : error2;
+      if (safeError instanceof MachineServiceError) safeError.capacity = capacityRefusal(error2);
+      if (error2 instanceof MachineServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) throw safeError;
       throw new AcquireIndeterminateError(body.purpose, safeError);
     }
   }
@@ -17883,7 +17890,7 @@ var VmService = class {
   }
   path(vm, action) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(vm)) throw new TypeError("Invalid VM name");
-    return `/vms/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
+    return `/machines/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
   }
   async request(path, body, options) {
     options.signal?.throwIfAborted();
@@ -17891,7 +17898,7 @@ var VmService = class {
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(new VmServiceError(`vm-service ${path} timed out after ${timeoutMs2}ms`)), timeoutMs2);
+    const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms`)), timeoutMs2);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: body === void 0 ? "GET" : "POST",
@@ -17925,17 +17932,17 @@ var VmService = class {
         }
       }
       const text4 = Buffer.concat(chunks).toString("utf8");
-      if (!response.ok) throw new VmServiceError(`vm-service ${path}: HTTP ${response.status}: ${text4}${truncated ? " [truncated]" : ""}`, response.status, text4);
-      if (truncated) throw new VmServiceError(`vm-service ${path}: response exceeds ${bound} bytes`);
+      if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text4}${truncated ? " [truncated]" : ""}`, response.status, text4);
+      if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
       try {
         return JSON.parse(text4);
       } catch (cause) {
-        throw new VmServiceError(`vm-service ${path}: invalid JSON response`, void 0, void 0, { cause });
+        throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
       }
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
-      if (cause instanceof VmServiceError) throw cause;
-      throw new VmServiceError(`vm-service ${path}: request failed`, void 0, void 0, { cause });
+      if (cause instanceof MachineServiceError) throw cause;
+      throw new MachineServiceError(`machine-service ${path}: request failed`, void 0, void 0, { cause });
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -28770,7 +28777,7 @@ var RelayManager = class {
     this.capacityWaitMs = options.capacityWaitMs ?? capacityWait() * 1e3;
     this.capacityRetryMs = options.capacityRetryMs ?? CAPACITY_RETRY_MS;
     if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error("capacityWaitMs must be nonnegative and capacityRetryMs positive");
-    this.vm = options.vm ?? new VmService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
+    this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join13(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
     this.channel = {
@@ -28940,7 +28947,8 @@ var RelayManager = class {
     if (!this.environment) return;
     if (new URL(this.vm.baseUrl).origin !== new URL(this.environment.profile.vmServiceUrl).origin) throw new Error("Injected backend endpoint does not match selected environment");
     const health = await this.vm.health({ timeoutMs: 5e3 });
-    if (!health.ok || !matchesEnvironment(health.environment, this.environment)) throw new Error("VM service environment identity mismatch; no lease operation was performed");
+    expectMachineService(health, this.vm.baseUrl);
+    if (!health.ok || !matchesEnvironment(health.environment, this.environment)) throw new Error("machine-service environment identity mismatch; no lease operation was performed");
   }
   async unlock() {
     if (this.ownerLock) {
@@ -28999,7 +29007,7 @@ var RelayManager = class {
   async readAcquisitionCapabilities(signal) {
     signal?.throwIfAborted();
     await this.assertBackend();
-    if (!this.vm.acquisitionCapabilities) throw new Error("Backend lacks acquisition-capabilities; upgrade vm-service for VNC");
+    if (!this.vm.acquisitionCapabilities) throw new Error("Backend lacks acquisition-capabilities; upgrade machine-service for VNC");
     return acquisitionCapabilities(await this.vm.acquisitionCapabilities({ signal, timeoutMs: 1e4 }));
   }
   acquisitionCapabilities(signal) {
@@ -29298,7 +29306,7 @@ var Guest = class {
     await this.m.assertBackend();
     e.backend ??= this.m.binding();
     if (!e.lease) {
-      const matches = Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).vms).filter((v) => v.purpose === e.purpose);
+      const matches = Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).machines).filter((v) => v.purpose === e.purpose);
       if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
       e.lease = matches[0];
       e.acquisitionInFlight = false;
@@ -29321,7 +29329,7 @@ var Guest = class {
       await this.save();
     } catch (error2) {
       e.guestState = "unknown";
-      if (error2 instanceof VmServiceError && error2.status === 404 && await this.destroyed(e.lease.vm)) {
+      if (error2 instanceof MachineServiceError && error2.status === 404 && await this.destroyed(e.lease.vm)) {
         await this.m.registry.remove(e.row);
         await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease.vm, released: true, reason: "backend lease absent and destruction verified", finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
         this.enclosure = void 0;
@@ -29385,7 +29393,7 @@ var Guest = class {
   }
   async resolveConsole(signal) {
     const e = await this.consoleOwner(signal);
-    if (!this.m.vm.consoleResolve) throw new Error("Backend lacks console API; upgrade vm-service");
+    if (!this.m.vm.consoleResolve) throw new Error("Backend lacks console API; upgrade machine-service");
     let observation;
     try {
       observation = consoleStatus(await this.m.vm.consoleResolve(e.lease.vm, { lease_id: e.lease.lease_id }, { signal, timeoutMs: 1e4 }));
@@ -29412,7 +29420,7 @@ var Guest = class {
     if (!e.lease.console?.console_id) throw new Error("This lease has no acquired console; automatic VNC retrofit is forbidden");
     if (resolved.console_id !== input.console_id) throw new Error("Console instance identity mismatch");
     const method = operation === "open" ? this.m.vm.consoleOpen : this.m.vm.consoleCancel;
-    if (!method) throw new Error("Backend lacks console API; upgrade vm-service");
+    if (!method) throw new Error("Backend lacks console API; upgrade machine-service");
     if (operation === "open") {
       if (resolved.viewer_location !== "service-host") throw new Error("Only a viewer on the declared service host is supported; no remote-client viewer fallback");
       if (e.lease.state !== "running" || !Number.isFinite(e.lease.ttl_expires_at) || e.lease.ttl_expires_at <= Date.now() / 1e3) throw new Error("Console lease is not running or has expired");
@@ -29460,8 +29468,8 @@ var Guest = class {
   }
   /**
    * The acquisition, in this guest's own order. Its ownership intent is
-   * persisted and registered before vm-service is asked. A refusal before
-   * that, or vm-service's own refusal, leaves the session without the guest;
+   * persisted and registered before machine-service is asked. A refusal before
+   * that, or machine-service's own refusal, leaves the session without the guest;
    * any other failure keeps the guest's record for reconciliation.
    */
   async acquire(input, network, signal) {
@@ -29484,7 +29492,7 @@ var Guest = class {
     const stamp = startedAt.slice(0, 19).replace(/[T:]/g, "-") + "-Z";
     const project = this.m.options.project, environment = this.m.environment;
     const hostRoot = join13(this.m.options.outputRoot ?? resolve9(project, "relay-evidence"), purpose);
-    const row = { machine: environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (vm-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
+    const row = { machine: environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
     const e = this.enclosure = { backend: this.m.binding(), purpose, task: input.task, image: input.image, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
     let refused = false;
     try {
@@ -29514,11 +29522,11 @@ var Guest = class {
           break;
         } catch (error2) {
           if (signal?.aborted && error2 === signal.reason) e.acquisitionInFlight = false;
-          else if (error2 instanceof VmServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
+          else if (error2 instanceof MachineServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
             e.acquisitionInFlight = false;
             refused = true;
           }
-          if (!refused || !(error2 instanceof VmServiceError && error2.capacity) || this.m.capacityWaitMs <= 0) throw error2;
+          if (!refused || !(error2 instanceof MachineServiceError && error2.capacity) || this.m.capacityWaitMs <= 0) throw error2;
           firstRefusal ??= asked;
           await this.waitForCapacity(e, error2, firstRefusal, signal);
           refused = false;
@@ -29552,7 +29560,7 @@ Guest ${this.name} keeps this acquisition's ownership record: name it to reconci
   /**
    * The host is at capacity: wait one retry interval, or what is left of
    * MCP_RELAY_CAPACITY_WAIT, before the acquisition is asked again. Refuses
-   * with vm-service's reason and the time waited once the wait has run out,
+   * with machine-service's reason and the time waited once the wait has run out,
    * or when the call is cancelled or the session ends (DC-22).
    */
   async waitForCapacity(e, refusal, since, signal) {
@@ -29578,16 +29586,16 @@ Guest ${this.name} keeps this acquisition's ownership record: name it to reconci
     if (stop.aborted) throw new Error(`${signal?.aborted ? String(signal.reason) : "The relay session ended"} while the acquisition waited ${seconds(Date.now() - since)} s for capacity (${refusal.message}), so nothing was acquired`, { cause: refusal });
   }
   /**
-   * A refused acquisition acquired nothing: once vm-service lists no VM for
+   * A refused acquisition acquired nothing: once machine-service lists no VM for
    * its purpose, its registry row goes and the guest leaves the session.
    * False when that cannot be established, so the record stays.
    */
   async withdraw(error2) {
     const e = this.enclosure;
     try {
-      if (Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).vms).some((lease) => lease.purpose === e.purpose)) return false;
+      if (Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).machines).some((lease) => lease.purpose === e.purpose)) return false;
       await this.m.registry.remove(e.row);
-      await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, released: false, acquired: false, reason: "vm-service refused the acquisition", error: String(error2), finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
+      await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, released: false, acquired: false, reason: "machine-service refused the acquisition", error: String(error2), finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
       this.enclosure = void 0;
       await this.save();
       await this.m.forget(this);
@@ -29722,7 +29730,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     this.transport = new VmTransport(transfer, e.guestRoot, join13(e.hostRoot, "host"), e.cuaDriver);
     this.transport.capture = e.capture !== false;
     relay.useTransport(() => this.transport);
-    this.session = await relay.start({ taskId: e.purpose, target: `vm-service:${e.lease.vm}` });
+    this.session = await relay.start({ taskId: e.purpose, target: `machine-service:${e.lease.vm}` });
     e.sessionId = this.session.sessionId;
     e.staged = true;
     await this.save();
@@ -29784,7 +29792,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const e = this.current();
     const timeoutMs2 = input.timeoutMs ?? 12e4;
     if (!Number.isSafeInteger(timeoutMs2) || timeoutMs2 < 1 || timeoutMs2 > 36e5) throw new Error("timeoutMs must be an integer from 1 to 3600000");
-    if (input.diagnostic && input.language !== "shell") throw new Error("Only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver");
+    if (input.diagnostic && input.language !== "shell") throw new Error("Only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver");
     if (e.delivered) throw new Error("Evidence already sealed; release this VM explicitly");
     if (input.diagnostic) return this.diagnostic(input, timeoutMs2, signal);
     if (e.pendingReset) throw new Error("Recording reset is pending; retry stage to reconcile it, or use a shell relay_script with diagnostic: true");
@@ -29859,7 +29867,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           const lease = await this.m.vm.get(e.lease.vm, options);
           if (lease.purpose !== e.purpose) throw Object.assign(new Error("Lease ownership identity changed."), { code: "unauthorized-reference" });
         } catch (error2) {
-          if (error2 instanceof VmServiceError && error2.status === 404) throw Object.assign(new Error("Saved image guest is no longer available."), { code: "stale-reference" });
+          if (error2 instanceof MachineServiceError && error2.status === 404) throw Object.assign(new Error("Saved image guest is no longer available."), { code: "stale-reference" });
           throw error2;
         }
       }
@@ -30247,7 +30255,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     if (!e.released) {
       if (!e.lease) {
         const list = await this.m.vm.list({ timeoutMs: 1e4 });
-        const matches = Object.values(list.vms).filter((lease) => lease.purpose === e.purpose);
+        const matches = Object.values(list.machines).filter((lease) => lease.purpose === e.purpose);
         if (matches.length > 1) throw new Error("Ambiguous acquisition; refusing to remove ownership record");
         if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.dir}. Reconcile before retrying; never blindly acquire again.`);
         e.lease = matches[0];
@@ -30259,7 +30267,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
             const response = await this.m.vm.release(e.lease.vm, { reason: reason2 }, { timeoutMs: timeoutMs2 });
-            if (!response.released) throw new Error("vm-service did not confirm destruction");
+            if (!response.released) throw new Error("machine-service did not confirm destruction");
             released = true;
             break;
           } catch (error2) {
@@ -30268,7 +30276,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
             try {
               await this.m.vm.get(e.lease.vm, { timeoutMs: 5e3 });
             } catch (getError) {
-              if (getError instanceof VmServiceError && getError.status === 404) {
+              if (getError instanceof MachineServiceError && getError.status === 404) {
                 released = true;
                 break;
               }
@@ -30277,7 +30285,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           }
         }
         if (!released) throw new Error("Lease release unconfirmed");
-        if (!await this.destroyed(e.lease.vm)) throw new Error(`vm-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true;
       await this.save().catch(() => {
@@ -30425,7 +30433,7 @@ function validateRelayInput(value) {
   if (!Check2(relayContract, value)) throw new Error("Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.");
   if (value.action === "probe" && value.scope === "guest" && value.guest === void 0) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === "run") {
-    if (value.diagnostic && value.language !== "shell") throw new Error("Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver.");
+    if (value.diagnostic && value.language !== "shell") throw new Error("Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver.");
     if (value.diagnostic && value.snapshots?.group) throw new Error("Diagnostic scripts cannot join snapshot groups.");
     const given = value.inline ? value.code : value.localPath, other = value.inline ? value.localPath : value.code;
     if (given === void 0 || other !== void 0) throw new Error(value.inline ? "Invalid relay input: relay_script with inline: true takes the script as code, and no localPath." : "Invalid relay input: relay_script with inline: false takes the script file as localPath, and no code.");

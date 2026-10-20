@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { hash, hashFile, inventory, within } from './util.js';
 import { archiveBytes, archiveChunks, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
 
-/** vm-service is the sole guest communication channel. */
+/** machine-service is the sole guest communication channel. */
 export interface VmChannel {
   exec(name: string, argv: string[], timeoutMs?: number, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }>;
   push(name: string, localPath: string, remotePath: string): Promise<unknown>;

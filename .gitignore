@@ -4,7 +4,7 @@ node_modules/
 relay-evidence/
 test-evidence/
 .claude/
-# CI checks vm-service out here to build vmctl for the parity test.
+# CI checks machine-service out here to build machctl for the parity test.
 .ci/
 .release/
 # Agent plans, reviews and troubleshooting reports stay local.

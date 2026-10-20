@@ -105,7 +105,7 @@ export function validateRelayInput(value: unknown): asserts value is RelayInput 
   if (!Check(relayContract, value)) throw new Error('Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.');
   if (value.action === 'probe' && value.scope === 'guest' && value.guest === undefined) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === 'run') {
-    if (value.diagnostic && value.language !== 'shell') throw new Error('Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through vm-service without the receiver.');
+    if (value.diagnostic && value.language !== 'shell') throw new Error('Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver.');
     if (value.diagnostic && value.snapshots?.group) throw new Error('Diagnostic scripts cannot join snapshot groups.');
     const given = value.inline ? value.code : value.localPath, other = value.inline ? value.localPath : value.code;
     if (given === undefined || other !== undefined) throw new Error(value.inline

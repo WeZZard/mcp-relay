@@ -1,6 +1,6 @@
 // Live check: starts this checkout's built MCP server over stdio and runs one
 // scripted sequence of relay tool calls against a real VM through the local
-// vm-service. It acquires, runs and finishes a real VM; run it deliberately.
+// machine-service. It acquires, runs and finishes a real VM; run it deliberately.
 //
 //   npm run build
 //   node scripts/live-check.mjs scripts/live-checks/ubuntu.json <outDir>
