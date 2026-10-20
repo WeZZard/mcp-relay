@@ -3,7 +3,7 @@ import { setupSelectedCloneX11 } from './selected-image-x11.js';
 import { supportArgument, verifySupportDriver } from './selected-image-support.js';
 import { RelayManager } from '../src/manager.js';
 import { relayCall } from '../src/surface.js';
-import { VmService, VmServiceError } from '../src/vm-service.js';
+import { MachineService, MachineServiceError } from '../src/machine-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
 import { verifyPackage } from '@wezzard/relay-driver-host-sdk';
 import { mkdir, readFile, writeFile, readdir, lstat, chmod } from 'node:fs/promises';
@@ -22,10 +22,10 @@ const sha=(b:Buffer|string)=>createHash('sha256').update(b).digest('hex');
 const save=async(n:string,v:unknown)=>writeFile(join(root,n),JSON.stringify(v,null,2)+'\n',{flag:'wx'});
 let seq=0;
 async function audit<T>(kind:string,input:unknown,fn:()=>Promise<T>):Promise<T>{const n=String(seq++).padStart(4,'0'),at=new Date().toISOString();try{const result=await fn();await save(`audit/${n}-${kind}.json`,{at,endedAt:new Date().toISOString(),input,result});return result;}catch(e){await save(`audit/${n}-${kind}.json`,{at,endedAt:new Date().toISOString(),input,error:String(e),stack:(e as Error).stack});throw e;}}
-// Transparent observation of the existing VmService HTTP implementation; no alternative execution channel.
+// Transparent observation of the existing MachineService HTTP implementation; no alternative execution channel.
 const fetchOriginal=globalThis.fetch;
 globalThis.fetch=async(input,init)=>{const url=String(input);assert(url.startsWith('http://127.0.0.1:6240/'));return audit('http',{url,method:init?.method??'GET',body:init?.body?JSON.parse(String(init.body)):undefined},async()=>{const response=await fetchOriginal(input,init);const bytes=await response.clone().text();await save(`http-response-${seq++}.json`,{url,status:response.status,body:bytes});return response;});};
-const vm=new VmService({baseUrl:'http://127.0.0.1:6240',acquireTimeoutMs:420000});
+const vm=new MachineService({baseUrl:'http://127.0.0.1:6240',acquireTimeoutMs:420000});
 const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,stateRoot:join(root,'state'),outputRoot:join(root,'packages'),heartbeatMs:3000});
 let lease:any,finished=false,failed:unknown,before:any;
 const call=async(input:any)=>audit('public-'+input.action,input,async()=>{const r=await relayCall(manager,input);return r.details??JSON.parse(r.text);});
@@ -36,7 +36,7 @@ try{
  const selectedPath=join(project,'test-evidence/catalog-candidate-check/2026-09-13T17-05-26-088Z/firefox.json');const bytes=await readFile(selectedPath),search=JSON.parse(bytes.toString());
  const selected=search.applications.find((x:any)=>x.name==='Firefox').installations.find((x:any)=>x.image==='ubuntu2404');assert(selected);
  await save('selection.json',{selectedPath,sha256:sha(bytes),actualSelection:'ubuntu2404',installation:selected,policy:'Explicit selection from retained parent-verified result; no new search, install or automatic selection'});
- await save('source-hashes.json',await Promise.all(['scripts/selected-image-lifecycle.ts','scripts/selected-image-support.ts','scripts/selected-image-x11.ts','scripts/live-smoke-x11.ts','scripts/live-smoke-display.cjs','src/surface.ts','src/schema.ts','src/manager.ts','src/vm-service.ts','src/transport.ts','src/package.ts','dist/server.mjs'].map(async p=>({path:p,sha256:sha(await readFile(join(project,p)))}))));
+ await save('source-hashes.json',await Promise.all(['scripts/selected-image-lifecycle.ts','scripts/selected-image-support.ts','scripts/selected-image-x11.ts','scripts/live-smoke-x11.ts','scripts/live-smoke-display.cjs','src/surface.ts','src/schema.ts','src/manager.ts','src/machine-service.ts','src/transport.ts','src/package.ts','dist/server.mjs'].map(async p=>({path:p,sha256:sha(await readFile(join(project,p)))}))));
  before=await fingerprints();await save('base-before.json',before);await save('tart-before.json',tart());
  await call({action:'probe'});
  await save('scope.json',{nonUI:true,video:'not applicable',visualBehavior:'not tested',purpose:'Explicitly requested integration test of actual selected-image lifecycle; no host/guest pointer, keyboard or application launch'});
@@ -98,9 +98,9 @@ finally{
  if(!finished)try{await call({action:'release'});}catch(e){await save('release-error.json',{error:String(e)});failed??=e;}
  try{await manager.cleanup('Selected-image integration enclosure ended');}catch(e){await save('cleanup-error.json',{error:String(e)});failed??=e;}
  try{
- const list=await vm.list();let status:number|undefined;if(lease)try{await vm.get(lease.vm);status=200;}catch(e){if(e instanceof VmServiceError)status=e.status;else throw e;}
+ const list=await vm.list();let status:number|undefined;if(lease)try{await vm.get(lease.vm);status=200;}catch(e){if(e instanceof MachineServiceError)status=e.status;else throw e;}
  const inventory=tart(),registry=await readFile(manager.registry.path,'utf8'),after=await fingerprints();await save('base-after.json',after);
- const cleanup={manager:manager.status(),registryPath:manager.registry.path,registryRemoved:lease?!registry.includes(lease.purpose):null,httpStatus:status,serviceAbsent:lease?!Object.hasOwn(list.vms,lease.vm):null,tartAbsent:lease?!inventory.some((v:any)=>v.Name===lease.vm):null,baseUnchanged:JSON.stringify(before)===JSON.stringify(after),service:list,tart:inventory};await save('cleanup.json',cleanup);
+ const cleanup={manager:manager.status(),registryPath:manager.registry.path,registryRemoved:lease?!registry.includes(lease.purpose):null,httpStatus:status,serviceAbsent:lease?!Object.hasOwn(list.machines,lease.vm):null,tartAbsent:lease?!inventory.some((v:any)=>v.Name===lease.vm):null,baseUnchanged:JSON.stringify(before)===JSON.stringify(after),service:list,tart:inventory};await save('cleanup.json',cleanup);
  assert(cleanup.baseUnchanged);if(lease){assert(cleanup.registryRemoved);assert.equal(status,404);assert(cleanup.serviceAbsent);assert(cleanup.tartAbsent);}
  }catch(e){failed??=e;await save('cleanup-verification-error.json',{error:String(e)});}
  await save('summary.json',{outcome:failed?'blocked-or-failed':'passed',error:failed?String(failed):undefined,finished,lease,nonUI:true,media:'not tested / not required',visualBehavior:'not tested',humanReview:'pending',evidenceRoot:root});

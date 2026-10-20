@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import { RelayManager, type AcquireInput, type ManagerOptions, type RunInput } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
-import { VmService, VmServiceError, capacityRefusal, type VmLease } from '../src/vm-service.js';
+import { MachineService, MachineServiceError, capacityRefusal, type VmLease } from '../src/machine-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -112,7 +112,7 @@ class FixtureService {
   catalogFails = false;
   /** The guest has no Node.js on PATH: `node --version` exits 127, as a shell would. */
   noNode = false;
-  /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
+  /** Refuses every acquisition with this status and body, as machine-service refuses one it cannot give. */
   acquireRefusal?: { status: number; body: unknown };
   /** How many acquisitions acquireRefusal refuses before the next is granted; every one when undefined. */
   acquireRefusals?: number;
@@ -129,17 +129,17 @@ class FixtureService {
   async start() {
     await new Promise<void>(resolve => this.server.listen(0, '127.0.0.1', resolve));
     const addr = this.server.address(); assert.ok(addr && typeof addr !== 'string');
-    return new VmService({ baseUrl: `http://127.0.0.1:${addr.port}`, timeoutMs: 15000 });
+    return new MachineService({ baseUrl: `http://127.0.0.1:${addr.port}`, timeoutMs: 15000 });
   }
   respond(res: ServerResponse, status: number, value: unknown) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); }
   async handle(req: IncomingMessage, res: ServerResponse) {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     const path = req.url!; this.requests.push({ method: req.method!, path, body });
-    if (path === '/health') return this.respond(res, 200, { ok: true, service: 'fixture-only' });
+    if (path === '/health') return this.respond(res, 200, { ok: true, service: 'machine-service' });
     if (path === '/applications') return this.catalogFails ? this.respond(res, 503, { error: 'fixture catalog unavailable' }) : this.respond(res, 200, this.catalog);
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true }, missing: { base_available: false } }, capacity: { macos_running: 0, macos_limit: 2 } });
-    if (path === '/vms') return this.respond(res, 200, { vms: this.hideLeases ? {} : Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: this.root, port: 0 });
+    if (path === '/machines') return this.respond(res, 200, { machines: this.hideLeases ? {} : Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: this.root, port: 0 });
     if (path === '/acquire') {
       if (this.acquireRefusal && (this.acquireRefusals === undefined || this.acquireRefusals-- > 0)) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
       const vm = `fixture-${randomUUID()}`;
@@ -148,7 +148,7 @@ class FixtureService {
       if (this.loseAcquireResponse) { res.destroy(); return; }
       return this.respond(res, 200, lease);
     }
-    const match = /^\/vms\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
+    const match = /^\/machines\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
     if (!match || !this.leases.has(match[1])) return this.respond(res, 404, { error: 'not found' });
     const vm = match[1], lease = this.leases.get(vm)!;
     if (!match[2]) return this.respond(res, this.failGet ? 503 : 200, this.failGet ? { error: 'fixture lease lookup unavailable' } : lease);
@@ -156,7 +156,7 @@ class FixtureService {
       this.heartbeatCount++; if (this.receiverActive) this.heartbeatDuringExec.resolve();
       await this.heartbeatHook?.();
       if (this.failHeartbeat) return this.respond(res, 503, { error: 'fixture heartbeat lost' });
-      // As vm-service does, a renewal moves the expiry to now + ttl_hours.
+      // As machine-service does, a renewal moves the expiry to now + ttl_hours.
       lease.ttl_expires_at = Date.now() / 1000 + body.ttl_hours * 3600;
       return this.respond(res, 200, { ...lease, ttl_hours_remaining: body.ttl_hours });
     }
@@ -184,7 +184,7 @@ class FixtureService {
     const argv: string[] = body.argv;
     if (argv[0] === 'cua-driver' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 127, output: 'fixture cua-driver not installed' });
     if (this.noNode && argv[0] === 'node') return this.respond(res, 200, { vm, rc: 127, output: 'env: node: No such file or directory' });
-    // relay_probe's runtime facts (DC-23): the fixture guest has Python and no tsx on vm-service's PATH.
+    // relay_probe's runtime facts (DC-23): the fixture guest has Python and no tsx on machine-service's PATH.
     if (argv[0] === 'tsx' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 127, output: 'env: tsx: No such file or directory' });
     if (argv[0] === 'python3' && argv.length === 2 && argv[1] === '--version') return this.respond(res, 200, { vm, rc: 0, output: 'Python 3.12.0' });
     assert.ok(['node', process.execPath, '/bin/mkdir', '/bin/sh', '/usr/bin/env', join(this.root, 'fake-cua')].includes(argv[0]), `Unexpected fixture executable: ${argv[0]}`);
@@ -257,10 +257,10 @@ test('real HTTP service, receiver and Registry: acquire → stage → exec/scrip
   await writeFile(join(f.root, 'script.js'), "require('node:fs').writeFileSync('artifact.txt', 'script artifact');console.log('script result')");
   const acquired = await f.manager.acquire(acquireInput({ extractions: [{ name: 'artifact', path: 'artifact.txt' }], fullWorkspace: true, ttlHours: 0.5 }));
   const hostRoot = f.manager.guestStatus().output!;
-  assert.match(await readFile(f.registryPath, 'utf8'), /vm-service relay-manager-test-/);
+  assert.match(await readFile(f.registryPath, 'utf8'), /machine-service relay-manager-test-/);
   const lease = await json(leaseFile(f.manager));
   assert.equal(Object.hasOwn(lease, 'because'), false);
-  assert.equal(lease.lease.vm, acquired.vm); assert.equal(lease.row.machine, `127.0.0.1 (vm-service ${lease.purpose})`);
+  assert.equal(lease.lease.vm, acquired.vm); assert.equal(lease.row.machine, `127.0.0.1 (machine-service ${lease.purpose})`);
   await f.manager.stage({ workspace: 'input', files: [{ local: 'support.txt', path: 'nested/support.txt' }], cuaDriver: f.driver, nodePath: process.execPath });
   assert.equal(await readFile(join(acquired.guestRoot, 'support/nested/support.txt'), 'utf8'), 'support bytes');
   assert.equal(await readFile(join(acquired.workspace, 'seed.txt'), 'utf8'), 'workspace seed');
@@ -322,7 +322,7 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
   const hostRoot = f.manager.guestStatus().output!;
   assert.deepEqual(acquired.declarations, declarations);
   assert.equal(acquired.vm, f.manager.guestStatus().vm);
-  assert.match(await readFile(f.registryPath, 'utf8'), /vm-service relay-manager-test-/);
+  assert.match(await readFile(f.registryPath, 'utf8'), /machine-service relay-manager-test-/);
   assert.equal(Object.hasOwn(await json(leaseFile(f.manager)), 'because'), false);
   await writeFile(join(f.root, 'tool-script.js'), "require('node:fs').appendFileSync('artifact.txt', '|script');console.log('script result')");
   const staged = await execute({ action: 'stage', guest: G, cuaDriver: f.driver, nodePath: process.execPath });
@@ -875,7 +875,7 @@ test('relay_script reads localPath only in the project folder (DC-15)', { timeou
   await f.manager.release(); await f.assertClean();
 });
 
-test('relay_acquire asks vm-service for the network MCP_RELAY_GUEST_NETWORK names, nat by default (DC-17)', async t => {
+test('relay_acquire asks machine-service for the network MCP_RELAY_GUEST_NETWORK names, nat by default (DC-17)', async t => {
   const previous = process.env.MCP_RELAY_GUEST_NETWORK;
   t.after(() => { if (previous === undefined) delete process.env.MCP_RELAY_GUEST_NETWORK; else process.env.MCP_RELAY_GUEST_NETWORK = previous; });
   const acquisitions = (f: { service: FixtureService }) => f.service.requests.filter(r => r.path === '/acquire').map(r => r.body);
@@ -896,7 +896,7 @@ test('relay_acquire asks vm-service for the network MCP_RELAY_GUEST_NETWORK name
   await option.manager.release(); await option.assertClean();
 });
 
-test('a guest network other than nat or internet is refused before vm-service is asked (DC-17)', async t => {
+test('a guest network other than nat or internet is refused before machine-service is asked (DC-17)', async t => {
   const previous = process.env.MCP_RELAY_GUEST_NETWORK;
   t.after(() => { if (previous === undefined) delete process.env.MCP_RELAY_GUEST_NETWORK; else process.env.MCP_RELAY_GUEST_NETWORK = previous; });
   for (const value of ['host', 'NAT', '', 'internet ']) {
@@ -912,7 +912,7 @@ test('a guest network other than nat or internet is refused before vm-service is
   assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 0);
 });
 
-test('vm-service refusing internet passes through, and the relay never falls back to nat (DC-17)', async t => {
+test('machine-service refusing internet passes through, and the relay never falls back to nat (DC-17)', async t => {
   const f = await fixture(t, { guestNetwork: 'internet' });
   f.service.acquireRefusal = { status: 400, body: { error: 'network internet unavailable: Softnet is not usable on this host' } };
   await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 400: .*Softnet is not usable on this host/);
@@ -1169,7 +1169,7 @@ test('pre-stage diagnostic records host-only results and repairs setup without a
   assert.equal(records.length, 4);
   const requests = await Promise.all(records.filter(p => p.endsWith('.request.json')).map(p => json(join(acquired.output!, 'host/diagnostics', p))));
   assert.deepEqual(requests.map(r => r.timeoutMs).sort((a, b) => a - b), [120000, 3600000]);
-  assert.ok(requests.every(r => r.because === reason && r.diagnostic === true && r.argv[0] === '/bin/sh' && r.argv[1] === '-c'), 'the request records the command vm-service ran');
+  assert.ok(requests.every(r => r.because === reason && r.diagnostic === true && r.argv[0] === '/bin/sh' && r.argv[1] === '-c'), 'the request records the command machine-service ran');
   assert.equal(f.service.requests.filter(r => r.path.endsWith('/push') || r.path.endsWith('/pull')).length, 0);
   await assert.rejects(readFile(join(f.root, 'captures.jsonl')), /ENOENT/);
   // A diagnostic script file is read on the host and runs as /bin/sh -c, before staging too (DC-26).
@@ -1500,7 +1500,7 @@ const renewals = (service: FixtureService) => ({
   heartbeats: service.requests.filter(r => r.path.endsWith('/heartbeat')).map(r => r.body.ttl_hours as number),
 });
 
-test('H6: acquire and each heartbeat ask vm-service for a 15-minute window, not the lease\'s whole TTL', { timeout: 30000 }, async t => {
+test('H6: acquire and each heartbeat ask machine-service for a 15-minute window, not the lease\'s whole TTL', { timeout: 30000 }, async t => {
   const f = await fixture(t);
   await f.manager.acquire(acquireInput({ ttlHours: 4 }));
   await guestOf(f.manager)?.heartbeat(); await guestOf(f.manager)?.heartbeat();
@@ -1521,7 +1521,7 @@ test('H6: renewal never reaches past the lease\'s own deadline and stops at its 
   await guestOf(f.manager)?.heartbeat();
   const last = renewals(f.service).heartbeats.at(-1)!;
   assert.ok(last > 9.9 / 60 && last <= 10 / 60, `the renewal ends at the lease's deadline (${last} h), not 15 minutes out`);
-  // With 5 minutes left, less than vm-service's 0.1 h minimum renewal, the lease
+  // With 5 minutes left, less than machine-service's 0.1 h minimum renewal, the lease
   // already expires at its deadline, so renewal stops; so it does past the deadline.
   for (const minutesAgo of [55, 61]) {
     enclosure.startedAt = new Date(Date.now() - minutesAgo * 60000).toISOString();
@@ -1740,7 +1740,7 @@ test('two guests in one session run at the same time and finish independently, e
   assert.equal(f.service.leases.size, 2);
   const status = f.manager.status();
   assert.deepEqual(status.guests.map(guest => guest.guest).sort(), ['manager-test-1', 'manager-test-2']); assert.equal(status.active, true); assert.equal(status.maxGuests, 4);
-  assert.equal((await readFile(f.registryPath, 'utf8')).split('\n').filter(line => line.includes('vm-service relay-manager-test-')).length, 2, 'each guest has its own registry row');
+  assert.equal((await readFile(f.registryPath, 'utf8')).split('\n').filter(line => line.includes('machine-service relay-manager-test-')).length, 2, 'each guest has its own registry row');
   for (const guest of [first, second]) assert.equal((await json(leaseFile(f.manager, guest.guest!))).lease.vm, guest.vm, `guest ${guest.guest} has its own ownership record`);
   await assert.rejects(f.manager.run(operation('ambiguous')), /Name the guest this call acts on: this session holds manager-test-1, manager-test-2/);
   await Promise.all([stageGuest(f, first.guest!), stageGuest(f, second.guest!)]);
@@ -1791,7 +1791,7 @@ test('calls on one guest keep their order while another guest\'s calls run (DC-2
   // The first call on guest A is held at its receiver; guest B is not held up by it.
   assert.equal((await within2(run(b.guest!, 'b-only'), 20000, 'a call on another guest')).outcome.kind, 'completed');
   assert.deepEqual(order, ['b-only']);
-  assert.equal(f.service.requests.filter(r => r.path === `/vms/${a.vm}/exec` && r.body.argv[0] === '/usr/bin/env').length, 1, 'the second call on guest A waits for the first');
+  assert.equal(f.service.requests.filter(r => r.path === `/machines/${a.vm}/exec` && r.body.argv[0] === '/usr/bin/env').length, 1, 'the second call on guest A waits for the first');
   held.resolve();
   await Promise.all([first, second]);
   assert.deepEqual(order, ['b-only', 'a-first', 'a-second']);
@@ -1802,7 +1802,7 @@ test('a session holds at most maxGuests guests; acquisition beyond it is refused
   const f = await fixture(t, { maxGuests: 2 });
   const a = await f.manager.acquire(acquireInput()), b = await f.manager.acquire(acquireInput());
   await assert.rejects(f.manager.acquire(acquireInput()), /This session already holds 2 guests, the most MCP_RELAY_MAX_GUESTS allows \(2\): manager-test-1, manager-test-2\. .*nothing was acquired/);
-  assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 2, 'the refused acquisition never reached vm-service');
+  assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 2, 'the refused acquisition never reached machine-service');
   await f.manager.release(a.guest);
   assert.deepEqual(f.manager.status().guests.map(guest => guest.guest), [b.guest]);
   const c = await f.manager.acquire(acquireInput());
@@ -1827,7 +1827,7 @@ test('a call naming a guest the session does not hold is refused and changes not
   assert.equal(image.status, 'stale-reference'); assert.match(image.diagnostic!, /no guest named "other-1"/);
   const viaTool = await relayCall(f.manager, { action: 'run', guest: 'other-1', language: 'shell', inline: true, code: 'true' }).catch(error => error);
   assert.match(String(viaTool), /no guest named "other-1"/);
-  assert.equal(f.service.requests.length, requests, 'nothing reached vm-service');
+  assert.equal(f.service.requests.length, requests, 'nothing reached machine-service');
   await f.assertRetained(a.vm);
   await f.manager.release(a.guest); await f.assertClean();
   const none = await relayCall(f.manager, { action: 'release', guest: 'manager-test-1' });
@@ -1889,8 +1889,8 @@ const capacityRefused = { status: 409, body: { error: 'macOS VM limit reached (2
 const acquisitions = (f: { service: FixtureService }) => f.service.requests.filter(r => r.path === '/acquire').length;
 const events = async (output: string) => Promise.all((await readdir(join(output, 'host/events'))).map(name => json(join(output, 'host/events', name))));
 
-test('only vm-service\'s macOS VM limit refusal is a capacity refusal (DC-22)', () => {
-  const error = (status: number, body: unknown) => new VmServiceError(`vm-service /acquire: HTTP ${status}`, status, JSON.stringify(body));
+test('only machine-service\'s macOS VM limit refusal is a capacity refusal (DC-22)', () => {
+  const error = (status: number, body: unknown) => new MachineServiceError(`machine-service /acquire: HTTP ${status}`, status, JSON.stringify(body));
   assert.equal(capacityRefusal(error(409, capacityRefused.body)), true);
   assert.equal(capacityRefusal(error(409, { ...capacityRefused.body, outcome: 'uncertain' })), false, 'an uncertain outcome may have reserved a lease');
   assert.equal(capacityRefusal(error(409, { error: "purpose 'relay-x' already leased on image macos26: vm-1" })), false);
@@ -1926,7 +1926,7 @@ test('a guest waiting for capacity holds its name and says so in status and in t
   await f.manager.release(); await f.assertClean();
 });
 
-test('a host still at capacity when the wait runs out refuses with vm-service\'s reason and the time waited (DC-22)', { timeout: 30000 }, async t => {
+test('a host still at capacity when the wait runs out refuses with machine-service\'s reason and the time waited (DC-22)', { timeout: 30000 }, async t => {
   const f = await fixture(t, { capacityWaitMs: 300, capacityRetryMs: 100 });
   f.service.acquireRefusal = capacityRefused;
   await assert.rejects(f.manager.acquire(acquireInput()), /HTTP 409: .*macOS VM limit reached \(2 active\).*; waited 0\.[3-9] s for capacity, the most MCP_RELAY_CAPACITY_WAIT allows \(0\.3 s\), so nothing was acquired/s);

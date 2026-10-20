@@ -1,5 +1,5 @@
 /**
- * A stand-in for vm-service on the loopback, for end-to-end runs of headless
+ * A stand-in for machine-service on the loopback, for end-to-end runs of headless
  * Claude Code against the plugin. Leases are records; exec runs the relay's
  * own Node and transfer commands locally under a temporary root; push and
  * pull copy files. The fake CUA driver only writes a constant PNG and refuses
@@ -32,17 +32,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const body: any = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
   const path = req.url!;
   await log({ at: new Date().toISOString(), method: req.method, path, body });
-  if (path === '/health') return respond(res, 200, { ok: true, service: 'fixture-only' });
+  if (path === '/health') return respond(res, 200, { ok: true, service: 'machine-service' });
   if (path === '/images') return respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true } }, capacity: { macos_running: 0, macos_limit: 2 } });
   if (path === '/applications') return respond(res, 200, { schemaVersion: 1, images: [{ image: 'ubuntu2404', os: 'linux', architecture: 'arm64', applications: [{ id: 'firefox', name: 'Firefox', aliases: [], version: '128.0' }, { id: 'dpkg:cua-driver', name: 'cua-driver', aliases: [], version: '1.0' }] }] });
-  if (path === '/vms') return respond(res, 200, { vms: Object.fromEntries(leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: root, port: 0 });
+  if (path === '/machines') return respond(res, 200, { machines: Object.fromEntries(leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: root, port: 0 });
   if (path === '/acquire') {
     const vm = `fixture-${randomUUID()}`;
     const lease = { vm, purpose: body.purpose, image: body.image, image_kind: 'linux', env: body.env, state: 'running', created_at: Date.now() / 1000, ttl_expires_at: Date.now() / 1000 + body.ttl_hours * 3600, grace_until: null, warned: false, ip: null, cpu: null, memory_mb: null, disk_gb: null };
     leases.set(vm, lease);
     return respond(res, 200, lease);
   }
-  const match = /^\/vms\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
+  const match = /^\/machines\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
   if (!match || !leases.has(match[1]!)) return respond(res, 404, { error: 'not found' });
   const vm = match[1]!, lease = leases.get(vm)!;
   if (!match[2]) return respond(res, 200, lease);

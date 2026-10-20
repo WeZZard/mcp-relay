@@ -1,7 +1,7 @@
 /**
  * End-to-end: headless Claude Code (`claude --print`) with this plugin loaded
  * from disk, driving the relay through the plugin's own MCP server against a
- * loopback stand-in for vm-service. What is checked is what happened on disk
+ * loopback stand-in for machine-service. What is checked is what happened on disk
  * and at the service, not what the model said. Needs `claude` on PATH and an
  * account; spends a few model turns per case. Run with `npm run test:e2e`.
  */
@@ -86,7 +86,7 @@ test('status: the plugin loads, its tools carry the plugin-scoped names, and the
   assert.equal(run.toolUses[0]!.name, STATUS, 'the tool carries the plugin-scoped name');
   const status = JSON.parse(run.toolResults[0]!.text);
   assert.equal(status.active, false);
-  assert.equal(status.service, f.info.url, 'the server must be pointed at the fixture, never a real vm-service');
+  assert.equal(status.service, f.info.url, 'the server must be pointed at the fixture, never a real machine-service');
   assert.equal(status.project, f.project);
 });
 
@@ -143,7 +143,7 @@ test('abandoned lease: a session that acquires and stops without finishing keeps
   await sleep(2000);
   const requests = await f.requests();
   assert.ok(requests.some(r => r.path === '/acquire'));
-  assert.equal(requests.find(r => r.path.endsWith('/release')), undefined, 'session end must not release: the VM is retained for an explicit finish or release, and the vm-service TTL is the backstop');
+  assert.equal(requests.find(r => r.path.endsWith('/release')), undefined, 'session end must not release: the VM is retained for an explicit finish or release, and the machine-service TTL is the backstop');
   const entries = await readdir(join(f.project, 'relay-evidence'));
   const purpose = entries.find(name => name.startsWith('relay-e2e-abandon-') && !name.includes('.'));
   assert.ok(purpose, entries.join(','));

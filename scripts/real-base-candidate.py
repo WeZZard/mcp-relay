@@ -26,10 +26,10 @@ def check_original(original, publisher, base_root):
                 matches=not failures and before==after==current)
 
 def admitted(method,path,body,owned,acquired):
-    if method=='GET': return path in ('/health','/images','/vms') or (owned is not None and path=='/vms/'+owned)
+    if method=='GET': return path in ('/health','/images','/machines') or (owned is not None and path=='/machines/'+owned)
     if method!='POST': return False
     if path=='/acquire': return not acquired and body.get('image')=='ubuntu2404' and body.get('env')=='none' and re.fullmatch(r'relay-real-base-chain-[0-9a-f]{8}',body.get('purpose','')) is not None
-    return owned is not None and path in ['/vms/'+owned+'/'+a for a in ('exec','push','pull','heartbeat','release')]
+    return owned is not None and path in ['/machines/'+owned+'/'+a for a in ('exec','push','pull','heartbeat','release')]
 
 def main():
     repo,original,evidence=map(Path,sys.argv[1:4]); evidence.mkdir(parents=True,exist_ok=True)
@@ -50,7 +50,7 @@ def main():
     inventory=tart(); assert any(v['Name']=='pilot-ubuntu-base' and v['State']=='stopped' and v['Running'] is False for v in inventory)
     save('base-content-before.json',{n:digest(base_root/'pilot-ubuntu-base'/n) for n in ('config.json','nvram.bin')})
     temporary=tempfile.TemporaryDirectory(prefix='real-base-candidate-');root=Path(temporary.name).resolve();pilot=root/'pilot'
-    os.environ['PILOT_REPO']=str(pilot);os.environ['VM_SERVICE_STATE']=str(root/'state')
+    os.environ['PILOT_REPO']=str(pilot);os.environ['MACHINE_SERVICE_STATE']=str(root/'state')
     os.environ['PILOT_IMAGES_STATE_DIR']=str(root/'image-state')
     association=root/'image-state/stores'/hashlib.sha256(str(base_root.resolve()).encode()).hexdigest()/'base/ubuntu2404.json'
     target=pilot/'images/ubuntu2404/line.conf';target.parent.mkdir(parents=True);shutil.copyfile(pilot_source/'images/ubuntu2404/line.conf',target)
@@ -64,7 +64,7 @@ def main():
     service.initialize_application_associations(); associations=service.application_associations()
     def production(path):
         with urllib.request.urlopen('http://127.0.0.1:6240'+path,timeout=30) as r:return json.load(r)
-    prod=production('/images');snap=production('/vms')
+    prod=production('/images');snap=production('/machines')
     save('production-images.json',prod);save('production-service.json',snap);save('candidate-associations.json',associations)
     assert associations['ubuntu2404']=={k:prod['images']['ubuntu2404'][k] for k in ('kind','base_vm')}
     assert Path(prod['images']['ubuntu2404']['source']).resolve()==(pilot_source/'images/ubuntu2404/line.conf').resolve()

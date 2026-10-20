@@ -2,9 +2,9 @@
  * Session-end lifecycle of the shipped MCP server (docs/lifecycle-fixes.md).
  * Each case starts dist/server.mjs over raw stdio pipes, so a test can close
  * the client's side of standard input or standard output on its own. The
- * backend is an in-process fake vm-service or a closed port; the state
+ * backend is an in-process fake machine-service or a closed port; the state
  * directory, registry, project and home directory are fresh temporary
- * directories, and Tart is a fake script. No VM, live vm-service or user
+ * directories, and Tart is a fake script. No VM, live machine-service or user
  * state is touched.
  */
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ const registryText = '# Test registry\n\n## Using VMs\n\n| Machine | OS | Task N
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 const gate = () => { let open!: () => void; const promise = new Promise<void>(done => { open = done; }); return { promise, open }; };
 
-/** A minimal vm-service: leases are records; exec, release and heartbeat can be held open by a test. */
+/** A minimal machine-service: leases are records; exec, release and heartbeat can be held open by a test. */
 class FakeService {
   readonly leases = new Map<string, any>();
   readonly requests: Array<{ method: string; path: string; body: any }> = [];
@@ -30,7 +30,7 @@ class FakeService {
   releaseCalls = 0;
   execHook?: (argv: string[]) => Promise<{ rc: number; output: string }>;
   releaseHook?: () => Promise<void>;
-  /** Refuses every acquisition with this status and body, as vm-service refuses one it cannot give. */
+  /** Refuses every acquisition with this status and body, as machine-service refuses one it cannot give. */
   acquireRefusal?: { status: number; body: unknown };
   readonly seen = new Map<string, ReturnType<typeof gate>>();
   readonly http = createServer((req, res) => { void this.handle(req, res).catch(error => this.respond(res, 500, { error: String(error) })); });
@@ -48,9 +48,9 @@ class FakeService {
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
     const path = req.url!; this.requests.push({ method: req.method!, path, body });
     for (const [suffix, arrived] of this.seen) if (path.endsWith(suffix)) arrived.open();
-    if (path === '/health') return this.respond(res, 200, { ok: true, service: 'fixture-only' });
+    if (path === '/health') return this.respond(res, 200, { ok: true, service: 'machine-service' });
     if (path === '/images') return this.respond(res, 200, { images: { ubuntu2404: { kind: 'linux', base_available: true } }, capacity: { macos_running: 0, macos_limit: 2 } });
-    if (path === '/vms') return this.respond(res, 200, { vms: Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: '/nonexistent', port: 0 });
+    if (path === '/machines') return this.respond(res, 200, { machines: Object.fromEntries(this.leases), limits: { max_macos_running: 2, grace_hours: 1 }, pilot_repo: '/nonexistent', port: 0 });
     if (path === '/acquire') {
       if (this.acquireRefusal) return this.respond(res, this.acquireRefusal.status, this.acquireRefusal.body);
       const vm = `fixture-${randomUUID()}`;
@@ -58,7 +58,7 @@ class FakeService {
       this.leases.set(vm, lease);
       return this.respond(res, 200, lease);
     }
-    const match = /^\/vms\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
+    const match = /^\/machines\/([^/]+)(?:\/(exec|push|pull|heartbeat|release))?$/.exec(path);
     if (!match || !this.leases.has(match[1]!)) return this.respond(res, 404, { error: 'not found' });
     const vm = match[1]!, lease = this.leases.get(vm);
     if (!match[2]) return this.respond(res, 200, lease);
@@ -215,7 +215,7 @@ test('R1: closing stdin during an in-flight release lets the release complete be
   assert.equal(await readFile(f.registry, 'utf8'), registryText, 'the registry row was removed');
 });
 
-/** A fixture with a fake vm-service. */
+/** A fixture with a fake machine-service. */
 async function withService(t: TestContext) { const f = await fixture(t); return { ...f, fake: await f.service() }; }
 
 test('R1: shutdown behind an operation that never settles is bounded by the grace period and still pauses renewal', { timeout: 30000 }, async t => {

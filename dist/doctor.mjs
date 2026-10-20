@@ -45,14 +45,14 @@ async function command(argv, options = {}) {
   });
 }
 
-// src/vm-service.ts
+// src/machine-service.ts
 import { isIP } from "node:net";
-var VmServiceError = class extends Error {
+var MachineServiceError = class extends Error {
   constructor(message, status, responseBody, options) {
     super(message, options);
     this.status = status;
     this.responseBody = responseBody;
-    this.name = "VmServiceError";
+    this.name = "MachineServiceError";
   }
   status;
   responseBody;
@@ -60,7 +60,7 @@ var VmServiceError = class extends Error {
   capacity = false;
 };
 function capacityRefusal(error) {
-  if (!(error instanceof VmServiceError) || error.status !== 409 || !error.responseBody) return false;
+  if (!(error instanceof MachineServiceError) || error.status !== 409 || !error.responseBody) return false;
   let body;
   try {
     body = JSON.parse(error.responseBody);
@@ -71,9 +71,14 @@ function capacityRefusal(error) {
   const { error: reason, outcome } = body;
   return typeof reason === "string" && reason.startsWith("macOS VM limit reached") && outcome !== "uncertain";
 }
-var AcquireIndeterminateError = class extends VmServiceError {
+var SERVICE_NAME = "machine-service";
+function expectMachineService(health, origin) {
+  if (health.service === SERVICE_NAME) return;
+  throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
+}
+var AcquireIndeterminateError = class extends MachineServiceError {
   constructor(purpose, cause) {
-    super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /vms before retrying or ending the enclosure`, void 0, void 0, { cause });
+    super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /machines before retrying or ending the enclosure`, void 0, void 0, { cause });
     this.purpose = purpose;
     this.name = "AcquireIndeterminateError";
   }
@@ -90,7 +95,7 @@ function isLease(value) {
   if (!record(value)) return false;
   return ["vm", "purpose", "image"].every((k) => typeof value[k] === "string" && value[k] !== "") && ["macos", "linux"].includes(String(value.image_kind)) && ["pending", "provisioning", "running", "releasing"].includes(String(value.state)) && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k])) && ["cpu", "memory_mb", "disk_gb", "grace_until"].every((k) => value[k] === null || typeof value[k] === "number") && ["env", "ip"].every((k) => value[k] === null || typeof value[k] === "string") && typeof value.warned === "boolean";
 }
-var VmService = class {
+var MachineService = class {
   baseUrl;
   environment;
   timeoutMs;
@@ -104,7 +109,7 @@ var VmService = class {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP(host) === 4 && host.startsWith("127.");
     if (!loopback || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("vm-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");
@@ -115,7 +120,7 @@ var VmService = class {
     return this.request("/health", void 0, options);
   }
   list(options = {}) {
-    return this.request("/vms", void 0, options);
+    return this.request("/machines", void 0, options);
   }
   images(options = {}) {
     return this.request("/images", void 0, options);
@@ -139,7 +144,7 @@ var VmService = class {
     try {
       return await this.request(path, body, options);
     } catch (error) {
-      throw new VmServiceError(`Console API unavailable or request outcome unknown${error instanceof VmServiceError && error.status ? ` (HTTP ${error.status})` : ""}; resolve before another open`, error instanceof VmServiceError ? error.status : void 0);
+      throw new MachineServiceError(`Console API unavailable or request outcome unknown${error instanceof MachineServiceError && error.status ? ` (HTTP ${error.status})` : ""}; resolve before another open`, error instanceof MachineServiceError ? error.status : void 0);
     }
   }
   get(vm, options = {}) {
@@ -158,12 +163,12 @@ var VmService = class {
     const timeoutMs = positive(options.timeoutMs ?? this.acquireTimeoutMs, "timeoutMs");
     try {
       const lease = await this.request("/acquire", body, { timeoutMs });
-      if (!isLease(lease)) throw new VmServiceError("Invalid vm-service acquire response");
+      if (!isLease(lease)) throw new MachineServiceError("Invalid machine-service acquire response");
       return lease;
     } catch (error) {
-      const safeError = body.vnc ? new VmServiceError(`VNC acquisition refused or outcome unknown${error instanceof VmServiceError && error.status ? ` (HTTP ${error.status})` : ""}; inspect capabilities and reconcile ownership`, error instanceof VmServiceError ? error.status : void 0) : error;
-      if (safeError instanceof VmServiceError) safeError.capacity = capacityRefusal(error);
-      if (error instanceof VmServiceError && error.status !== void 0 && error.status >= 400 && error.status < 500) throw safeError;
+      const safeError = body.vnc ? new MachineServiceError(`VNC acquisition refused or outcome unknown${error instanceof MachineServiceError && error.status ? ` (HTTP ${error.status})` : ""}; inspect capabilities and reconcile ownership`, error instanceof MachineServiceError ? error.status : void 0) : error;
+      if (safeError instanceof MachineServiceError) safeError.capacity = capacityRefusal(error);
+      if (error instanceof MachineServiceError && error.status !== void 0 && error.status >= 400 && error.status < 500) throw safeError;
       throw new AcquireIndeterminateError(body.purpose, safeError);
     }
   }
@@ -184,7 +189,7 @@ var VmService = class {
   }
   path(vm, action) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(vm)) throw new TypeError("Invalid VM name");
-    return `/vms/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
+    return `/machines/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
   }
   async request(path, body, options) {
     options.signal?.throwIfAborted();
@@ -192,7 +197,7 @@ var VmService = class {
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(new VmServiceError(`vm-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
+    const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: body === void 0 ? "GET" : "POST",
@@ -226,17 +231,17 @@ var VmService = class {
         }
       }
       const text = Buffer.concat(chunks).toString("utf8");
-      if (!response.ok) throw new VmServiceError(`vm-service ${path}: HTTP ${response.status}: ${text}${truncated ? " [truncated]" : ""}`, response.status, text);
-      if (truncated) throw new VmServiceError(`vm-service ${path}: response exceeds ${bound} bytes`);
+      if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text}${truncated ? " [truncated]" : ""}`, response.status, text);
+      if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
       try {
         return JSON.parse(text);
       } catch (cause) {
-        throw new VmServiceError(`vm-service ${path}: invalid JSON response`, void 0, void 0, { cause });
+        throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
       }
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
-      if (cause instanceof VmServiceError) throw cause;
-      throw new VmServiceError(`vm-service ${path}: request failed`, void 0, void 0, { cause });
+      if (cause instanceof MachineServiceError) throw cause;
+      throw new MachineServiceError(`machine-service ${path}: request failed`, void 0, void 0, { cause });
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -260,8 +265,9 @@ import { createHash as createHash2 } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { isIP as isIP2 } from "node:net";
-var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "vmctlPath", "tartPath"];
+var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "machctlPath", "tartPath"];
 var mutable = ["tartHome", "serviceStateDir", "imageStateDir", "relayStateDir"];
+var LEGACY_PROFILE = "Environment profile is from before the machine-service rename, which reads only schemaVersion 2 with machctlPath: a profile at schemaVersion 1 or with vmctlPath is refused. Rename vmctlPath to machctlPath, naming the machctl executable, and set schemaVersion to 2.";
 function canonicalPath(value) {
   if (typeof value !== "string" || !isAbsolute(value) || !value.trim() || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(value)) throw new Error("Environment paths must be absolute and contain no control characters");
   let ancestor = resolve(value);
@@ -322,19 +328,20 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
     } else if (text[i] === "{" || text[i] === "[") depth++;
     else if (text[i] === "}" || text[i] === "]") depth--;
   }
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.schemaVersion === 1 || Object.hasOwn(raw, "vmctlPath"))) throw new Error(LEGACY_PROFILE);
   const fields = ["schemaVersion", "id", "vmServiceUrl", ...paths].sort();
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(fields)) throw new Error("Environment profile has missing or unknown fields");
   const p = raw;
-  if (p.schemaVersion !== 1 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
-  const profile = { schemaVersion: 1, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
+  if (p.schemaVersion !== 2 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
+  const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
   for (const key of paths) profile[key] = canonicalPath(p[key]);
   if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, "images")).isDirectory()) throw new Error("Selected imageRepository must contain images/");
-  for (const key of ["vmctlPath", "tartPath"]) {
+  for (const key of ["machctlPath", "tartPath"]) {
     if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
-  const names = ["vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
+  const names = ["machine-service", "vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
   const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];
@@ -373,13 +380,13 @@ function environmentVariables(selected) {
     VM_ENVIRONMENT_FINGERPRINT: selected.identity.fingerprint,
     PILOT_REPO: p.imageRepository,
     TART_HOME: p.tartHome,
-    VM_SERVICE_STATE: p.serviceStateDir,
+    MACHINE_SERVICE_STATE: p.serviceStateDir,
     PILOT_IMAGES_STATE_DIR: p.imageStateDir,
     VM_RELAY_STATE_DIR: p.relayStateDir,
     VM_RELAY_URL: p.vmServiceUrl,
-    VM_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
-    VM_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
-    VMCTL: p.vmctlPath,
+    MACHINE_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
+    MACHINE_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
+    MACHCTL: p.machctlPath,
     TART: p.tartPath
   };
 }
@@ -744,7 +751,7 @@ async function installationReport(options = {}) {
     return process.versions.node;
   });
   await check("host", async () => {
-    if (process.platform !== "darwin" || process.arch !== "arm64") throw Error("The supported local Tart/vm-service backend requires an Apple-silicon Mac. Ubuntu is a guest, not a substitute host.");
+    if (process.platform !== "darwin" || process.arch !== "arm64") throw Error("The supported local Tart/machine-service backend requires an Apple-silicon Mac. Ubuntu is a guest, not a substitute host.");
     return `${process.platform}/${process.arch}`;
   });
   await check("python", async () => {
@@ -777,15 +784,16 @@ async function installationReport(options = {}) {
     if (r.code !== 0 || !Array.isArray(JSON.parse(r.stdout))) throw Error("Install Tart and ensure tart list --format json works; required for independent destruction verification.");
     return "Read-only local inventory available";
   });
-  await check("vm-service", async () => {
-    const vm = options.vm ?? new VmService({ baseUrl: environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment });
+  await check("machine-service", async () => {
+    const vm = options.vm ?? new MachineService({ baseUrl: environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment });
     const health = await vm.health({ timeoutMs: 5e3 });
     if (!health.ok) throw Error("Service health check failed");
-    if (environment && !matchesEnvironment(health.environment, environment)) throw Error("VM service environment identity mismatch");
+    expectMachineService(health, vm.baseUrl);
+    if (environment && !matchesEnvironment(health.environment, environment)) throw Error("machine-service environment identity mismatch");
     const images = await vm.images({ timeoutMs: 5e3 });
     await vm.list({ timeoutMs: 5e3 });
     const available = Object.entries(images.images).filter(([, v]) => v.base_available).map(([k]) => k);
-    if (!available.length) throw Error("vm-service is running but has no available golden images. Provision a supported image in the backend.");
+    if (!available.length) throw Error("machine-service is running but has no available golden images. Provision a supported image in the backend.");
     return `HTTP API reachable; available images: ${available.join(", ")}. This inventory does not prove guest readiness. Use relay probe scope=guest for executable checks; capture and browser behavior require separate checks. Staging alone is not readiness.`;
   });
   return { formatVersion: 1, ready: checks.every((c) => c.ok), environment: environment?.identity, stateDirectory: environment?.profile.relayStateDir ?? relayStateRoot(), checks, note: "Read-only host/API prerequisite check. No VM acquired, input sent, screenshot captured or permissions changed. Claude Code (or another MCP client) must be installed separately." };

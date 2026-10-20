@@ -14,13 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # vmctl backs tests/environment-parity.test.ts; that test skips itself
+      # machctl backs tests/environment-parity.test.ts; that test skips itself
       # with a reason when the binary is absent, so this is best-effort, not
       # a hard requirement.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # machine-service's repository, under its name before the rename;
+          # GitHub redirects the old name once the repository is renamed.
           repository: WeZZard/vm-service
-          path: .ci/vm-service
+          path: .ci/machine-service
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
@@ -28,11 +30,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: .ci/vm-service/rust
+          workspaces: .ci/machine-service/rust
 
-      - name: Build vmctl
-        working-directory: .ci/vm-service/rust
-        run: cargo build --release -p vmctl
+      - name: Build machctl
+        working-directory: .ci/machine-service/rust
+        run: cargo build --release -p machctl
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -50,7 +52,7 @@ jobs:
       - name: Build, typecheck, and test
         run: npm run check
         env:
-          VMCTL: ${{ github.workspace }}/.ci/vm-service/rust/target/release/vmctl
+          MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
 
       - name: Confirm generated files are committed
         run: |

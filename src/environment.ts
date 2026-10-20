@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 
 export interface VmEnvironment {
-  schemaVersion: 1;
+  schemaVersion: 2;
   id: string;
   vmServiceUrl: string;
   imageRepository: string;
@@ -13,7 +13,7 @@ export interface VmEnvironment {
   serviceStateDir: string;
   imageStateDir: string;
   relayStateDir: string;
-  vmctlPath: string;
+  machctlPath: string;
   tartPath: string;
 }
 export interface EnvironmentIdentity {
@@ -31,8 +31,10 @@ export interface SelectedEnvironment {
   profile: Readonly<VmEnvironment>;
   identity: Readonly<EnvironmentIdentity>;
 }
-const paths = ['imageRepository', 'tartHome', 'serviceStateDir', 'imageStateDir', 'relayStateDir', 'vmctlPath', 'tartPath'] as const;
+const paths = ['imageRepository', 'tartHome', 'serviceStateDir', 'imageStateDir', 'relayStateDir', 'machctlPath', 'tartPath'] as const;
 const mutable = ['tartHome', 'serviceStateDir', 'imageStateDir', 'relayStateDir'] as const;
+/** The refusal of a profile written for vm-service, naming its fix (machine-service DC-42). */
+export const LEGACY_PROFILE = 'Environment profile is from before the machine-service rename, which reads only schemaVersion 2 with machctlPath: a profile at schemaVersion 1 or with vmctlPath is refused. Rename vmctlPath to machctlPath, naming the machctl executable, and set schemaVersion to 2.';
 
 /** Resolve existing ancestors without creating a store, lock, or state directory. */
 export function canonicalPath(value: string): string {
@@ -89,21 +91,26 @@ export function loadEnvironment(path: string, env: NodeJS.ProcessEnv = process.e
     } else if (text[i] === '{' || text[i] === '[') depth++;
     else if (text[i] === '}' || text[i] === ']') depth--;
   }
+  // A profile from before machine-service's rename is refused with its fix,
+  // never read through the old field (machine-service DC-41, DC-42; DC-27).
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && ((raw as Record<string, unknown>).schemaVersion === 1 || Object.hasOwn(raw, 'vmctlPath'))) throw new Error(LEGACY_PROFILE);
   const fields = ['schemaVersion', 'id', 'vmServiceUrl', ...paths].sort();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(fields)) throw new Error('Environment profile has missing or unknown fields');
   const p = raw as VmEnvironment;
-  if (p.schemaVersion !== 1 || typeof p.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error('Invalid environment schemaVersion or id');
-  const profile = { schemaVersion: 1, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) } as VmEnvironment;
+  if (p.schemaVersion !== 2 || typeof p.id !== 'string' || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error('Invalid environment schemaVersion or id');
+  const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) } as VmEnvironment;
   for (const key of paths) profile[key] = canonicalPath(p[key]);
   if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, 'images')).isDirectory()) throw new Error('Selected imageRepository must contain images/');
-  for (const key of ['vmctlPath', 'tartPath'] as const) {
+  for (const key of ['machctlPath', 'tartPath'] as const) {
     if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
     accessSync(profile[key], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), '.local/state');
   // The relay's default state root is mcp-relay; mcp-vm-relay, its name before
-  // the rename (DC-16), stays a legacy root that vm-service also refuses.
-  const names = ['vm-service', 'pilot-images', 'mcp-relay', 'mcp-vm-relay'];
+  // the rename (DC-16), stays a legacy root that the service also refuses. The
+  // service's own root is machine-service, and vm-service, its name before
+  // that rename, stays protected the same way (DC-27).
+  const names = ['machine-service', 'vm-service', 'pilot-images', 'mcp-relay', 'mcp-vm-relay'];
   const defaults = [join(canonicalPath(home), '.tart'), ...names.map(n => join(state, n)), ...names.map(n => join(canonicalPath(home), '.local/state', n))].map(canonicalPath);
   for (const key of mutable) {
     const value = profile[key];
@@ -129,9 +136,9 @@ export function environmentVariables(selected: SelectedEnvironment): NodeJS.Proc
   const p = selected.profile;
   const url = new URL(p.vmServiceUrl);
   return { VM_ENVIRONMENT_FILE: selected.path, VM_ENVIRONMENT_FINGERPRINT: selected.identity.fingerprint, PILOT_REPO: p.imageRepository, TART_HOME: p.tartHome,
-    VM_SERVICE_STATE: p.serviceStateDir, PILOT_IMAGES_STATE_DIR: p.imageStateDir, VM_RELAY_STATE_DIR: p.relayStateDir,
-    VM_RELAY_URL: p.vmServiceUrl, VM_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ''), VM_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)![1])),
-    VMCTL: p.vmctlPath, TART: p.tartPath };
+    MACHINE_SERVICE_STATE: p.serviceStateDir, PILOT_IMAGES_STATE_DIR: p.imageStateDir, VM_RELAY_STATE_DIR: p.relayStateDir,
+    VM_RELAY_URL: p.vmServiceUrl, MACHINE_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ''), MACHINE_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)![1])),
+    MACHCTL: p.machctlPath, TART: p.tartPath };
 }
 
 export function matchesEnvironment(actual: unknown, selected: SelectedEnvironment): boolean {

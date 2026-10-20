@@ -180,7 +180,7 @@ test('a valid call that reaches an unreachable service is an error result, not a
   const { client } = await fixture(t);
   const result: any = await client.callTool({ name: 'relay_search', arguments: { name: 'Firefox' } });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /vm-service \/applications: request failed/);
+  assert.match(result.content[0].text, /machine-service \/applications: request failed/);
   const status: any = await client.callTool({ name: STATUS_TOOL, arguments: {} });
   assert.equal(JSON.parse(status.content[0].text).active, false);
 });
