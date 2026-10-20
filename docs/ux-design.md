@@ -102,7 +102,7 @@ flowchart TD
 ```
 
 An application composes the enclosure by prompting a subagent, which then uses
-`relay`. The parent application does not directly call vm-service or relay-driver.
+`relay`. The parent application does not directly call machine-service or relay-driver.
 
 ## 6. Interaction model
 
@@ -230,7 +230,7 @@ The tool does not invent a default wait or silently substitute stability detecti
 
 ### 6.6 Host observations and guest readiness
 
-- The existing `probe` action reports host activity and VM-service availability. It can run before a guest exists and does not verify software inside a guest.
+- The existing `probe` action reports host activity and machine-service availability. It can run before a guest exists and does not verify software inside a guest.
 - Host idle time is supporting information, not proof that desktop interaction will not interrupt the user. Missing observations are reported as unknown.
 - Guest readiness checks must be clearly distinguished from host observations in their interface and results.
 - Guest checks verify prerequisites and report errors without silently installing software or replacing image acceptance tests.
@@ -241,7 +241,7 @@ The tool does not invent a default wait or silently substitute stability detecti
 - Each application deliberately added by provisioning uses a shared baseline for availability and launch. Most need configuration only. Unchanged OS software is not automatically selected, even when it appears in the application catalog.
 - An application with special requirements has its own additional checks under `applications/<application-id>/`. Those extensions do not change the shared baseline or other applications' tests and cannot replace required baseline checks.
 - Plans describe prerequisites, steps, expected results, evidence, and failure conditions. Reports distinguish baseline outcomes from application-specific extension outcomes.
-- Image acceptance runs the applicable plans on a fresh clone through vm-service's actual execution environment. A test must not hide a missing executable path by initializing a shell environment that relay does not use.
+- Image acceptance runs the applicable plans on a fresh clone through machine-service's actual execution environment. A test must not hide a missing executable path by initializing a shell environment that relay does not use.
 - Required selected tests pass before promotion. The report identifies catalog entries outside application-test scope as not tested, not passed. Missing selected executables or failed selected checks still fail acceptance.
 - Checks of image settings we changed, and no-secrets checks, remain mandatory; application scope does not remove them.
 - Search reads installed facts and does not execute those tests or imply that every project-specific dependency is available.

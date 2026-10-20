@@ -3,17 +3,17 @@
 ## Implementation and verification boundary
 
 - The relay source implements the consumer contract for unmodified Tart with service-owned guest sharing. It does not invoke Tart's private protocol, run a viewer itself, discover guest ports, or obtain credentials.
-- The matching vm-service guest-sharing backend is implemented. Configured availability, stock-Tart compatibility, guest preparation, access revocation, and actual viewer rendering require separate operational checks and live acceptance. [Verification](verification.md#console-rollout-status) records rollout observations; they are not permanent design prerequisites.
+- The matching machine-service guest-sharing backend is implemented. Configured availability, stock-Tart compatibility, guest preparation, access revocation, and actual viewer rendering require separate operational checks and live acceptance. [Verification](verification.md#console-rollout-status) records rollout observations; they are not permanent design prerequisites.
 - The tests use mocked backends and offline provider serialization. They do not establish a live viewing pass, authentication, correct displayed pixels, or human confirmation.
 - This document defines the console fields used by the main [technical design](technical-design.md#38-live-viewing-of-the-owned-vm) and [UX flow](ux-design.md#68-live-viewing-of-the-owned-vm). The original [investigation](live-view-investigation.md) is historical; security and live acceptance requirements remain in force.
 
 ## Platform and configuration boundary
 
-- vm-service owns guest sharing and opens a trusted standard viewer in the service host's logged-in graphical session. It uses ordinary unmodified Tart boot, not Tart's experimental VNC or a private runtime patch.
+- machine-service owns guest sharing and opens a trusted standard viewer in the service host's logged-in graphical session. It uses ordinary unmodified Tart boot, not Tart's experimental VNC or a private runtime patch.
 - Linux requires the SSH user's existing X11 console, Python 3, logind session metadata, xdpyinfo, and x11vnc. The backend uses x11vnc inetd over SSH without a guest VNC TCP listener and enforces view-only access at the server. TurboVNC receives its password through a private stdin interface. Wayland and newly created remote desktops are unsupported.
 - macOS requires the existing console user, Python 3, supported built-in Screen Sharing configuration, and guest PF/listener checks. Apple's standard viewer prompts for guest-account authentication. Standard sharing of the existing console is required; a separate Log In session or High Performance display is not equivalent. Guest PF checks do not replace external IPv4/IPv6 isolation tests or safe boot-order acceptance.
 - Configuration is loaded at service startup and is disabled by default. Discovery reports that snapshot, not a live image test. Acquisition with `vnc: true` checks the actual guest; it is not permission to modify images or silently install prerequisites.
-- [Backend installation](../../vm-service/docs/vnc-installation.md), [guest preparation](../../vm-service/docs/guest-console-provisioning.md), and [live acceptance](../../vm-service/docs/vnc-acceptance.md) own the detailed platform procedures. These sibling-checkout links require vm-service alongside this repository.
+- [Backend installation](../../vm-service/docs/vnc-installation.md), [guest preparation](../../vm-service/docs/guest-console-provisioning.md), and [live acceptance](../../vm-service/docs/vnc-acceptance.md) own the detailed platform procedures. These sibling-checkout links require machine-service alongside this repository.
 
 ## Relay tools
 
@@ -40,9 +40,9 @@ relay_console_cancel {"console_id":"CONSOLE_FROM_RESOLVE","attempt_id":"watch-1"
 - `GET /acquisition-capabilities` returns `schemaVersion: 1` and `options.vnc`, whose `default` is `false` and whose `backends.linux.available` and `backends.macos.available` are booleans. An old endpoint, unknown version, or malformed document produces an explicit error rather than ordinary acquisition as a fallback.
 - Backend capability records include `status`, `backend`, `viewer_location`, `authentication` as a mechanism, `guest_readiness`, `session_binding`, `server_enforced_view_only`, `pixels`, and `human_confirmation`. Relay preserves these limitations. Missing fields remain `unknown`; availability does not prove live image readiness.
 - A VNC-enabled acquisition returns the ordinary lease record with immutable `lease_id` and `console: {console_id, status: "ready", backend, ...}`. Ordinary legacy records remain usable without these additions.
-- `GET /vms/<vm>` must retain the same `lease_id` and acquisition console identity. A replaced lease or console instance fails reconciliation instead of being silently adopted.
-- `POST /vms/<vm>/console/resolve` receives only `{lease_id}`.
-- `POST /vms/<vm>/console/open` and `POST /vms/<vm>/console/cancel` receive only `{lease_id, console_id, attempt_id}`. Selected-environment requests continue to carry `X-VM-Environment-Fingerprint`.
+- `GET /machines/<vm>` must retain the same `lease_id` and acquisition console identity. A replaced lease or console instance fails reconciliation instead of being silently adopted.
+- `POST /machines/<vm>/console/resolve` receives only `{lease_id}`.
+- `POST /machines/<vm>/console/open` and `POST /machines/<vm>/console/cancel` receive only `{lease_id, console_id, attempt_id}`. Selected-environment requests continue to carry `X-VM-Environment-Fingerprint`.
 - Console responses follow `vm-service/bin/console_sessions.py`'s `Manager._report` and nested `Attempt.report`. Relay validates `schemaVersion: 1`, VM, lease, environment fingerprint, and console identity. Open and cancel must include the matching nested `attempt.attempt_id`.
 - Top-level `status` describes the console as `ready` or `revoked`. It never describes launch completion. Resolve returns the latest nested `attempt`, whose separate status is `preparing`, `dispatching`, `launched`, `cancelled`, `closed`, or `failed`.
 - Top-level `authentication` is an observation status, while `authentication_mechanism` identifies `private-stdin` or `human-guest-account-prompt`. Nested `attempt.authentication` can be `required` or `unverified`; neither transport connection nor process launch establishes authentication.
@@ -98,6 +98,6 @@ relay_console_cancel {"console_id":"CONSOLE_FROM_RESOLVE","attempt_id":"watch-1"
 - Backend idempotency remains mandatory. It must record an attempt before launch and make cancellation before dispatch terminal so a delayed request cannot open a viewer.
 - Cancelling a different attempt while the retained attempt is active or uncertain is refused. Cancellation with no retained attempt is supported for the backend's cancel-before-open contract.
 - Opening refuses expired or non-running leases, stale IDs, unknown viewer location, and unresolved prior attempts. A legacy or non-VNC lease is never restarted or retrofitted automatically.
-- Closing the viewer or cancelling it never releases ownership. Explicit `finish` and `release` use the normal service release path; vm-service owns revocation before destruction. Its independent worker enforces ordered renewal grants and a monotonic deadline, including controller loss, without waiting for guest-operation locks. These component-tested mechanisms still require live expiry and restart acceptance.
+- Closing the viewer or cancelling it never releases ownership. Explicit `finish` and `release` use the normal service release path; machine-service owns revocation before destruction. Its independent worker enforces ordered renewal grants and a monotonic deadline, including controller loss, without waiting for guest-operation locks. These component-tested mechanisms still require live expiry and restart acceptance.
 - Relay does not claim that stopping a viewer proves revocation or destruction. `viewer_cleanup: local-children-stopped` covers owned local processes, not Apple's GUI app or the guest's built-in sharing daemon. Managed-stream closure does not revoke guest accounts or contain trusted guest administrators.
 - If observation is required, the agent must stop before guest application work until the required viewing is established. A usable viewer does not repair missing or black relay snapshots.
