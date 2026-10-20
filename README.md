@@ -19,10 +19,19 @@ The project was named mcp-vm-relay before v0.12.0. The npm package is now
 default state directory moved with the name, so finish or release a lease the
 old relay owns before upgrading.
 
+From v0.16.0 the relay's backend is machine-service, vm-service under its new
+name. The relay asks for `/machines` paths, which vm-service never served, and
+refuses a service whose `/health` does not answer `machine-service`. A selected
+environment profile must be at `schemaVersion` 2 with `machctlPath`; a profile
+at version 1 or with `vmctlPath` is refused with its fix in the error (DC-27).
+The relay's own names do not change: `MCP_RELAY_*`, `VM_ENVIRONMENT_FILE`,
+`VM_RELAY_*` and the state directories. Release every lease before switching,
+as machine-service's installer requires.
+
 ## How it is built
 
 The relay implementation lives in this repository: the manager
-(`src/manager.ts`), the vm-service client, the registry with its OS-level lock,
+(`src/manager.ts`), the machine-service client, the registry with its OS-level lock,
 the guest transfer and transport, the evidence package and its state merge, the
 selected-environment profile, the console and saved-image contracts, the strict
 tool contract (`src/schema.ts`), the action dispatch and bounded result
@@ -53,7 +62,7 @@ adds nothing Claude-Code-specific beyond the marketplace packaging and the
 | `/relay-status` command | `/mcp-relay-status` in pi, `/mcp-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
 | prompt-composed guest operator | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
 | typed image blocks in a run result, with pi's `tool_result` hook keeping the error flag | MCP image content blocks in the tool result, with the MCP `isError` flag set beside them |
-| session shutdown pauses lease renewal | the same when the server's stdio closes or it is signalled: renewal pauses after one final renewal for the rest of the lease's TTL, the recording detaches, the VM is retained until that TTL for an explicit `relay_finish` or `relay_release`, and the vm-service TTL is the backstop |
+| session shutdown pauses lease renewal | the same when the server's stdio closes or it is signalled: renewal pauses after one final renewal for the rest of the lease's TTL, the recording detaches, the VM is retained until that TTL for an explicit `relay_finish` or `relay_release`, and the machine-service TTL is the backstop |
 | the settled agent pauses renewal | none: MCP has no such hook, so the instructions and each run tool's description say "finish or release before you return" |
 
 ## Install
@@ -106,7 +115,7 @@ without a Claude Code plugin or pi package wrapper.
 
 Node 22+, Python 3 with `fcntl` for the registry lock, and for VM execution an
 Apple-silicon Mac with Tart, a running
-[vm-service](https://github.com/WeZZard/vm-service) and prepared guest images.
+[machine-service](https://github.com/WeZZard/vm-service) (formerly vm-service) and prepared guest images.
 Check readiness with `node dist/doctor.mjs`. It does not acquire a VM or
 establish guest UI readiness. Staging and runs assume no software in the guest
 but Node.js, which runs the relay's own guest code; `relay_stage` refuses an
@@ -117,7 +126,7 @@ gap. Snapshots need cua-driver with capture permission; on Linux, native X11
 and `serve --no-overlay`. `relay_script` runs JavaScript with the guest's
 Node.js, TypeScript with `tsx` and Python with `python3`, each from the guest's
 `PATH`; the relay installs none of them, nor the software a script drives, such
-as cua-driver, Playwright or a browser. Console viewing needs the vm-service guest-sharing backend and its
+as cua-driver, Playwright or a browser. Console viewing needs the machine-service guest-sharing backend and its
 guest preparation; see `docs/console.md` here.
 
 ## The tools
@@ -149,7 +158,7 @@ automatic: see "Runs" below.
 | `relay_console_resolve` | Resolve console status | `console-resolve` | Resolve non-secret console status for the guest's lease and environment. |
 | `relay_console_open` | Open console viewing | `console-open` | Open explicitly user-requested viewing on the service host, with `console_id`, `attempt_id`, `userRequested: true`, `reason` and `expected`. |
 | `relay_console_cancel` | Cancel console viewing | `console-cancel` | Cancel the identified viewing attempt without releasing the VM. |
-| `relay_status` | Show relay status | (unchanged) | Every guest this session holds, by name, each with its lease: backend binding, guest state, renewal state, console observation, last error, staging state and evidence path; plus `maxGuests`, the project directory, the VM service origin and the selected environment. `active` is false when no guest's lease is being renewed. |
+| `relay_status` | Show relay status | (unchanged) | Every guest this session holds, by name, each with its lease: backend binding, guest state, renewal state, console observation, last error, staging state and evidence path; plus `maxGuests`, the project directory, the machine-service origin and the selected environment. `active` is false when no guest's lease is being renewed. |
 
 `readOnlyHint`/`idempotentHint` are true for `relay_search`, `relay_probe`,
 `relay_acquisition_capabilities`, `relay_console_resolve`, `relay_image` and
@@ -198,10 +207,10 @@ tarball it checked.
 - An operation failure retains the VM so the agent can inspect, repair and submit a new operation. Failed and uncertain operations are never automatically replayed.
 - Use `finish` to deliver evidence and release, or `release` to abandon explicitly. A declared output that was never produced is recorded as incomplete (`incompleteExtractions`) rather than failing `finish`. A failed delivery retains the VM; a release failure retains ownership until destruction is verified.
 - When the session ends (the client closes the server's standard input, a write to its standard output fails, it is signalled with SIGTERM, SIGINT or SIGHUP, or the process that started it goes away), `MCP_RELAY_ON_EXIT` says what happens to the guests. With `release`, the relay releases every guest the session holds through its own release path, keeping the evidence the host can still pull, then exits; an operation already in flight completes first, all within the shutdown grace period, after which a guest still held is released directly in one bounded attempt. A guest whose release fails keeps its record and stops renewing, so its lease ends within its last 15-minute window. With `pause`, the default, the relay renews each guest's lease once for the rest of its TTL, then renewal pauses and the recording detaches; no VM is destroyed and is retained until its TTL for an explicit finish or release. A `finish` or `release` already in flight completes first, for up to the shutdown grace period; after that the operation is cancelled and renewal pauses without it. The backend TTL and grace period handle abandoned leases. Status reports the last confirmed expiration time.
-- While the session is live, the relay tracks the lease's own deadline (its start plus `ttlHours`) and renews vm-service only 15 minutes ahead at a time, never past that deadline, and stops renewing at it. A client that crashes without ending its session therefore leaves its VM leased for at most about 15 minutes, plus the backend's grace period, rather than its whole TTL.
+- While the session is live, the relay tracks the lease's own deadline (its start plus `ttlHours`) and renews machine-service only 15 minutes ahead at a time, never past that deadline, and stops renewing at it. A client that crashes without ending its session therefore leaves its VM leased for at most about 15 minutes, plus the backend's grace period, rather than its whole TTL.
 - A restarted server with the same `MCP_RELAY_SESSION` reconciles each guest's durable ownership and reattaches its recording session without replaying prior work; every guest keeps its name. A session state written by a relay before several guests is restored as one guest named from its task. Context compaction does not reset VM state; `probe` reports the owned state without relying on earlier messages.
 - A run tool's `timeoutMs` defaults to 120,000 ms and accepts integers up to 3,600,000 ms. It bounds command execution, not the snapshot delay or the lease lifetime. A timeout reports confirmed termination or uncertainty and keeps the VM available.
-- A shell `relay_script` with `diagnostic: true` records diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. It runs through vm-service as `/bin/sh -c <script>`, a script file read on the host first: before staging in the guest's default directory, after staging in the recording workspace. Only a shell script may be diagnostic, because no receiver or Node.js is involved. It cannot join a snapshot group and is not visual verification.
+- A shell `relay_script` with `diagnostic: true` records diagnosis or repair without screenshots, for explicitly requested diagnosis when capture is unavailable. It runs through machine-service as `/bin/sh -c <script>`, a script file read on the host first: before staging in the guest's default directory, after staging in the recording workspace. Only a shell script may be diagnostic, because no receiver or Node.js is involved. It cannot join a snapshot group and is not visual verification.
 - After diagnosing damaged recording state, `relay_stage` with `resetRecording: true` archives the old recording and starts a new recording session in the same VM. An existing receiver lock refuses the reset until its operation is reconciled. Prior evidence paths remain in the owned status.
 
 ## Runs
@@ -295,17 +304,18 @@ installation or platform acceptance is claimed here.
 
 ## Selected environments
 
-Set `VM_ENVIRONMENT_FILE` to a profile that binds a loopback vm-service
-endpoint, an image repository, a Tart store and separate service, image and
+Set `VM_ENVIRONMENT_FILE` to a profile, at `schemaVersion` 2 with
+`machctlPath`, that binds a loopback machine-service endpoint, an image repository, a Tart store and separate service, image and
 relay state directories together. The profile is validated before use, is
 authoritative over the individual `MCP_RELAY_*` variables, and an invalid
 selection fails rather than falling back. Leases are bound to their backend and
 store: an owned lease restored under a different environment fails before any
 backend operation, and destruction is verified with the selected Tart binary
 and `TART_HOME`. `docs/selected-environments.md` documents the schema. The
-bundle the profile exports to subprocesses is the canonical one vm-service
-defines, so its relay entries keep the `VM_RELAY_STATE_DIR` and
-`VM_RELAY_URL` names and the three runtimes agree; this server reads its own
+bundle the profile exports to subprocesses is the canonical one machine-service
+defines, with `MACHCTL` and the `MACHINE_SERVICE_*` names, so its relay entries
+keep the `VM_RELAY_STATE_DIR` and `VM_RELAY_URL` names and the three runtimes
+agree; this server reads its own
 settings from the profile.
 
 ## Evidence and cleanup
@@ -327,7 +337,7 @@ destroying the VM; a failed delivery removes only the derived files it created
 and retains the VM for a corrected attempt. Cleanup checks the read-only host
 Tart inventory (the selected one, when an environment is selected) before
 claiming destruction. Leases default to 4 hours, renewed 15 minutes at a
-time up to that TTL; the vm-service reaper is the final backstop for process death.
+time up to that TTL; the machine-service reaper is the final backstop for process death.
 
 Relay evidence has no size limit (owner decision PS-D12): screenshots are
 delivered as captured, never scaled, compressed, deduplicated or budgeted, and
@@ -342,10 +352,10 @@ keeps the VM for a retry after space is freed.
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
-- `MCP_RELAY_URL`: the loopback vm-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
-- `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, vm-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a vm-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
+- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
+- `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.
-- `MCP_RELAY_CAPACITY_WAIT`: how many seconds `relay_acquire` waits when the host is at capacity, such as at vm-service's limit of two running macOS VMs, asking again every 15 s; default 1800, and 0 for not at all. Any other value stops the server at startup.
+- `MCP_RELAY_CAPACITY_WAIT`: how many seconds `relay_acquire` waits when the host is at capacity, such as at machine-service's limit of two running macOS VMs, asking again every 15 s; default 1800, and 0 for not at all. Any other value stops the server at startup.
 - `MCP_RELAY_MAX_GUESTS`: the most guests one session holds at once, a positive integer, default 4. Any other value stops the server at startup.
 - `MCP_RELAY_STATE_DIR`: host state, otherwise `$XDG_STATE_HOME/mcp-relay` or `~/.local/state/mcp-relay`, one subdirectory per session, with one `guests/<guest>/` folder per guest holding its ownership record and owner lock.
 - `MCP_RELAY_REGISTRY`: an explicit task registry file; otherwise an existing compatible `~/AGENTS.md` VM table, or a private managed `registry.md` in the state directory.
@@ -364,9 +374,12 @@ npm run setup:dev -- /absolute/path/to/built/relay-driver
 npm run check                                            # build, typecheck, tests
 ```
 
-Three tests need a sibling checkout beside this repository and skip with a
-message when it is absent: the console fixture regeneration and the
-environment parity test need `../vm-service`, and the shared catalog text
+Three tests need something outside this repository and skip with a message
+when it is absent: the console fixture regeneration needs a historical
+`../vm-service` checkout with the Python backend (or
+`VM_SERVICE_PYTHON_BACKEND`); the environment parity test needs
+machine-service's `machctl` (`MACHCTL`, `PATH`, or a release build in
+`../machine-service/rust`) and `../pilot-images`; and the shared catalog text
 corpus needs `../pilot-images`. The JPEG and WebP presentation fixtures in
 `tests/fixtures/` were encoded once from the test's spatial PNG with a codec
 outside this repository and are committed, because the core carries none.
@@ -379,7 +392,7 @@ npm run test:e2e
 
 This runs `claude --print` with the plugin loaded from this checkout
 (`--plugin-dir`), the model limited to the relay's tools, and the server pointed
-at a loopback stand-in for vm-service (`tests/e2e/fixture-service.ts`), which
+at a loopback stand-in for machine-service (`tests/e2e/fixture-service.ts`), which
 keeps leases as records, runs the relay's own Node and transfer commands
 locally, and fakes the desktop capture driver. Four cases run, each a separate
 headless session: the status call (which also proves the server is pointed at
@@ -412,7 +425,7 @@ separate, explicit step.
 
 Pushing the tag triggers
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-rebuilds `vmctl`, checks the working build against a fresh one, and publishes
+rebuilds `machctl`, checks the working build against a fresh one, and publishes
 to npm using [trusted publishing](https://docs.npmjs.com/trusted-publishers)
 (OIDC — no `NPM_TOKEN` secret involved), then creates the matching GitHub
 release.

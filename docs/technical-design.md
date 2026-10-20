@@ -9,7 +9,7 @@
 
 ## 1. Context, goals and constraints
 
-pi-vm-relay is a thin TypeScript Pi extension over vm-service and relay-driver.
+pi-vm-relay is a thin TypeScript Pi extension over vm-service (now machine-service) and relay-driver.
 It exposes one `relay` tool and two commands, enforcing dedicated VM ownership,
 recorded execution, declared extraction and verifiable cleanup. The agent chooses
 which work runs in a guest (DC-14); the extension supplies host and image facts,
@@ -39,7 +39,7 @@ flowchart TB
     Agent -->|One relay tool| Pi[Pi extension: schema, guidance and dispatch]
     Pi -->|Read-only discovery| Catalog[Published-image application catalog: planned]
     Pi --> Manager[Session-scoped RelayManager]
-    Manager -->|Acquire / heartbeat / exec / transfer / release| VM[vm-service]
+    Manager -->|Acquire / heartbeat / exec / transfer / release| VM[machine-service]
     Manager --> SDK[relay-driver host SDK]
     SDK -->|Recorded submission through VM transport| Guest[Staged guest receiver and runtime]
     Guest --> Browser[Fresh guest Playwright browser]
@@ -59,23 +59,23 @@ flowchart TB
 | Pi extension (`src/index.ts`, `src/schema.ts`, `src/tool.ts`) | Registration, model guidance, validation, bounded rendering and action dispatch |
 | `RelayManager` | Durable ownership, same-session operation ordering, lease heartbeat, staging, delivery and cleanup |
 | Review data export (`src/review-data.ts`, `dist/review-data.mjs`) | `@wezzard/mcp-relay/review-data`: derives a delivered package's steps, verdicts and reasons from its raw evidence for programs that read relay packages, such as pi-secretary's `extensions/secretary/computer-use/viewer/` trajectory viewer or a harness report; it reads a package and writes nothing. Delivery writes no page and no derived data. |
-| vm-service | Disposable leases, guest command/transfer API, guest sharing, service-host viewer management, access revocation and verified destruction. |
+| machine-service | Disposable leases, guest command/transfer API, guest sharing, service-host viewer management, access revocation and verified destruction. |
 | relay-driver | Recorded/admitted submissions, journal, durable receipts, snapshots and evidence-package substrate |
 | Image/backend layer (planned integration) | Authoritative published-image application inventory and search/catalog API |
 | Application such as Walkthrough | Prompt composition and any full-display video requirements |
 
-Applications do not call vm-service/relay-driver directly. They prompt a subagent
+Applications do not call machine-service/relay-driver directly. They prompt a subagent
 that operates `relay`. Pi-vm-relay has no programmatic spawn/enclose API.
 
 The integration consumes HTTP (`POST /acquire`,
-`/vms/<n>/exec|push|pull|release`, inventory and heartbeat). The coordinated
+`/machines/<n>/exec|push|pull|release`, inventory and heartbeat). The coordinated
 [search contract](search-contract.md) specifies `GET /applications` over extracted
 image inventories. This is an implementation target, not an assertion that the
 currently deployed service already exposes it.
 
 The relay-driver implementation is consumed unchanged. Maintainer builds embed
 compiled SDK/runtime code with version, source-hash and license provenance.
-Consumers do not need sibling source repositories. vm-service remains separately
+Consumers do not need sibling source repositories. machine-service remains separately
 installed and operated.
 
 ## 3. Public API contract
@@ -110,7 +110,7 @@ only lifecycle exception. Other actions reject `reason`.
 
 Every run is a script in `shell`, `javascript`, `typescript` or `python`; a command is a shell script (DC-26).
 
-- A shell script accepts optional `diagnostic: true` for explicitly requested diagnosis or repair without screenshot evidence. It uses the owned vm-service command channel before or after staging, so damaged capture or guest recording state cannot prevent diagnosis. It keeps required intent, step, and standalone snapshot metadata for a consistent request shape, but records that screenshots were not requested.
+- A shell script accepts optional `diagnostic: true` for explicitly requested diagnosis or repair without screenshot evidence. It uses the owned machine-service command channel before or after staging, so damaged capture or guest recording state cannot prevent diagnosis. It keeps required intent, step, and standalone snapshot metadata for a consistent request shape, but records that screenshots were not requested.
 - Diagnostic scripts cannot join screenshot groups. Their output and receipts are retained on the host, and evidence review identifies them as command-only rather than visual verification.
 - `stage.resetRecording: true` archives the previous guest recording state and host evidence, starts a new recording session in the same VM, and returns references to previous evidence. It does not delete a receiver lock or imply that historical damaged evidence passed verification. An interrupted reset is reconciled using its persisted identity.
 
@@ -198,25 +198,25 @@ Reverify real registered schemas and adapter payloads rather than assuming suppo
 - A timeout may terminate the current operation and its owned child processes. It must not stop or delete the VM, terminate an unrelated guest service, or reject subsequent agent operations merely because this operation timed out.
 - The response states the effective timeout, whether termination was confirmed, the execution outcome, available standard output and standard error, the evidence location, and the actual lease state. An uncertain outcome must remain uncertain.
 - The tool does not automatically replay a timed-out operation. The agent may inspect the guest, repair the environment, and submit another operation with a new execution identity.
-- The selected timeout must reach the guest receiver. SDK framing, vm-service deadlines, transport deadlines, capture allowances, and browser-operation deadlines must not silently impose a shorter limit. A persistent browser operation must not continue issuing input unnoticed after its caller reports a timeout.
+- The selected timeout must reach the guest receiver. SDK framing, machine-service deadlines, transport deadlines, capture allowances, and browser-operation deadlines must not silently impose a shorter limit. A persistent browser operation must not continue issuing input unnoticed after its caller reports a timeout.
 - `snapshots.afterIntervalMs` continues to control only the after-snapshot delay. `acquire.ttlHours` continues to control lease lifetime. Neither is a command timeout.
 - The previous release used the 120,000 ms default without a public override. The revised implementation retains that default and propagates the configurable limit through the receiver and transport.
 
 ### 3.6 Host observations and guest readiness
 
-- The existing `probe` action reads host permissions, recording status, foreground application, user-session activity, and idle time. It also reads VM-service availability, images, and capacity. It does not establish guest readiness.
+- The existing `probe` action reads host permissions, recording status, foreground application, user-session activity, and idle time. It also reads machine-service availability, images, and capacity. It does not establish guest readiness.
 - On macOS, the host idle-time query is `ioreg -r -c IOHIDSystem`. The `-r` option restricts output to the matching subtree. Idle time remains `HIDIdleTime / 1e9` seconds; the measurement formula does not change.
 - Idle time is supporting information, not proof that the user is absent or authorization to interrupt the display. An unavailable observation must be reported as unknown.
 - Guest readiness checks verify the acquired guest's executables, service startup, capture capability, and browser operation. They must be clearly separate from host observations in tool descriptions and results.
 - Guest readiness must not be presented as a capability of the existing host `probe`. Public actions and their results must match their documented scope.
 - Readiness checks must not silently install software or repair an image. They report failures so the agent can decide how to proceed. Runtime checks supplement, rather than replace, image acceptance tests.
 - Reuse existing actions and clearly separated results where they meet the requirement. Add a public action only to address a demonstrated gap, not as a prerequisite for implementing readiness checks.
-- Basic guest checks must work before staging and after repair through the extension's controlled vm-service transport without depending on the capture service being tested. Results identify the owned guest, observation time, checks performed, and outcomes.
+- Basic guest checks must work before staging and after repair through the extension's controlled machine-service transport without depending on the capture service being tested. Results identify the owned guest, observation time, checks performed, and outcomes.
 - Application launch and screenshot checks are explicit and clean up only resources they create. Staging reports transferred files and runtime setup; `staged: true` is not proof that every application works.
 
 ### 3.7 Selected environments and dependency injection
 
-- [The selected-environment contract](selected-environments.md) defines the closed JSON profile and canonical configuration identity shared by relay, vm-service, and image tooling.
+- [The selected-environment contract](selected-environments.md) defines the closed JSON profile and canonical configuration identity shared by relay, machine-service, and image tooling.
 - The composition root selects dependencies once. Relay consumes a `VmBackend` protocol; the concrete client, Tart destruction verifier, image repository, and state roots are bound to that selection.
 - Lease persistence includes backend binding. Health identity and request fingerprints prevent endpoint replacement or configuration drift from redirecting an existing command sequence.
 - A separate Tart store is required for isolated environments. Git worktrees isolate source only, and mutable service/image/relay state remains separate from both source and production defaults.
@@ -241,7 +241,7 @@ Reverify real registered schemas and adapter payloads rather than assuming suppo
 
 #### Ownership and authoritative resolution
 
-- The session-scoped manager resolves capability through the existing owned lease and its selected backend and environment, following Section 3.7. Consumers must not access vm-service, SSH, or Tart directly to obtain the console.
+- The session-scoped manager resolves capability through the existing owned lease and its selected backend and environment, following Section 3.7. Consumers must not access machine-service, SSH, or Tart directly to obtain the console.
 - Resolution must bind the target to the owning enclosure, lease, VM identity, and selected configuration. It must not select the first running VM, infer a VNC port from a guest IP, or accept a guessed VM name as authority.
 - Discovery reports support as supported, unsupported, temporarily unavailable, or indeterminate, with a non-secret reason and an actionable next step where possible. Capability support and successful target resolution are separate facts.
 - Discovery must not allocate a VM, open a host window, create a guest session, or establish temporary tunnels or access grants. Any connection preparation with side effects belongs to the explicit opening operation.
@@ -351,13 +351,13 @@ acceptance tests remain separate from discovery: they use application test plans
 - A small structured manifest selects baseline parameters, supported OS and architecture, extension checks, and timeouts. Reuse existing test infrastructure and document prerequisites, expected results, evidence, cleanup, and failure conditions without copying the shared baseline into every application plan.
 - Application-specific extensions add detailed checks only for the selected application. They do not replace required baseline checks or change the tests run for other applications. A special application's requirements must not be added to the shared baseline template.
 - Report baseline and extension outcomes separately. An application without an extension can pass using the baseline alone; a required failure in either part fails that application's acceptance.
-- Image acceptance runs the applicable application plans on a fresh disposable clone through the same non-interactive execution environment used by vm-service and relay. Tests must not hide an unusable PATH by loading nvm or another shell initialization step that relay does not use.
+- Image acceptance runs the applicable application plans on a fresh disposable clone through the same non-interactive execution environment used by machine-service and relay. Tests must not hide an unusable PATH by loading nvm or another shell initialization step that relay does not use.
 - The Node.js baseline verifies that relay can execute the installed runtime. The CuaDriver extension verifies service startup after boot, the required display session, and actual screenshot capture beyond baseline launch checks. Permission flags alone do not prove capture works.
 - The browser extension verifies a simple page operation beyond the baseline launch check with the image's intended browser runtime. Project-specific pinned browser versions may still require explicit installation or staging; a generic image test does not prove every project's browser pin is available.
 - The image build process installs and configures the required software. Acceptance tests do not silently repair the clone and then report the original image as ready.
 - Libraries and transitive dependencies are normally exercised through the deliberately added applications that use them. They do not each require a separate launch test. Reports list `notTestedInventoryIds` for catalog records outside the selected test scope without labelling them passed or broken.
 - A deliberately provisioned application must not lack a selected plan or have its failure silently skipped. An absent optional component is not applicable with a stated reason, not a passed application test. Report baseline and extension coverage explicitly rather than claiming detailed functionality was tested by a launch check.
-- Required application tests must pass on a fresh clone of the stopped work image before promotion. vm-service accepts explicit `source: "work"` only for the configured `WORK_VM`, with `env: "none"` and an optional expected source fingerprint; it never accepts an arbitrary source path or boots the source image.
+- Required application tests must pass on a fresh clone of the stopped work image before promotion. machine-service accepts explicit `source: "work"` only for the configured `WORK_VM`, with `env: "none"` and an optional expected source fingerprint; it never accepts an arbitrary source path or boots the source image.
 - Hold the image maintenance lock, compare the source before and after clone testing, and bind the real clone inventory, report, lease identity, and current plan digest to the work association. Promotion rejects a missing, failed, stale, or tampered fresh-clone receipt before any image rename or publication change.
 - A work-guest test, a base-clone test, or a repaired task VM does not substitute for fresh-work-clone acceptance.
 - Installed-application extraction and acceptance selection are separate. The collector continues to report installed facts independently of test scope. A missing selected executable still fails even when the collector cannot discover that installation.
@@ -470,7 +470,7 @@ Mechanical requirements:
   not exposed here.
 - Stage relay-driver runtime and support files per lease rather than baking them
   into golden images. This does not prohibit preinstalled application software.
-- Workspace transfer uses vm-service push/pull. Declared files/logs plus evidence
+- Workspace transfer uses machine-service push/pull. Declared files/logs plus evidence
   are the default deliverable; full-workspace roundtrip is opt-in.
 
 Portable state roots/Python are configurable. Reuse a compatible home VM registry
@@ -505,9 +505,9 @@ Operational configuration is documented in [README](../README.md).
 - Keep explicit `finish` and `release`, verified destruction before unregistration, and the backend lease-expiration safeguard.
 - Preserve the VM when the agent completes a turn, the session shuts down, or the session is replaced. Stop automatic renewal when the session is no longer actively using the VM and report the last confirmed expiration time. The MCP server treats end of file on standard input, an error on standard output and a termination signal as the end of the session ([lifecycle fixes](lifecycle-fixes.md), R1 and R2).
 - Renew the lease during active work, including long-running operations. Execution timeout and lease lifetime remain independent. Process loss leaves the backend responsible for eventual expiration rather than relying on an unavailable cleanup hook.
-- The lease lifetime is the relay's own deadline, `startedAt + ttlHours`. The relay acquires and renews vm-service in short windows (15 minutes by default, `renewalWindowMs`), never past that deadline, and stops renewing at it; vm-service's 0.1-hour minimum renewal means the last few minutes are covered by the renewal before them. A graceful pause (session end, including shutdown after the grace period, or an agent settle) renews once for the remaining TTL, so the paused VM is retained until its TTL. Process loss without a graceful pause therefore leaves a VM leased for at most one window plus the backend grace period ([lifecycle fixes](lifecycle-fixes.md), H6).
+- The lease lifetime is the relay's own deadline, `startedAt + ttlHours`. The relay acquires and renews machine-service in short windows (15 minutes by default, `renewalWindowMs`), never past that deadline, and stops renewing at it; machine-service's 0.1-hour minimum renewal means the last few minutes are covered by the renewal before them. A graceful pause (session end, including shutdown after the grace period, or an agent settle) renews once for the remaining TTL, so the paused VM is retained until its TTL. Process loss without a graceful pause therefore leaves a VM leased for at most one window plus the backend grace period ([lifecycle fixes](lifecycle-fixes.md), H6).
 - On reload or resume, restore ownership under the existing lock and reconcile backend and receiver state. Do not automatically acquire a replacement VM or replay earlier work.
-- Heartbeat failure triggers bounded state reconciliation and an uncertainty report, not automatic destruction. Abandoned leases expire under vm-service policy, including its documented grace period; expiration and confirmed destruction remain separate facts.
+- Heartbeat failure triggers bounded state reconciliation and an uncertainty report, not automatic destruction. Abandoned leases expire under machine-service policy, including its documented grace period; expiration and confirmed destruction remain separate facts.
 - User cancellation of a command is not a request to release the VM. Lease renewal, ownership restoration, and actual VM availability must be visible to the user or agent.
 - Loading a session must not replay uncertain work. Recovery must reconcile durable ownership and actual backend state before accepting new work or claiming cleanup.
 - Heartbeat or transport failure is not proof of VM destruction. Preserve the ownership record and report the uncertainty until backend state can be reconciled.

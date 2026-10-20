@@ -2,21 +2,21 @@
 
 ## Purpose and boundaries
 
-- A selected environment binds the VM-service endpoint, image repository, Tart image store, and mutable state directories into one validated startup configuration.
+- A selected environment binds the machine-service endpoint, image repository, Tart image store, and mutable state directories into one validated startup configuration.
 - A Git worktree isolates source files, not virtual disks. A worktree is optional; a separate Tart store and separate mutable state are required for an isolated environment.
 - The feature does not copy VM disks, create worktrees, start a service, or replace production merely because a profile is loaded.
 - Hardware capacity remains shared. In particular, separate stores do not create additional macOS virtualization slots.
 
 ## Configuration
 
-- Set `VM_ENVIRONMENT_FILE` before starting Pi, vm-service, or an image-maintenance command. The backend CLI also accepts `--environment FILE` before its subcommand, which overrides the ambient selector.
+- Set `VM_ENVIRONMENT_FILE` before starting Pi, machine-service, or an image-maintenance command. The backend CLI also accepts `--environment FILE` before its subcommand, which overrides the ambient selector.
 - A selected profile is authoritative over the older individual environment variables. An invalid explicit selection fails; it never falls back to production settings.
 - Without a profile, existing legacy configuration remains supported. Use profiles when endpoint and store isolation must be enforced together.
 - The profile contains only the following fields. Replace the example absolute paths with real paths; the repository must contain `images/`, and both executable paths must exist and be executable.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "image-test",
   "vmServiceUrl": "http://127.0.0.1:6249",
   "imageRepository": "/absolute/path/to/pilot-images",
@@ -24,11 +24,13 @@
   "serviceStateDir": "/absolute/path/to/vm-environments/image-test/service",
   "imageStateDir": "/absolute/path/to/vm-environments/image-test/images",
   "relayStateDir": "/absolute/path/to/vm-environments/image-test/relay",
-  "vmctlPath": "/absolute/path/to/vm-service/bin/vmctl",
+  "machctlPath": "/absolute/path/to/machine-service/bin/machctl",
   "tartPath": "/absolute/path/to/tart"
 }
 ```
 
+- The profile is at `schemaVersion` 2, which names the CLI `machctlPath` (machine-service DC-41, DC-42). A profile at `schemaVersion` 1, or one that carries `vmctlPath`, is from before the machine-service rename and is refused with an error that names `machctlPath` and `schemaVersion` 2. The relay never reads `vmctlPath` and never rewrites a profile, because profiles are the operator's own files (DC-27).
+- The bundle exported to subprocesses uses machine-service's names: `MACHINE_SERVICE_STATE`, `MACHINE_SERVICE_HOST`, `MACHINE_SERVICE_PORT` and `MACHCTL`. `VM_ENVIRONMENT_FILE`, `VM_ENVIRONMENT_FINGERPRINT`, `VM_RELAY_STATE_DIR`, `VM_RELAY_URL`, `PILOT_REPO`, `TART_HOME`, `PILOT_IMAGES_STATE_DIR` and `TART` keep their names, and so does the profile's `vmServiceUrl` field.
 - The four mutable roots must be disjoint from one another, the image repository, and the legacy default store/state roots. Canonical paths are checked so existing symlinks cannot disguise overlaps.
 - Profile loading is read-only. Mutable roots may be absent until the owning operation initializes them; no seed image or association is fabricated automatically.
 - JSON duplicate keys, unknown fields, invalid Unicode paths, dangling symlinks, and non-loopback endpoints are rejected. The endpoint requires HTTP and an explicit port.
@@ -37,10 +39,10 @@
 ## Dependency injection and ownership
 
 - `RelayManager` depends on the `VmBackend` protocol and an immutable selected-environment object. The front end (the MCP server here, formerly pi-vm-relay's Pi extension) constructs them at startup; model tool calls cannot select a different backend per operation.
-- vm-service constructs its selected configuration and Tart execution context before serving requests. Image configuration is validated and its selection is fixed for that daemon's lifetime.
-- Image tooling resolves configuration through the profile's explicit trusted `vmctlPath`, checks that the selected repository is the checkout containing the invoked script, and uses the selected Tart and vmctl executables.
+- machine-service constructs its selected configuration and Tart execution context before serving requests. Image configuration is validated and its selection is fixed for that daemon's lifetime.
+- Image tooling resolves configuration through the profile's explicit trusted `machctlPath`, checks that the selected repository is the checkout containing the invoked script, and uses the selected Tart and machctl executables.
 - The bootstrap exports only routing and state variables. It also exports `VM_ENVIRONMENT_FINGERPRINT` so a subprocess command sequence refuses a profile changed midway through that sequence. An explicit backend CLI selector starts a new selection rather than silently modifying an existing lease.
-- The backend reports its environment identity through `/health`. Selected requests carry `X-VM-Environment-Fingerprint`, and a mismatch is rejected before mutation. The client verifies identity before lease operations.
+- The backend reports its environment identity through `/health`. Selected requests carry `X-VM-Environment-Fingerprint`, and a mismatch is rejected before mutation. The client verifies identity before lease operations, and that `/health` answers `"service": "machine-service"` (DC-27).
 - Service state and the Tart store retain identity markers. A store-scoped daemon lock prevents another selected service from taking over the same store, even through another state directory or port.
 - Relay leases retain endpoint, store, and profile binding. Restoring a lease under a different environment fails before backend operations; the original ownership record remains intact.
 - Destruction verification executes the selected Tart binary with the selected `TART_HOME`. It does not inspect the default host store and infer that a VM elsewhere has disappeared.
@@ -50,10 +52,10 @@
 
 ```sh
 # Resolve configuration without a service request or VM allocation.
-/path/to/vm-service/bin/vmctl --environment /path/to/environment.json environment --json
+/path/to/machine-service/bin/machctl --environment /path/to/environment.json environment --json
 
 # Start a separately configured service only when operationally authorized.
-/path/to/vm-service/bin/vm-service --environment /path/to/environment.json
+/path/to/machine-service/bin/machine-service --environment /path/to/environment.json
 
 # Start a Pi session against that environment.
 VM_ENVIRONMENT_FILE=/path/to/environment.json pi

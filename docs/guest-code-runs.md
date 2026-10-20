@@ -5,7 +5,7 @@ This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-26 in [dec
 ## 1. Context
 
 - An agent runs on a host. It works on the host with its own tools, and in a guest through the relay.
-- A guest is a VM from vm-service, macOS or Linux.
+- A guest is a VM from machine-service, macOS or Linux.
 - The agent runs scripts in the guest with `relay_script`: shell, JavaScript, TypeScript or Python. A command is a shell script. The scripts drive the software the image lists, such as cua-driver, Playwright and Chrome DevTools.
 - The agent picks the image by the software it lists, with `relay_search`.
 - An application that hosts agents, such as The Desk, starts the relay as a stdio MCP server for each of its agents, and passes the agent's working folder as `MCP_RELAY_PROJECT` and its task as `MCP_RELAY_SESSION`.
@@ -13,12 +13,12 @@ This document is the design for DC-12 to DC-15, DC-17 and DC-20 to DC-26 in [dec
 ```mermaid
 flowchart LR
   A[Agent on the host] -->|code tools| R[Relay]
-  R --> VS[vm-service] --> VM[macOS or Linux VM]
+  R --> VS[machine-service] --> VM[macOS or Linux VM]
 ```
 
 ## 2. Backends (DC-12)
 
-- vm-service stays the relay's only backend, behind `VmBackend` (`src/vm-service.ts`).
+- machine-service stays the relay's only backend, behind `VmBackend` (`src/machine-service.ts`).
 - A Docker-sandbox backend waits until a task needs it. On a Mac, Docker runs inside a Linux VM, so a container adds no isolation over a Linux VM, and no Docker image lists the software the agents use.
 
 ## 3. Software the relay assumes (DC-13)
@@ -48,10 +48,10 @@ flowchart LR
 
 ## 6. The guest's network (DC-17)
 
-- `relay_acquire` passes vm-service the `network` that `MCP_RELAY_GUEST_NETWORK` names: `nat`, the default, or `internet`.
-- With `internet`, the guest reaches the internet, and reaches neither the host nor any private network (vm-service's DC-13).
+- `relay_acquire` passes machine-service the `network` that `MCP_RELAY_GUEST_NETWORK` names: `nat`, the default, or `internet`.
+- With `internet`, the guest reaches the internet, and reaches neither the host nor any private network (machine-service's DC-13).
 - `relay_acquire` takes no network from the agent, so an agent cannot widen what its guest reaches.
-- A vm-service that cannot give `internet` refuses the acquisition with its reason. The relay never falls back to `nat`.
+- A machine-service that cannot give `internet` refuses the acquisition with its reason. The relay never falls back to `nat`.
 
 ## 7. Several guests in one session (DC-20)
 
@@ -63,7 +63,7 @@ flowchart LR
 - A session holds at most `MCP_RELAY_MAX_GUESTS` guests, 4 by default. An acquisition beyond it is refused with a reason that names the guests held. The backend's own limits, such as two macOS VMs per host, still hold, and its refusals pass through.
 - When the session ends, each guest's lease renewal pauses, as for one guest today.
 - A guest's name is its task and a counter, such as `login-test-2`, and is never reused in the session. Its ownership record and owner lock live in `guests/<guest>/` in the session's state directory, so a restarted session restores every guest by name. The record of a relay from before DC-20 is restored as one guest named from its task.
-- An acquisition that vm-service refuses acquires nothing: once vm-service lists no VM for it, its registry row goes and the guest leaves the session. An acquisition whose outcome is unknown keeps its guest for reconciliation, as before.
+- An acquisition that machine-service refuses acquires nothing: once machine-service lists no VM for it, its registry row goes and the guest leaves the session. An acquisition whose outcome is unknown keeps its guest for reconciliation, as before.
 
 ## 8. What the end of a session does (DC-21)
 
@@ -77,12 +77,12 @@ flowchart LR
 
 ## 9. Waiting for capacity (DC-22)
 
-- vm-service refuses an acquisition with HTTP 409 when the host is at capacity, such as when it already runs its two macOS VMs. It refuses before it reserves anything, so the same acquisition can be asked again. Its `wait: true` waits for a VM to boot, never for capacity.
+- machine-service refuses an acquisition with HTTP 409 when the host is at capacity, such as when it already runs its two macOS VMs. It refuses before it reserves anything, so the same acquisition can be asked again. Its `wait: true` waits for a VM to boot, never for capacity.
 - `relay_acquire` then waits instead of failing. It asks again every 15 s for up to `MCP_RELAY_CAPACITY_WAIT` seconds, 1800 by default; 0 turns waiting off. Any value but a nonnegative integer stops the relay at startup.
-- Only the capacity refusal waits: a 409 whose error is vm-service's macOS VM limit and whose outcome is not uncertain. Every other refusal passes through at once, as before.
-- A waiting guest keeps its name and its registry row, and counts against `MCP_RELAY_MAX_GUESTS`. `relay_status` shows it as `waitingForCapacity`, with since when, how many refusals and vm-service's reason, and the limit's refusal names it as waiting for capacity.
+- Only the capacity refusal waits: a 409 whose error is machine-service's macOS VM limit and whose outcome is not uncertain. Every other refusal passes through at once, as before.
+- A waiting guest keeps its name and its registry row, and counts against `MCP_RELAY_MAX_GUESTS`. `relay_status` shows it as `waitingForCapacity`, with since when, how many refusals and machine-service's reason, and the limit's refusal names it as waiting for capacity.
 - A cancelled call or the end of the session stops the wait at once. Nothing was acquired, so the guest leaves the session as after any refusal, and a session that ends with `MCP_RELAY_ON_EXIT=release` still exits promptly.
-- When the wait runs out, `relay_acquire` refuses with vm-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
+- When the wait runs out, `relay_acquire` refuses with machine-service's reason and the time it waited. A granted acquisition's result says how long it waited, `waitedForCapacityMs`, 0 when it did not wait.
 
 ## 10. Every run is a script (DC-23, DC-25, DC-26)
 
@@ -99,7 +99,7 @@ flowchart LR
   - TypeScript runs with `tsx` from the guest's `PATH`. When the guest has none, the receiver's Node.js runs the script with its own type stripping, which needs Node.js 22.6 or later (DC-25).
   - A run whose runtime is missing is refused before anything starts, so it never ends `uncertain`.
 - `diagnostic: true` records a diagnosis or repair without snapshots, and may run before `relay_stage`.
-  - Only a shell script may be diagnostic, because a diagnostic run goes through vm-service directly, not through the receiver, so it cannot rely on Node.js.
+  - Only a shell script may be diagnostic, because a diagnostic run goes through machine-service directly, not through the receiver, so it cannot rely on Node.js.
   - The guest runs the script as `/bin/sh -c <script>`. A script file is read on the host and sent the same way.
   - After `relay_stage`, the script runs in the recording workspace; before it, in the guest's default directory.
   - The result has one `output` field with stdout and stderr together. A diagnostic run cannot join a snapshot group, and it is never visual verification.
@@ -119,9 +119,9 @@ flowchart LR
 ## 11. Verification
 
 - Unit tests cover DC-13, DC-15 and DC-17 with a fake backend, as `tests/console.test.ts` does.
-- Unit tests cover DC-20 with the fake vm-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
-- Lifecycle tests cover DC-21 with the shipped server and a fake vm-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.
-- Unit tests cover DC-22 with the fake vm-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.
-- Unit tests cover DC-24 with the fake vm-service: a cua-driver that fails three times and then answers is waited for, and the first run completes; one that never answers refuses the stage, keeps the guest, and a later stage succeeds; an image that lists no capture software asks for no screenshot.
+- Unit tests cover DC-20 with the fake machine-service in `tests/manager.test.ts`: two guests run at the same time and finish on their own, each with its own evidence; calls on one guest keep their order; the guest limit; a call naming a guest the session does not hold; a restart that restores two guests; and a session state from before DC-20.
+- Lifecycle tests cover DC-21 with the shipped server and a fake machine-service in `tests/lifecycle.test.ts`: with `release`, two guests are released when standard input closes, on SIGTERM and when the parent process goes away; with the default `pause`, both are kept and their renewal pauses.
+- Unit tests cover DC-22 with the fake machine-service: a host at capacity twice and then free grants the acquisition with the time waited; a wait that runs out refuses with the reason and the time waited; a cancelled call and a session end stop the wait with nothing acquired, the shipped server included; a 409 that is not a capacity refusal, an uncertain one, and a wait of 0 are not asked again.
+- Unit tests cover DC-24 with the fake machine-service: a cua-driver that fails three times and then answers is waited for, and the first run completes; one that never answers refuses the stage, keeps the guest, and a later stage succeeds; an image that lists no capture software asks for no screenshot.
 - Unit tests cover DC-25: the receiver picks `tsx`, then Node.js type stripping, for TypeScript, and refuses a script whose runtime is missing; a TypeScript script runs without `tsx` and completes.
 - Unit tests cover DC-23 and DC-26: `tools/list` serves `relay_script` and none of `relay_command`, `relay_exec`, `relay_code`, `relay_run`, `relay_gate` and `relay_tools`; `relay_script` runs inline code and a project file in each language, shell included, and refuses a call whose `code` or `localPath` does not match `inline`; a diagnostic shell script runs before and after `relay_stage` without snapshots, inline and from a file; a diagnostic script in any other language is refused; a guest without `/bin/sh` refuses a shell script before it starts; and no request the guest receives, and no event the guest journals for a run, names a kind of run.
