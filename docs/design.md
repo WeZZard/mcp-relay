@@ -26,6 +26,7 @@ separately, using UX-specification and engineering-RFC sections.
 | [Screenshot delivery](screenshot-delivery.md) | The implemented worktree contract for typed command-result images, owner-scoped recovery, application-image authorization, and presentation failures, with explicit acceptance limits. |
 | [Lifecycle fixes](lifecycle-fixes.md) | Decisions and design for session end, cancelled acquisition, finish extraction and cancellable guest commands, with the two items that wait for the owner's decision. |
 | [Code runs in any guest](guest-code-runs.md) | The backends, the software the relay assumes in a guest, and the host paths it reads (DC-12 to DC-15). |
+| [Durable machines](durable-machines.md) | How the relay tools work on durable Macs as on VMs: choosing the machine, lease identity, byte transfers, the cua-driver snapshot gate and release (DC-28 to DC-34). |
 | [Verification](verification.md) | Measured implementation evidence, historical gates and environment-specific acceptance—not unimplemented design promises |
 | [README](../README.md) | Installation and operational instructions, with worktree-only features identified separately from deployment. |
 

@@ -28,7 +28,7 @@ Goals:
 - Keep installation portable through native Pi Git package management.
 
 Non-goals: category/semantic search, cached pagination, automatic image selection,
-physical machines, local CUA execution, CDP attachment, extension-owned video,
+local CUA execution, CDP attachment, extension-owned video,
 programmatic subagent spawning, or a rewrite of relay-driver.
 
 ## 2. System architecture and ownership
@@ -466,8 +466,8 @@ Mechanical requirements:
 - Preserve available evidence before destructive cleanup; do not claim successful
   execution merely because cleanup or transfer succeeded.
 - Do not touch foreign leases/registry rows or blindly replay uncertain input.
-- Only disposable VMs are targets; relay-driver's physical-machine capability is
-  not exposed here.
+- Targets are disposable VMs and durable machines leased from machine-service
+  ([durable-machines.md](durable-machines.md)); never the relay's own host.
 - Stage relay-driver runtime and support files per lease rather than baking them
   into golden images. This does not prohibit preinstalled application software.
 - Workspace transfer uses machine-service push/pull. Declared files/logs plus evidence
