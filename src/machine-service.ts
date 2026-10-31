@@ -1,16 +1,26 @@
 import { isIP } from "node:net";
+import { createHash } from "node:crypto";
 import type { SelectedEnvironment, EnvironmentIdentity } from './environment.js';
 
-/** The daemon's actual record; acquire returns this directly, not a lease wrapper. */
+/**
+ * The daemon's actual record; acquire returns this directly, not a lease wrapper.
+ * A durable machine's record names it `name`, has no image, and carries the
+ * lease's `workspace` and the machine's `capabilities`; the relay reads it as
+ * a lease whose `vm` is that name (docs/durable-machines.md §3).
+ */
 export interface VmLease {
   vm: string;
+  kind?: "virtual" | "durable";
+  instance?: string;
   lease_id?: string;
   console?: import('./console.js').ConsoleStatus;
   purpose: string;
-  image: string;
-  image_kind: "macos" | "linux";
+  image: string | null;
+  image_kind: "macos" | "linux" | null;
   env: string | null;
-  state: "pending" | "provisioning" | "running" | "releasing";
+  state: "pending" | "provisioning" | "running" | "releasing" | "leased";
+  workspace?: string;
+  capabilities?: { software?: Record<string, unknown> | null } & Record<string, unknown>;
   created_at: number;
   ttl_expires_at: number;
   grace_until: number | null;
@@ -47,6 +57,8 @@ export interface VmImages {
 export interface AcquireRequest {
   purpose: string;
   image?: string;
+  /** A durable machine's name, in place of `image` (DC-29). */
+  machine?: string;
   env?: string;
   ttl_hours?: number;
   cpu?: number;
@@ -57,12 +69,15 @@ export interface AcquireRequest {
   /** The guest's network (machine-service DC-13): `nat`, or `internet` for a guest that reaches neither the host nor a private network. */
   network?: 'nat' | 'internet';
 }
-export type ExecRequest = ({ argv: string[]; script?: never } | { script: string; argv?: never }) & { timeout?: number };
-export interface TransferRequest { local_path: string; remote_path: string }
+/** `lease_id` is required on a durable machine and accepted on a VM (DC-30). */
+export interface LeaseIdentity { lease_id?: string }
+export type ExecRequest = ({ argv: string[]; script?: never } | { script: string; argv?: never }) & { timeout?: number } & LeaseIdentity;
+export interface TransferRequest extends LeaseIdentity { local_path: string; remote_path: string }
 export interface ExecResponse { vm: string; rc: number; output: string }
 export interface PushResponse { vm: string; pushed: string; to: string }
 export interface PullResponse { vm: string; pulled: string; to: string }
-export interface ReleaseResponse { vm: string; released: boolean; reason: string }
+export interface ReleaseResponse { vm?: string; name?: string; released: boolean; reason: string; hygiene?: unknown }
+export interface BytesResponse { sha256: string; bytes: number }
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
 export interface MachineServiceOptions {
   baseUrl?: string;
@@ -70,10 +85,12 @@ export interface MachineServiceOptions {
   timeoutMs?: number;
   acquireTimeoutMs?: number;
   maxResponseBytes?: number;
+  /** The origin is a `machine-service` registration that Consul lists, which may be on another Mac (DC-29). */
+  listed?: boolean;
 }
 
 /** The manager depends on this protocol, not on a concrete transport or hypervisor. */
-export type VmBackend = Pick<MachineService, 'baseUrl' | 'health' | 'list' | 'images' | 'applications' | 'get' | 'acquire' | 'exec' | 'push' | 'pull' | 'heartbeat' | 'release'> & Partial<Pick<MachineService, 'acquisitionCapabilities' | 'consoleResolve' | 'consoleOpen' | 'consoleCancel'>>;
+export type VmBackend = Pick<MachineService, 'baseUrl' | 'health' | 'list' | 'images' | 'applications' | 'get' | 'acquire' | 'exec' | 'push' | 'pull' | 'heartbeat' | 'release'> & Partial<Pick<MachineService, 'acquisitionCapabilities' | 'consoleResolve' | 'consoleOpen' | 'consoleCancel' | 'pushBytes' | 'pullBytes'>>;
 
 export class MachineServiceError extends Error {
   /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
@@ -94,7 +111,8 @@ export function capacityRefusal(error: unknown): boolean {
   try { body = JSON.parse(error.responseBody); } catch { return false; }
   if (!body || typeof body !== "object") return false;
   const { error: reason, outcome } = body as { error?: unknown; outcome?: unknown };
-  return typeof reason === "string" && reason.startsWith("macOS VM limit reached") && outcome !== "uncertain";
+  // A durable machine leased by someone else, or without a GUI session, may free up the same way (DC-34).
+  return typeof reason === "string" && /^(macOS VM limit reached|durable machine leased|durable machine unavailable)/.test(reason) && outcome !== "uncertain";
 }
 /**
  * The name machine-service answers in `/health`. vm-service, its name before
@@ -121,8 +139,19 @@ function positive(value: number, label: string): number {
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+/** A durable machine's record names it `name`; the relay reads that as the lease's `vm` (docs/durable-machines.md §3). */
+function named<T>(value: T): T {
+  const fields = value as Record<string, unknown>;
+  if (record(value) && fields.kind === "durable" && typeof fields.vm !== "string" && typeof fields.name === "string") fields.vm = fields.name;
+  return value;
+}
 function isLease(value: unknown): value is VmLease {
   if (!record(value)) return false;
+  if (named(value).kind === "durable") {
+    return ["vm", "purpose", "lease_id", "workspace"].every(k => typeof value[k] === "string" && value[k] !== "")
+      && value.image === null && value.image_kind === null && value.state === "leased"
+      && ["created_at", "ttl_expires_at"].every(k => typeof value[k] === "number" && Number.isFinite(value[k]));
+  }
   return ["vm", "purpose", "image"].every(k => typeof value[k] === "string" && value[k] !== "")
     && ["macos", "linux"].includes(String(value.image_kind))
     && ["pending", "provisioning", "running", "releasing"].includes(String(value.state))
@@ -146,8 +175,8 @@ export class MachineService {
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError('Backend endpoint does not match the selected environment');
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
-    if (!loopback || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
+    if ((!loopback && !options.listed) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 660_000, "timeoutMs");
@@ -158,7 +187,11 @@ export class MachineService {
   health(options: RequestOptions = {}): Promise<{ ok: boolean; service: string; environment?: EnvironmentIdentity }> {
     return this.request("/health", undefined, options);
   }
-  list(options: RequestOptions = {}): Promise<MachineList> { return this.request("/machines", undefined, options); }
+  async list(options: RequestOptions = {}): Promise<MachineList> {
+    const list = await this.request<MachineList>("/machines", undefined, options);
+    if (record(list.machines)) Object.values(list.machines).forEach(named);
+    return list;
+  }
   images(options: RequestOptions = {}): Promise<VmImages> { return this.request("/images", undefined, options); }
   applications(options: RequestOptions = {}): Promise<unknown> { return this.request("/applications", undefined, options); }
   acquisitionCapabilities(options: RequestOptions = {}): Promise<unknown> { return this.consoleRequest('/acquisition-capabilities', undefined, options); }
@@ -172,8 +205,8 @@ export class MachineService {
       throw new MachineServiceError(`Console API unavailable or request outcome unknown${error instanceof MachineServiceError && error.status ? ` (HTTP ${error.status})` : ''}; resolve before another open`, error instanceof MachineServiceError ? error.status : undefined);
     }
   }
-  get(vm: string, options: RequestOptions = {}): Promise<VmSnapshot> {
-    return this.request(this.path(vm), undefined, options);
+  async get(vm: string, options: RequestOptions = {}): Promise<VmSnapshot> {
+    return named(await this.request<VmSnapshot>(this.path(vm), undefined, options));
   }
 
   /**
@@ -210,17 +243,54 @@ export class MachineService {
   pull(vm: string, body: TransferRequest, options: RequestOptions = {}): Promise<PullResponse> {
     return this.request(this.path(vm, "pull"), body, options);
   }
-  heartbeat(vm: string, body: { ttl_hours?: number } = {}, options: RequestOptions = {}): Promise<VmLease & { ttl_hours_remaining: number }> {
-    return this.request(this.path(vm, "heartbeat"), body, options);
+  async heartbeat(vm: string, body: { ttl_hours?: number } & LeaseIdentity = {}, options: RequestOptions = {}): Promise<VmLease & { ttl_hours_remaining: number }> {
+    return named(await this.request<VmLease & { ttl_hours_remaining: number }>(this.path(vm, "heartbeat"), body, options));
   }
-  release(vm: string, body: { reason?: string } = {}, options: RequestOptions = {}): Promise<ReleaseResponse> {
+  release(vm: string, body: { reason?: string } & LeaseIdentity = {}, options: RequestOptions = {}): Promise<ReleaseResponse> {
     return this.request(this.path(vm, "release"), body, options);
+  }
+  /**
+   * Push one file as bytes, `PUT /machines/<name>/files` (FD-4): the instance
+   * checks the digest before it writes, so a client on another Mac needs no
+   * host path the instance could read (DC-31).
+   */
+  async pushBytes(vm: string, body: { remote_path: string; bytes: Buffer } & LeaseIdentity, options: RequestOptions = {}): Promise<BytesResponse> {
+    const sha256 = createHash("sha256").update(body.bytes).digest("hex");
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const answer = this.json<BytesResponse>(response.path, response.text);
+    if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
+    return answer;
+  }
+  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
+  async pullBytes(vm: string, body: { remote_path: string; maxBytes: number } & LeaseIdentity, options: RequestOptions = {}): Promise<Buffer> {
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
+    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+    const digest = createHash("sha256").update(response.bytes).digest("hex");
+    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+    return response.bytes;
+  }
+  private filesPath(vm: string, remote: string, lease_id?: string): string {
+    const query = new URLSearchParams({ ...(lease_id ? { lease_id } : {}), path: remote });
+    return `${this.path(vm, "files")}?${query}`;
   }
   private path(vm: string, action?: string): string {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(vm)) throw new TypeError("Invalid VM name");
     return `/machines/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
   }
   private async request<T>(path: string, body: unknown, options: RequestOptions): Promise<T> {
+    const response = await this.fetchBounded(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, options, this.maxResponseBytes);
+    return this.json<T>(path, response.text);
+  }
+  private json<T>(path: string, text: string): T {
+    try { return JSON.parse(text) as T; }
+    catch (cause) { throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, undefined, undefined, { cause }); }
+  }
+  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
+  private async fetchBounded(path: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array<ArrayBuffer> }, options: RequestOptions, maxBytes: number) {
     options.signal?.throwIfAborted();
     const timeoutMs = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
@@ -229,16 +299,16 @@ export class MachineService {
     const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
-        method: body === undefined ? "GET" : "POST",
-        headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(this.environment ? { 'X-VM-Environment-Fingerprint': this.environment.identity.fingerprint } : {}) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        method: init.method,
+        headers: { ...init.headers, ...(this.environment ? { 'X-VM-Environment-Fingerprint': this.environment.identity.fingerprint } : {}) },
+        ...(init.body === undefined ? {} : { body: init.body }),
         signal: controller.signal,
-        redirect: "error", // Do not let a loopback service redirect to remote hosts.
+        redirect: "error", // Do not let a service redirect to another host.
       });
       const reader = response.body?.getReader();
       const chunks: Uint8Array[] = [];
       let size = 0;
-      const bound = response.ok ? this.maxResponseBytes : Math.min(4096, this.maxResponseBytes);
+      const bound = response.ok ? maxBytes : Math.min(4096, maxBytes);
       let truncated = false;
       if (reader) {
         try {
@@ -252,11 +322,10 @@ export class MachineService {
           }
         } finally { reader.releaseLock(); }
       }
-      const text = Buffer.concat(chunks).toString("utf8");
+      const bytes = Buffer.concat(chunks), text = bytes.toString("utf8");
       if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text}${truncated ? " [truncated]" : ""}`, response.status, text);
       if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
-      try { return JSON.parse(text) as T; }
-      catch (cause) { throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, undefined, undefined, { cause }); }
+      return { path, bytes, text, contentType: response.headers.get("content-type") ?? undefined, sha256: response.headers.get("x-content-sha256") ?? undefined };
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;

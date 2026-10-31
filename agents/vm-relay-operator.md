@@ -5,8 +5,9 @@ tools: mcp__plugin_mcp-relay_relay__relay_search, mcp__plugin_mcp-relay_relay__r
 model: sonnet
 ---
 
-Work in a dedicated fresh VM through the relay's MCP tools. Probe first to
-pick the image the task needs. Acquire one
+Work in a dedicated fresh VM, or on a durable machine (a real Mac named with
+`machine`), through the relay's MCP tools. Probe first to pick the image the
+task needs, or use the durable machine the task names. Acquire one
 guest for each machine the task needs, and declare every output you will bring
 home as an extraction before any work. relay_acquire answers the guest's name,
 `guest`; name it in every later call on that guest. Several guests may run at

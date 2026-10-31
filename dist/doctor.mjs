@@ -47,6 +47,7 @@ async function command(argv, options = {}) {
 
 // src/machine-service.ts
 import { isIP } from "node:net";
+import { createHash as createHash2 } from "node:crypto";
 var MachineServiceError = class extends Error {
   constructor(message, status, responseBody, options) {
     super(message, options);
@@ -69,7 +70,7 @@ function capacityRefusal(error) {
   }
   if (!body || typeof body !== "object") return false;
   const { error: reason, outcome } = body;
-  return typeof reason === "string" && reason.startsWith("macOS VM limit reached") && outcome !== "uncertain";
+  return typeof reason === "string" && /^(macOS VM limit reached|durable machine leased|durable machine unavailable)/.test(reason) && outcome !== "uncertain";
 }
 var SERVICE_NAME = "machine-service";
 function expectMachineService(health, origin) {
@@ -91,8 +92,16 @@ function positive(value, label) {
 function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function named(value) {
+  const fields = value;
+  if (record(value) && fields.kind === "durable" && typeof fields.vm !== "string" && typeof fields.name === "string") fields.vm = fields.name;
+  return value;
+}
 function isLease(value) {
   if (!record(value)) return false;
+  if (named(value).kind === "durable") {
+    return ["vm", "purpose", "lease_id", "workspace"].every((k) => typeof value[k] === "string" && value[k] !== "") && value.image === null && value.image_kind === null && value.state === "leased" && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k]));
+  }
   return ["vm", "purpose", "image"].every((k) => typeof value[k] === "string" && value[k] !== "") && ["macos", "linux"].includes(String(value.image_kind)) && ["pending", "provisioning", "running", "releasing"].includes(String(value.state)) && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k])) && ["cpu", "memory_mb", "disk_gb", "grace_until"].every((k) => value[k] === null || typeof value[k] === "number") && ["env", "ip"].every((k) => value[k] === null || typeof value[k] === "string") && typeof value.warned === "boolean";
 }
 var MachineService = class {
@@ -108,8 +117,8 @@ var MachineService = class {
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP(host) === 4 && host.startsWith("127.");
-    if (!loopback || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
+    if (!loopback && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");
@@ -119,8 +128,10 @@ var MachineService = class {
   health(options = {}) {
     return this.request("/health", void 0, options);
   }
-  list(options = {}) {
-    return this.request("/machines", void 0, options);
+  async list(options = {}) {
+    const list = await this.request("/machines", void 0, options);
+    if (record(list.machines)) Object.values(list.machines).forEach(named);
+    return list;
   }
   images(options = {}) {
     return this.request("/images", void 0, options);
@@ -147,8 +158,8 @@ var MachineService = class {
       throw new MachineServiceError(`Console API unavailable or request outcome unknown${error instanceof MachineServiceError && error.status ? ` (HTTP ${error.status})` : ""}; resolve before another open`, error instanceof MachineServiceError ? error.status : void 0);
     }
   }
-  get(vm, options = {}) {
-    return this.request(this.path(vm), void 0, options);
+  async get(vm, options = {}) {
+    return named(await this.request(this.path(vm), void 0, options));
   }
   /**
    * Cancellation before dispatch prevents allocation. Once dispatched we deliberately
@@ -181,17 +192,57 @@ var MachineService = class {
   pull(vm, body, options = {}) {
     return this.request(this.path(vm, "pull"), body, options);
   }
-  heartbeat(vm, body = {}, options = {}) {
-    return this.request(this.path(vm, "heartbeat"), body, options);
+  async heartbeat(vm, body = {}, options = {}) {
+    return named(await this.request(this.path(vm, "heartbeat"), body, options));
   }
   release(vm, body = {}, options = {}) {
     return this.request(this.path(vm, "release"), body, options);
+  }
+  /**
+   * Push one file as bytes, `PUT /machines/<name>/files` (FD-4): the instance
+   * checks the digest before it writes, so a client on another Mac needs no
+   * host path the instance could read (DC-31).
+   */
+  async pushBytes(vm, body, options = {}) {
+    const sha256 = createHash2("sha256").update(body.bytes).digest("hex");
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const answer = this.json(response.path, response.text);
+    if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
+    return answer;
+  }
+  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
+  async pullBytes(vm, body, options = {}) {
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
+    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+    const digest = createHash2("sha256").update(response.bytes).digest("hex");
+    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+    return response.bytes;
+  }
+  filesPath(vm, remote, lease_id) {
+    const query = new URLSearchParams({ ...lease_id ? { lease_id } : {}, path: remote });
+    return `${this.path(vm, "files")}?${query}`;
   }
   path(vm, action) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(vm)) throw new TypeError("Invalid VM name");
     return `/machines/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
   }
   async request(path, body, options) {
+    const response = await this.fetchBounded(path, {
+      method: body === void 0 ? "GET" : "POST",
+      headers: body === void 0 ? {} : { "Content-Type": "application/json" },
+      ...body === void 0 ? {} : { body: JSON.stringify(body) }
+    }, options, this.maxResponseBytes);
+    return this.json(path, response.text);
+  }
+  json(path, text) {
+    try {
+      return JSON.parse(text);
+    } catch (cause) {
+      throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
+    }
+  }
+  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
+  async fetchBounded(path, init, options, maxBytes) {
     options.signal?.throwIfAborted();
     const timeoutMs = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
@@ -200,17 +251,17 @@ var MachineService = class {
     const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
-        method: body === void 0 ? "GET" : "POST",
-        headers: { ...body === void 0 ? {} : { "Content-Type": "application/json" }, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
-        ...body === void 0 ? {} : { body: JSON.stringify(body) },
+        method: init.method,
+        headers: { ...init.headers, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
+        ...init.body === void 0 ? {} : { body: init.body },
         signal: controller.signal,
         redirect: "error"
-        // Do not let a loopback service redirect to remote hosts.
+        // Do not let a service redirect to another host.
       });
       const reader = response.body?.getReader();
       const chunks = [];
       let size = 0;
-      const bound = response.ok ? this.maxResponseBytes : Math.min(4096, this.maxResponseBytes);
+      const bound = response.ok ? maxBytes : Math.min(4096, maxBytes);
       let truncated = false;
       if (reader) {
         try {
@@ -230,14 +281,10 @@ var MachineService = class {
           reader.releaseLock();
         }
       }
-      const text = Buffer.concat(chunks).toString("utf8");
+      const bytes = Buffer.concat(chunks), text = bytes.toString("utf8");
       if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text}${truncated ? " [truncated]" : ""}`, response.status, text);
       if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
-      try {
-        return JSON.parse(text);
-      } catch (cause) {
-        throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
-      }
+      return { path, bytes, text, contentType: response.headers.get("content-type") ?? void 0, sha256: response.headers.get("x-content-sha256") ?? void 0 };
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;
@@ -261,7 +308,7 @@ import { isAbsolute as isAbsolute2, join as join2, normalize } from "node:path";
 
 // src/environment.ts
 import { accessSync, constants, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { isIP as isIP2 } from "node:net";
@@ -354,7 +401,7 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
     for (const other of mutable) if (key !== other && overlaps(value, profile[other])) throw new Error("Environment mutable roots must be disjoint");
   }
   const ordered = Object.fromEntries(Object.keys(profile).sort().map((k) => [k, profile[k]]));
-  const fingerprint = createHash2("sha256").update(JSON.stringify(ordered), "utf8").digest("hex");
+  const fingerprint = createHash3("sha256").update(JSON.stringify(ordered), "utf8").digest("hex");
   const identity = Object.freeze({
     id: profile.id,
     fingerprint,

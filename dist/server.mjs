@@ -4633,7 +4633,7 @@ var require_core = __commonJS({
       errorsText(errors = this.errors, { separator = ", ", dataVar = "data" } = {}) {
         if (!errors || errors.length === 0)
           return "No errors";
-        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text4, msg) => text4 + separator + msg);
+        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text5, msg) => text5 + separator + msg);
       }
       $dataMetaSchema(metaSchema, keywordsJsonPointers) {
         const rules = this.RULES.all;
@@ -7600,9 +7600,9 @@ function floatSafeRemainder(val, step2) {
   return ratio - roundedRatio;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy(object5, key, getter) {
+function defineLazy(object6, key, getter) {
   let value = void 0;
-  Object.defineProperty(object5, key, {
+  Object.defineProperty(object6, key, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -7614,7 +7614,7 @@ function defineLazy(object5, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object5, key, {
+      Object.defineProperty(object6, key, {
         value: v
         // configurable: true,
       });
@@ -11968,8 +11968,8 @@ function foldObjects(members2) {
   }
   const properties = {};
   const required2 = /* @__PURE__ */ new Set();
-  for (const object5 of objects) {
-    for (const key in object5.properties) {
+  for (const object6 of objects) {
+    for (const key in object6.properties) {
       if (Object.prototype.hasOwnProperty.call(properties, key))
         continue;
       const parts = [];
@@ -11983,18 +11983,18 @@ function foldObjects(members2) {
       const merged = parts.length === 1 ? parts[0] : foldObjects(parts) ?? { allOf: parts };
       assignProp(properties, key, merged);
     }
-    for (const key of object5.required ?? [])
+    for (const key of object6.required ?? [])
       required2.add(key);
   }
   const folded = { type: "object", properties };
   if (required2.size)
     folded.required = [...required2];
-  if (objects.every((object5) => object5.additionalProperties === false)) {
+  if (objects.every((object6) => object6.additionalProperties === false)) {
     folded.additionalProperties = false;
   } else {
     const constraints = [];
-    for (const object5 of objects) {
-      const constraint = undeclaredConstraint(object5);
+    for (const object6 of objects) {
+      const constraint = undeclaredConstraint(object6);
       if (constraint && !constraints.some((seen) => JSON.stringify(seen) === JSON.stringify(constraint)))
         constraints.push(constraint);
     }
@@ -17184,7 +17184,7 @@ var StdioServerTransport = class {
 
 // src/manager.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
-import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm4, cp, access, statfs } from "node:fs/promises";
+import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm4, cp, access, statfs, writeFile as writeFile4 } from "node:fs/promises";
 import { join as join13, resolve as resolve9 } from "node:path";
 
 // src/config.ts
@@ -17242,23 +17242,23 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
   if (!info.isFile() || info.size > 65536) throw new Error("Environment profile must be a regular JSON file under 64 KiB");
   const bytes = readFileSync(canonical2);
   if (bytes.length > 65536) throw new Error("Environment profile exceeds 64 KiB");
-  const text4 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  const raw = JSON.parse(text4);
+  const text5 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  const raw = JSON.parse(text5);
   let depth = 0;
   const seen = /* @__PURE__ */ new Set();
-  for (let i = 0; i < text4.length; i++) {
-    if (text4[i] === '"') {
+  for (let i = 0; i < text5.length; i++) {
+    if (text5[i] === '"') {
       const start = i++;
-      for (; i < text4.length && text4[i] !== '"'; i++) if (text4[i] === "\\") i++;
+      for (; i < text5.length && text5[i] !== '"'; i++) if (text5[i] === "\\") i++;
       let next = i + 1;
-      while (/\s/.test(text4[next] ?? "") && next < text4.length) next++;
-      if (depth === 1 && text4[next] === ":") {
-        const key = JSON.parse(text4.slice(start, i + 1));
+      while (/\s/.test(text5[next] ?? "") && next < text5.length) next++;
+      if (depth === 1 && text5[next] === ":") {
+        const key = JSON.parse(text5.slice(start, i + 1));
         if (seen.has(key)) throw new Error(`Duplicate environment profile key: ${key}`);
         seen.add(key);
       }
-    } else if (text4[i] === "{" || text4[i] === "[") depth++;
-    else if (text4[i] === "}" || text4[i] === "]") depth--;
+    } else if (text5[i] === "{" || text5[i] === "[") depth++;
+    else if (text5[i] === "}" || text5[i] === "]") depth--;
   }
   if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.schemaVersion === 1 || Object.hasOwn(raw, "vmctlPath"))) throw new Error(LEGACY_PROFILE);
   const fields = ["schemaVersion", "id", "vmServiceUrl", ...paths].sort();
@@ -17608,10 +17608,10 @@ var Session = class {
    * transmission; the same outcome states as exec() apply (D14/D17).
    */
   async runScript(localPath, remotePath, language2, options = {}) {
-    const { createHash: createHash7 } = await import("node:crypto");
+    const { createHash: createHash8 } = await import("node:crypto");
     const { readFile: readFile10 } = await import("node:fs/promises");
     const bytes = await readFile10(localPath);
-    const scriptSha256 = createHash7("sha256").update(bytes).digest("hex");
+    const scriptSha256 = createHash8("sha256").update(bytes).digest("hex");
     const upload = await this.transport.upload(localPath, { remotePath });
     const executionId = formatId(allocateId("execution"));
     const interpreter = language2 === "python" ? "python3" : language2 === "typescript" ? "tsx" : "node";
@@ -17659,8 +17659,8 @@ var Session = class {
    * remote after receipt. Same outcome states as exec() (D14/D17).
    */
   async runCode(code, language2, options = {}) {
-    const { createHash: createHash7 } = await import("node:crypto");
-    const codeSha256 = createHash7("sha256").update(code, "utf8").digest("hex");
+    const { createHash: createHash8 } = await import("node:crypto");
+    const codeSha256 = createHash8("sha256").update(code, "utf8").digest("hex");
     const executionId = formatId(allocateId("execution"));
     const interpreter = language2 === "python" ? "python3" : language2 === "typescript" ? "tsx" : "node";
     const submission = {
@@ -17748,6 +17748,7 @@ init_evidence_package();
 
 // src/machine-service.ts
 import { isIP as isIP2 } from "node:net";
+import { createHash as createHash3 } from "node:crypto";
 var MachineServiceError = class extends Error {
   constructor(message3, status, responseBody, options) {
     super(message3, options);
@@ -17770,7 +17771,7 @@ function capacityRefusal(error2) {
   }
   if (!body || typeof body !== "object") return false;
   const { error: reason2, outcome } = body;
-  return typeof reason2 === "string" && reason2.startsWith("macOS VM limit reached") && outcome !== "uncertain";
+  return typeof reason2 === "string" && /^(macOS VM limit reached|durable machine leased|durable machine unavailable)/.test(reason2) && outcome !== "uncertain";
 }
 var SERVICE_NAME = "machine-service";
 function expectMachineService(health, origin) {
@@ -17792,8 +17793,16 @@ function positive(value, label) {
 function record2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function named(value) {
+  const fields = value;
+  if (record2(value) && fields.kind === "durable" && typeof fields.vm !== "string" && typeof fields.name === "string") fields.vm = fields.name;
+  return value;
+}
 function isLease(value) {
   if (!record2(value)) return false;
+  if (named(value).kind === "durable") {
+    return ["vm", "purpose", "lease_id", "workspace"].every((k) => typeof value[k] === "string" && value[k] !== "") && value.image === null && value.image_kind === null && value.state === "leased" && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k]));
+  }
   return ["vm", "purpose", "image"].every((k) => typeof value[k] === "string" && value[k] !== "") && ["macos", "linux"].includes(String(value.image_kind)) && ["pending", "provisioning", "running", "releasing"].includes(String(value.state)) && ["created_at", "ttl_expires_at"].every((k) => typeof value[k] === "number" && Number.isFinite(value[k])) && ["cpu", "memory_mb", "disk_gb", "grace_until"].every((k) => value[k] === null || typeof value[k] === "number") && ["env", "ip"].every((k) => value[k] === null || typeof value[k] === "string") && typeof value.warned === "boolean";
 }
 var MachineService = class {
@@ -17809,8 +17818,8 @@ var MachineService = class {
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
-    if (!loopback || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin without credentials, path, query or fragment");
+    if (!loopback && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");
@@ -17820,8 +17829,10 @@ var MachineService = class {
   health(options = {}) {
     return this.request("/health", void 0, options);
   }
-  list(options = {}) {
-    return this.request("/machines", void 0, options);
+  async list(options = {}) {
+    const list = await this.request("/machines", void 0, options);
+    if (record2(list.machines)) Object.values(list.machines).forEach(named);
+    return list;
   }
   images(options = {}) {
     return this.request("/images", void 0, options);
@@ -17848,8 +17859,8 @@ var MachineService = class {
       throw new MachineServiceError(`Console API unavailable or request outcome unknown${error2 instanceof MachineServiceError && error2.status ? ` (HTTP ${error2.status})` : ""}; resolve before another open`, error2 instanceof MachineServiceError ? error2.status : void 0);
     }
   }
-  get(vm, options = {}) {
-    return this.request(this.path(vm), void 0, options);
+  async get(vm, options = {}) {
+    return named(await this.request(this.path(vm), void 0, options));
   }
   /**
    * Cancellation before dispatch prevents allocation. Once dispatched we deliberately
@@ -17882,17 +17893,57 @@ var MachineService = class {
   pull(vm, body, options = {}) {
     return this.request(this.path(vm, "pull"), body, options);
   }
-  heartbeat(vm, body = {}, options = {}) {
-    return this.request(this.path(vm, "heartbeat"), body, options);
+  async heartbeat(vm, body = {}, options = {}) {
+    return named(await this.request(this.path(vm, "heartbeat"), body, options));
   }
   release(vm, body = {}, options = {}) {
     return this.request(this.path(vm, "release"), body, options);
+  }
+  /**
+   * Push one file as bytes, `PUT /machines/<name>/files` (FD-4): the instance
+   * checks the digest before it writes, so a client on another Mac needs no
+   * host path the instance could read (DC-31).
+   */
+  async pushBytes(vm, body, options = {}) {
+    const sha256 = createHash3("sha256").update(body.bytes).digest("hex");
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const answer = this.json(response.path, response.text);
+    if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
+    return answer;
+  }
+  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
+  async pullBytes(vm, body, options = {}) {
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
+    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+    const digest = createHash3("sha256").update(response.bytes).digest("hex");
+    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+    return response.bytes;
+  }
+  filesPath(vm, remote, lease_id) {
+    const query = new URLSearchParams({ ...lease_id ? { lease_id } : {}, path: remote });
+    return `${this.path(vm, "files")}?${query}`;
   }
   path(vm, action) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(vm)) throw new TypeError("Invalid VM name");
     return `/machines/${encodeURIComponent(vm)}${action ? `/${action}` : ""}`;
   }
   async request(path, body, options) {
+    const response = await this.fetchBounded(path, {
+      method: body === void 0 ? "GET" : "POST",
+      headers: body === void 0 ? {} : { "Content-Type": "application/json" },
+      ...body === void 0 ? {} : { body: JSON.stringify(body) }
+    }, options, this.maxResponseBytes);
+    return this.json(path, response.text);
+  }
+  json(path, text5) {
+    try {
+      return JSON.parse(text5);
+    } catch (cause) {
+      throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
+    }
+  }
+  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
+  async fetchBounded(path, init, options, maxBytes) {
     options.signal?.throwIfAborted();
     const timeoutMs2 = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
@@ -17901,17 +17952,17 @@ var MachineService = class {
     const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms`)), timeoutMs2);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
-        method: body === void 0 ? "GET" : "POST",
-        headers: { ...body === void 0 ? {} : { "Content-Type": "application/json" }, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
-        ...body === void 0 ? {} : { body: JSON.stringify(body) },
+        method: init.method,
+        headers: { ...init.headers, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
+        ...init.body === void 0 ? {} : { body: init.body },
         signal: controller.signal,
         redirect: "error"
-        // Do not let a loopback service redirect to remote hosts.
+        // Do not let a service redirect to another host.
       });
       const reader = response.body?.getReader();
       const chunks = [];
       let size = 0;
-      const bound = response.ok ? this.maxResponseBytes : Math.min(4096, this.maxResponseBytes);
+      const bound = response.ok ? maxBytes : Math.min(4096, maxBytes);
       let truncated = false;
       if (reader) {
         try {
@@ -17931,14 +17982,10 @@ var MachineService = class {
           reader.releaseLock();
         }
       }
-      const text4 = Buffer.concat(chunks).toString("utf8");
-      if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text4}${truncated ? " [truncated]" : ""}`, response.status, text4);
+      const bytes = Buffer.concat(chunks), text5 = bytes.toString("utf8");
+      if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text5}${truncated ? " [truncated]" : ""}`, response.status, text5);
       if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
-      try {
-        return JSON.parse(text4);
-      } catch (cause) {
-        throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
-      }
+      return { path, bytes, text: text5, contentType: response.headers.get("content-type") ?? void 0, sha256: response.headers.get("x-content-sha256") ?? void 0 };
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;
@@ -17977,21 +18024,21 @@ function cells(row) {
   });
 }
 function parse3(line) {
-  const text4 = line.trim();
-  if (!text4.startsWith("|") || !text4.endsWith("|")) return void 0;
-  return text4.slice(1, -1).split("|").map((cell) => cell.trim());
+  const text5 = line.trim();
+  if (!text5.startsWith("|") || !text5.endsWith("|")) return void 0;
+  return text5.slice(1, -1).split("|").map((cell) => cell.trim());
 }
-function linesOf(text4) {
+function linesOf(text5) {
   const lines = [];
   const pattern = /[^\r\n]*(?:\r\n|\n|\r|$)/g;
-  for (const match of text4.matchAll(pattern)) {
+  for (const match of text5.matchAll(pattern)) {
     if (!match[0]) continue;
     lines.push({ text: match[0].replace(/[\r\n]+$/, ""), start: match.index, end: match.index + match[0].length });
   }
   return lines;
 }
-function table(text4) {
-  const lines = linesOf(text4);
+function table(text5) {
+  const lines = linesOf(text5);
   const sections = lines.map((line, index) => /^## Using VMs\s*$/.test(line.text) ? index : -1).filter((index) => index >= 0);
   if (sections.length !== 1) throw new RegistryError("Expected exactly one '## Using VMs' section");
   const begin = sections[0];
@@ -18012,7 +18059,7 @@ function table(text4) {
     rows.push(line);
   }
   const last = rows.at(-1) ?? separator;
-  return { rows, insertion: last.end, newline: text4.includes("\r\n") ? "\r\n" : "\n" };
+  return { rows, insertion: last.end, newline: text5.includes("\r\n") ? "\r\n" : "\n" };
 }
 function resolveRegistry(options = {}) {
   const env = options.env ?? process.env;
@@ -18090,30 +18137,30 @@ var Registry = class {
   /** Returns false when this exact row is already registered (idempotent). */
   async add(row, options = {}) {
     const desired = cells(row);
-    return this.update((text4) => {
-      const registry2 = table(text4);
+    return this.update((text5) => {
+      const registry2 = table(text5);
       const matching = registry2.rows.filter((line) => parse3(line.text)[2] === row.taskName);
       if (matching.length > 0) {
-        if (matching.length === 1 && JSON.stringify(parse3(matching[0].text)) === JSON.stringify(desired)) return text4;
+        if (matching.length === 1 && JSON.stringify(parse3(matching[0].text)) === JSON.stringify(desired)) return text5;
         throw new RegistryError(`Task '${row.taskName}' is already registered by a different owner or duplicated`);
       }
-      const prefix = registry2.insertion > 0 && !/[\r\n]/.test(text4[registry2.insertion - 1]) ? registry2.newline : "";
+      const prefix = registry2.insertion > 0 && !/[\r\n]/.test(text5[registry2.insertion - 1]) ? registry2.newline : "";
       const added = `${prefix}| ${desired.join(" | ")} |${registry2.newline}`;
-      return text4.slice(0, registry2.insertion) + added + text4.slice(registry2.insertion);
+      return text5.slice(0, registry2.insertion) + added + text5.slice(registry2.insertion);
     }, options.signal);
   }
   /** Returns false when absent. Never removes a row whose ownership differs. */
   async remove(row, options = {}) {
     const desired = cells(row);
-    return this.update((text4) => {
-      const registry2 = table(text4);
+    return this.update((text5) => {
+      const registry2 = table(text5);
       const matching = registry2.rows.filter((line2) => parse3(line2.text)[2] === row.taskName);
-      if (matching.length === 0) return text4;
+      if (matching.length === 0) return text5;
       if (matching.length !== 1 || JSON.stringify(parse3(matching[0].text)) !== JSON.stringify(desired)) {
         throw new RegistryError(`Refusing to remove task '${row.taskName}': ownership does not match`);
       }
       const line = matching[0];
-      return text4.slice(0, line.start) + text4.slice(line.end);
+      return text5.slice(0, line.start) + text5.slice(line.end);
     }, options.signal);
   }
   async update(transform2, signal) {
@@ -18278,14 +18325,14 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/util.ts
 import { spawn as spawn3 } from "node:child_process";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 import { mkdir as mkdir3, rename as rename3, lstat as lstat2, readdir as readdir2, open as open3 } from "node:fs/promises";
 import { dirname as dirname4, join as join6, resolve as resolve4, relative as relative3, isAbsolute as isAbsolute3 } from "node:path";
-var hash = (bytes) => createHash3("sha256").update(bytes).digest("hex");
+var hash = (bytes) => createHash4("sha256").update(bytes).digest("hex");
 async function hashFile(path) {
   const file = await open3(path, "r");
   try {
-    const digest = createHash3("sha256"), chunk = Buffer.alloc(8 * 1024 * 1024);
+    const digest = createHash4("sha256"), chunk = Buffer.alloc(8 * 1024 * 1024);
     let bytes = 0;
     for (; ; ) {
       const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
@@ -18375,7 +18422,7 @@ async function command(argv, options = {}) {
 // src/archive.ts
 import { open as open4, mkdir as mkdir4 } from "node:fs/promises";
 import { constants as constants2 } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { dirname as dirname5 } from "node:path";
 var MAX_LINE_BYTES = 64 * 1024;
 var header = (path, bytes) => `${JSON.stringify({ path, bytes })}
@@ -18425,9 +18472,9 @@ async function unpackArchive(archive, directory2, requested, options = {}) {
       for (; ; ) {
         const at = buffer.indexOf(10, start);
         if (at >= 0 && at < end) {
-          const text4 = buffer.toString("utf8", start, at);
+          const text5 = buffer.toString("utf8", start, at);
           start = at + 1;
-          const value = JSON.parse(text4);
+          const value = JSON.parse(text5);
           if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid archive line");
           return value;
         }
@@ -18449,7 +18496,7 @@ async function unpackArchive(archive, directory2, requested, options = {}) {
       const target = within(directory2, fact.path);
       await mkdir4(dirname5(target), { recursive: true, mode: 448 });
       const output = await open4(target, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
-      const digest = createHash4("sha256");
+      const digest = createHash5("sha256");
       try {
         for (let left = bytes; left > 0; ) {
           if (start === end) {
@@ -18788,10 +18835,10 @@ var Transfer = class {
           if (!imageFormat(result2)) throw new ImageTransferError("unsafe-path", "Unsupported image format");
         } else {
           try {
-            const text4 = new TextDecoder("utf-8", { fatal: true }).decode(result2);
+            const text5 = new TextDecoder("utf-8", { fatal: true }).decode(result2);
             if (options.metadataFormat === "jsonl") {
-              for (const line of text4.split("\n")) if (line.trim()) JSON.parse(line);
-            } else JSON.parse(text4);
+              for (const line of text5.split("\n")) if (line.trim()) JSON.parse(line);
+            } else JSON.parse(text5);
           } catch (cause) {
             throw new ImageTransferError("integrity-failed", "Invalid image metadata JSON", { cause });
           }
@@ -19181,11 +19228,11 @@ var VmTransport = class {
 };
 
 // src/package.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { lstat as lstat4, readFile as readFile6, readdir as readdir3, mkdir as mkdir6, writeFile as writeFile3, rm as rm2 } from "node:fs/promises";
 import { dirname as dirname7, join as join9, resolve as resolve6, parse as parse4 } from "node:path";
 var generated = ["OPENING.txt", "manifest.json"];
-var hash2 = (bytes) => createHash5("sha256").update(bytes).digest("hex");
+var hash2 = (bytes) => createHash6("sha256").update(bytes).digest("hex");
 var json = (value) => JSON.stringify(value, null, 2) + "\n";
 function object3(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`invalid ${label}`);
@@ -19628,16 +19675,16 @@ async function probeLocal(run = command, platform = process.platform) {
   }
   const permissions = await observe(["cua-driver", "permissions", "status", "--json"], JSON.parse);
   const recorder = await observe(["cua-driver", "call", "get_recording_state", "--json", "{}"], JSON.parse);
-  const foreground = await observe(["cua-driver", "call", "list_apps", "--json", "{}"], (text4) => {
-    const data = JSON.parse(text4);
+  const foreground = await observe(["cua-driver", "call", "list_apps", "--json", "{}"], (text5) => {
+    const data = JSON.parse(text5);
     return data.apps?.filter((app) => app.active).map((app) => ({ name: app.name, bundleId: app.bundle_id, pid: app.pid })) ?? null;
   });
-  const session = platform === "darwin" ? await observe(["/usr/bin/stat", "-f", "%Su", "/dev/console"], (text4) => !["root", "loginwindow", ""].includes(text4.trim())) : await observe(["loginctl", "show-session", "self", "-p", "Active", "--value"], (text4) => text4.trim() === "yes");
-  const idle = platform === "darwin" ? await observe(["/usr/sbin/ioreg", "-r", "-c", "IOHIDSystem"], (text4) => {
-    const m = text4.match(/"HIDIdleTime"\s*=\s*(\d+)/);
+  const session = platform === "darwin" ? await observe(["/usr/bin/stat", "-f", "%Su", "/dev/console"], (text5) => !["root", "loginwindow", ""].includes(text5.trim())) : await observe(["loginctl", "show-session", "self", "-p", "Active", "--value"], (text5) => text5.trim() === "yes");
+  const idle = platform === "darwin" ? await observe(["/usr/sbin/ioreg", "-r", "-c", "IOHIDSystem"], (text5) => {
+    const m = text5.match(/"HIDIdleTime"\s*=\s*(\d+)/);
     return m ? Number(m[1]) / 1e9 : null;
-  }) : await observe(["xprintidle"], (text4) => {
-    const n = Number(text4.trim());
+  }) : await observe(["xprintidle"], (text5) => {
+    const n = Number(text5.trim());
     return Number.isFinite(n) ? n / 1e3 : null;
   });
   return {
@@ -23341,8 +23388,8 @@ function FromObject4(properties) {
 
 // node_modules/typebox/build/type/engine/object/from_tuple.mjs
 function FromTuple(types) {
-  const object5 = TupleToObject(Tuple(types));
-  const result2 = FromType8(object5);
+  const object6 = TupleToObject(Tuple(types));
+  const result2 = FromType8(object6);
   return result2;
 }
 
@@ -27367,8 +27414,8 @@ var normalizeSearchName = (name) => name.trim().toLowerCase();
 var serializeSearchResult = (result2) => JSON.stringify(result2, null, 2);
 function validateCatalog(value) {
   if (!Check2(catalogSchema, value)) throw new Error("Invalid application catalog schema");
-  const bounded3 = (text4, limit) => {
-    if (Array.from(text4).length > limit) throw new Error("Application catalog exceeds text limit");
+  const bounded3 = (text5, limit) => {
+    if (Array.from(text5).length > limit) throw new Error("Application catalog exceeds text limit");
   };
   for (const image of value.images) for (const app of image.applications) {
     bounded3(app.id, 128);
@@ -27587,7 +27634,7 @@ import { join as join11, dirname as dirname8, extname } from "node:path";
 import { randomUUID as randomUUID5 } from "node:crypto";
 
 // src/image-presentation.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { deflateSync, inflateSync } from "node:zlib";
 var IMAGE_PRESENTATION_POLICY = Object.freeze({
   version: 1,
@@ -27993,7 +28040,7 @@ async function prepareImage(bytes, mimeType) {
         width: size.width,
         height: size.height,
         mimeType: presentedType,
-        sha256: createHash6("sha256").update(presented).digest("hex"),
+        sha256: createHash7("sha256").update(presented).digest("hex"),
         bytes: presented.length,
         transformed: presentedType !== mimeType || !original.equals(presented),
         policy
@@ -28743,12 +28790,85 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
   if (archived) await copy(archived, retained);
 }
 
+// src/discovery.ts
+var TIMEOUT_MS = 5e3;
+function consulAddress(value = process.env.CONSUL_HTTP_ADDR) {
+  const address = value?.trim() || "http://127.0.0.1:8500";
+  return new URL(/^[a-z]+:\/\//i.test(address) ? address : `http://${address}`).origin;
+}
+async function fetchJson(url) {
+  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+var text3 = (value) => typeof value === "string" ? value : "";
+function parseRegistrations(answer) {
+  if (!Array.isArray(answer)) throw new Error("Consul answered with no list of registrations");
+  return answer.flatMap((entry) => {
+    const node2 = entry?.Node, service = entry?.Service, port = service?.Port;
+    const host = text3(service?.Address) || text3(node2?.Address);
+    if (!host || !Number.isSafeInteger(port)) return [];
+    const meta2 = service?.Meta ?? {};
+    return [{ node: text3(node2?.Node), origin: new URL(`http://${host.includes(":") ? `[${host}]` : host}:${port}`).origin, ...text3(meta2.instance) ? { instance: text3(meta2.instance) } : {}, loopbackOnly: meta2.loopback_only === "true" }];
+  });
+}
+async function findDurableOwner(machine, options) {
+  const consul = options.consul ?? consulAddress();
+  const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
+  const candidates = [{ origin: new URL(options.local.baseUrl).origin, backend: options.local }];
+  let consulError;
+  try {
+    for (const registration of parseRegistrations(await (options.fetchJson ?? fetchJson)(`${consul}/v1/health/service/machine-service`))) {
+      if (registration.loopbackOnly || candidates.some((candidate) => candidate.origin === registration.origin)) continue;
+      candidates.push({ origin: registration.origin, backend: make(registration.origin) });
+    }
+  } catch (error2) {
+    consulError = `the Consul agent at ${consul} did not answer (${error2 instanceof Error ? error2.message : String(error2)})`;
+  }
+  const owners = [];
+  await Promise.all(candidates.map(async ({ origin, backend }) => {
+    try {
+      const list = await backend.list({ timeoutMs: TIMEOUT_MS });
+      const record3 = list.machines[machine];
+      if (record3?.kind === "durable") owners.push({ backend, origin, instance: record3.instance ?? machine });
+    } catch {
+    }
+  }));
+  if (owners.length === 1) return owners[0];
+  if (owners.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${owners.map((owner) => owner.origin).join(", ")}); nothing was acquired`);
+  throw new Error(`No machine-service instance lists a durable machine named ${machine}${consulError ? `, and ${consulError}` : ""}; nothing was acquired. Check the name with \`machctl list\`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.`);
+}
+
+// src/capture-gate.ts
+var object5 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+function durableCapture(machine, software, answer) {
+  const version2 = object5(software)?.cua_driver;
+  if (typeof version2 !== "string" || !version2) return { capture: false, state: "absent", reason: `${machine} lists no cua-driver in its capabilities, so runs take no snapshots.` };
+  if (!answer) return { capture: false, state: "unknown", reason: `cua-driver's permission status on ${machine} was not read, so runs take no snapshots.` };
+  if ("error" in answer || answer.code !== 0) {
+    const why = "error" in answer ? answer.error : `exit ${answer.code}: ${(answer.stderr || answer.stdout).trim().slice(0, 300)}`;
+    return { capture: false, state: "unknown", reason: `\`cua-driver permissions status --json\` failed on ${machine} (${why}), so whether its daemon may record the screen is unknown and runs take no snapshots.` };
+  }
+  let status;
+  try {
+    status = object5(JSON.parse(answer.stdout));
+  } catch {
+  }
+  if (!status || typeof status.screen_recording !== "boolean") return { capture: false, state: "unknown", reason: `cua-driver's permission status on ${machine} is not the expected JSON, so whether its daemon may record the screen is unknown and runs take no snapshots.` };
+  const attribution = object5(status.source)?.attribution;
+  if (attribution !== "driver-daemon") return { capture: false, state: "daemon-not-running", reason: `cua-driver on ${machine} answered for ${typeof attribution === "string" ? `"${attribution}"` : "no source"}, not for its daemon, so the \`cua-driver serve\` daemon is not running and runs take no snapshots. Start CuaDriver on the Mac, then call relay_stage again.` };
+  if (status.screen_recording !== true) return { capture: false, state: "denied", reason: `The cua-driver daemon on ${machine} lacks Screen Recording, so runs take no snapshots. Grant it to CuaDriver in System Settings on the Mac, then call relay_stage again.` };
+  return { capture: true, state: "granted", reason: `The cua-driver daemon on ${machine} holds Screen Recording, so each run takes before and after snapshots.` };
+}
+
 // src/manager.ts
 var SCRIPT_EXTENSIONS = { shell: "sh", javascript: "js", typescript: "ts", python: "py" };
 var RENEWAL_WINDOW_MS = 15 * 6e4;
 var MIN_RENEWAL_MS = 0.1 * 36e5;
 var DEFAULT_AFTER_INTERVAL_MS = 500;
 var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
+var durableRoot = (workspace, purpose) => join13(workspace, "work", `mcp-relay-${purpose}`);
+var PULL_MAX_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
 var CAPACITY_RETRY_MS = 15e3;
@@ -28763,7 +28883,7 @@ async function settleEach(work) {
   const failed = (await Promise.allSettled(work)).find((result2) => result2.status === "rejected");
   if (failed) throw failed.reason;
 }
-var instructions = "This server offers fourteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
+var instructions = "This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job may share its desktop, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host's display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
   constructor(options) {
@@ -28780,14 +28900,6 @@ var RelayManager = class {
     this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join13(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
-    this.channel = {
-      exec: async (name, argv, timeoutMs2 = 18e4, options2) => {
-        const result2 = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3) }, { timeoutMs: options2?.timeoutMs ?? timeoutMs2 + 3e4, signal: options2?.signal });
-        return { stdout: result2.output, stderr: result2.output, code: result2.rc };
-      },
-      push: (name, local_path, remote_path) => this.vm.push(name, { local_path, remote_path }),
-      pull: (name, remote_path, local_path, options2) => this.vm.pull(name, { remote_path, local_path }, options2)
-    };
   }
   options;
   vm;
@@ -28796,7 +28908,6 @@ var RelayManager = class {
   tartPath;
   registry;
   root;
-  channel;
   /** The most guests this session holds at once (DC-20). */
   maxGuests;
   /** How long an acquisition waits for a host at capacity, and how often it is asked again (DC-22). */
@@ -28812,6 +28923,10 @@ var RelayManager = class {
   ownerLock;
   /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
   shuttingDown = false;
+  /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
+  durableOwner(machine) {
+    return findDurableOwner(machine, { local: this.vm, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
+  }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
     this.queue = next.catch(() => {
@@ -28937,6 +29052,7 @@ var RelayManager = class {
     return { endpoint: this.vm.baseUrl, tartHome: this.tartHome, ...this.environment ? { environmentFingerprint: this.environment.identity.fingerprint } : {} };
   }
   bindingMatches(e) {
+    if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
     if (e.backend) {
       const expected = this.binding();
       return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => e.backend[key] === value);
@@ -29058,6 +29174,9 @@ var RelayManager = class {
       const network2 = this.options.guestNetwork ?? guestNetwork();
       if (!GUEST_NETWORKS.includes(network2)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network2)}`);
       if (typeof input.task !== "string" || !TASK.test(input.task)) throw new Error("task must be a lowercase slug (1\u201336 chars)");
+      if (input.image === void 0 === (input.machine === void 0)) throw new Error("relay_acquire takes exactly one of image, a VM image, and machine, a durable machine's name");
+      if (input.machine !== void 0 && (typeof input.machine !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.machine))) throw new Error("machine must be a durable machine's name, as machctl list shows it");
+      if (input.machine !== void 0 && input.vnc) throw new Error("A durable machine has no console: view it with Screen Sharing, outside the relay; nothing was acquired");
       if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error("Declare up to 100 extractions before work");
       const names = /* @__PURE__ */ new Set();
       for (const extraction of input.extractions) {
@@ -29252,6 +29371,53 @@ var Guest = class {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   downloads;
+  /** A durable machine's owner, once found (DC-29). */
+  owner;
+  /** The backend this guest's lease lives on: the loopback instance, or a durable machine's owner. */
+  get vm() {
+    const e = this.enclosure;
+    if (!e?.machine) return this.m.vm;
+    if (this.owner) return this.owner;
+    if (!e.backend?.endpoint || e.backend.endpoint === this.m.vm.baseUrl) return this.owner = this.m.vm;
+    throw new Error(`The owner of durable machine ${e.machine} has not been found again in this process; nothing was sent`);
+  }
+  /**
+   * machine-service as the guest's only channel. Every call names the lease's
+   * `lease_id` (DC-30); on a durable machine every file goes as bytes (DC-31).
+   */
+  get channel() {
+    const identity = () => {
+      const id2 = this.enclosure?.lease?.lease_id;
+      return id2 ? { lease_id: id2 } : {};
+    };
+    const durable = !!this.enclosure?.machine;
+    return {
+      exec: async (name, argv, timeoutMs2 = 18e4, options) => {
+        const result2 = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs2 + 3e4, signal: options?.signal });
+        return { stdout: result2.output, stderr: result2.output, code: result2.rc };
+      },
+      push: async (name, local_path, remote_path) => {
+        if (!durable) return this.vm.push(name, { local_path, remote_path, ...identity() });
+        if (!this.vm.pushBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
+        return this.vm.pushBytes(name, { remote_path, bytes: await readFile9(local_path), ...identity() });
+      },
+      pull: async (name, remote_path, local_path, options) => {
+        if (!durable) return this.vm.pull(name, { remote_path, local_path, ...identity() }, options);
+        if (!this.vm.pullBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
+        const bytes = await this.vm.pullBytes(name, { remote_path, maxBytes: PULL_MAX_BYTES, ...identity() }, options);
+        await rm4(local_path, { force: true });
+        await writeFile4(local_path, bytes, { flag: "wx", mode: 384 });
+        return { vm: name, pulled: remote_path, to: local_path };
+      }
+    };
+  }
+  /** Find a durable machine's owner again, and refuse when its origin or instance changed (DC-29). */
+  async findOwner(e) {
+    if (!e.machine || this.owner) return;
+    const owner = await this.m.durableOwner(e.machine);
+    if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
+    this.owner = owner.backend;
+  }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
     this.queue = next.catch(() => {
@@ -29304,15 +29470,25 @@ var Guest = class {
     if (!e) return;
     this.assertBinding();
     await this.m.assertBackend();
+    await this.findOwner(e);
     e.backend ??= this.m.binding();
     if (!e.lease) {
-      const matches = Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).machines).filter((v) => v.purpose === e.purpose);
+      const matches = Object.values((await this.vm.list({ timeoutMs: 1e4 })).machines).filter((v) => v.purpose === e.purpose);
       if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
       e.lease = matches[0];
       e.acquisitionInFlight = false;
+      if (e.machine && e.lease.workspace) e.guestRoot = durableRoot(e.lease.workspace, e.purpose);
     }
     try {
-      const lease = await this.m.vm.get(e.lease.vm, { timeoutMs: 1e4 });
+      const lease = await this.vm.get(e.lease.vm, { timeoutMs: 1e4 });
+      if (e.machine && lease.lease_id !== e.lease.lease_id) {
+        await this.m.registry.remove(e.row);
+        await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, machine: e.machine, released: true, reason: "the durable machine no longer names this lease", finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
+        this.enclosure = void 0;
+        await this.save();
+        await this.m.forget(this);
+        return;
+      }
       if (lease.purpose !== e.purpose || e.lease.lease_id && lease.lease_id !== e.lease.lease_id) throw new Error("Lease ownership identity mismatch");
       if (e.lease.console?.console_id && lease.console?.console_id !== e.lease.console.console_id) throw new Error("Console instance identity mismatch during lease reconciliation");
       if (lease.console) {
@@ -29360,7 +29536,7 @@ var Guest = class {
     for (const [name, language2, argv] of [["node", "javascript", [e.node ?? "node", "--version"]], ["tsx", "typescript", ["tsx", "--version"]], ["python3", "python", ["python3", "--version"]], ["sh", "shell", ["/bin/sh", "-c", "exit 0"]]]) {
       const required2 = name === "node";
       try {
-        const r = await this.m.channel.exec(e.lease.vm, [...argv], 1e4);
+        const r = await this.channel.exec(e.lease.vm, [...argv], 1e4);
         checks.push({ name, language: language2, required: required2, ...r, ready: r.code === 0 });
       } catch (error2) {
         checks.push({ name, language: language2, required: required2, ready: false, diagnostic: String(error2) });
@@ -29369,15 +29545,16 @@ var Guest = class {
     const tsx = checks[1], nodeVersion = /^v(\d+)\.(\d+)/.exec(String(checks[0].stdout ?? ""));
     if (!tsx.ready && nodeVersion && (Number(nodeVersion[1]) > 22 || Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) >= 6)) Object.assign(tsx, { ready: true, runsWith: "Node.js type stripping" });
     let software;
-    try {
-      const catalog = await this.m.vm.applications({ timeoutMs: 1e4 });
+    if (e.machine) software = { machine: e.machine, software: (await this.vm.get(e.lease.vm, { timeoutMs: 1e4 })).capabilities?.software ?? null };
+    else try {
+      const catalog = await this.vm.applications({ timeoutMs: 1e4 });
       validateCatalog(catalog);
       const listed = catalog.images.find((image) => image.image === e.image);
       software = listed ? { image: e.image, applications: listed.applications } : { image: e.image, applications: [], diagnostic: `The catalog does not list ${e.image}.` };
     } catch (error2) {
       software = { image: e.image, diagnostic: `The image catalog could not be read: ${message(error2)}` };
     }
-    const snapshots2 = e.capture === void 0 && !e.staged ? { taken: null, reason: "Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver)." } : this.snapshotFacts(e);
+    const snapshots2 = e.capture === void 0 && !e.staged ? { taken: null, reason: e.machine ? "Decided at relay_stage: runs take snapshots only when the machine's cua-driver daemon holds Screen Recording." : "Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver)." } : this.snapshotFacts(e);
     const facts = { scope: "guest", guest: this.name, observedAt: (/* @__PURE__ */ new Date()).toISOString(), owned: this.status(), checks, software, snapshots: snapshots2, note: "A ready runtime means its --version, or for /bin/sh `exit 0`, exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.", captureVerified: false, browserVerified: false };
     await this.log("guest-readiness", void 0, facts);
     return facts;
@@ -29393,10 +29570,10 @@ var Guest = class {
   }
   async resolveConsole(signal) {
     const e = await this.consoleOwner(signal);
-    if (!this.m.vm.consoleResolve) throw new Error("Backend lacks console API; upgrade machine-service");
+    if (!this.vm.consoleResolve) throw new Error("Backend lacks console API; upgrade machine-service");
     let observation;
     try {
-      observation = consoleStatus(await this.m.vm.consoleResolve(e.lease.vm, { lease_id: e.lease.lease_id }, { signal, timeoutMs: 1e4 }));
+      observation = consoleStatus(await this.vm.consoleResolve(e.lease.vm, { lease_id: e.lease.lease_id }, { signal, timeoutMs: 1e4 }));
     } catch (error2) {
       if (e.consoleObservation && e.consoleObservation.status !== "revoked") e.consoleObservation = { ...e.consoleObservation, status: "unknown" };
       await this.save();
@@ -29419,7 +29596,7 @@ var Guest = class {
     const resolved = await this.resolveConsole(signal), e = this.current();
     if (!e.lease.console?.console_id) throw new Error("This lease has no acquired console; automatic VNC retrofit is forbidden");
     if (resolved.console_id !== input.console_id) throw new Error("Console instance identity mismatch");
-    const method = operation === "open" ? this.m.vm.consoleOpen : this.m.vm.consoleCancel;
+    const method = operation === "open" ? this.vm.consoleOpen : this.vm.consoleCancel;
     if (!method) throw new Error("Backend lacks console API; upgrade machine-service");
     if (operation === "open") {
       if (resolved.viewer_location !== "service-host") throw new Error("Only a viewer on the declared service host is supported; no remote-client viewer fallback");
@@ -29438,7 +29615,7 @@ var Guest = class {
     await this.save();
     await this.log(`console-${operation}-intent`, "reason" in input ? input.reason : void 0, { ...body, ..."expected" in input ? { expected: input.expected } : {}, screenshotEvidence: false });
     try {
-      const observation = consoleStatus(await method.call(this.m.vm, e.lease.vm, body, { signal, timeoutMs: 3e4 }));
+      const observation = consoleStatus(await method.call(this.vm, e.lease.vm, body, { signal, timeoutMs: 3e4 }));
       this.assertConsoleIdentity(observation, e);
       if (observation.console_id !== body.console_id || observation.attempt?.attempt_id !== body.attempt_id) throw new Error("Console response identity mismatch");
       e.consoleObservation = observation;
@@ -29459,7 +29636,7 @@ var Guest = class {
   transfer() {
     const e = this.current();
     if (!e.node) throw new Error("Stage runtime first");
-    return new Transfer(this.m.channel, e.lease.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join13(this.m.root, "transfer-tmp"), onRetry: (event) => this.log("transfer-retry", void 0, event), onArchiveFallback: (event) => this.log("archive-fallback", void 0, event) });
+    return new Transfer(this.channel, e.lease.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join13(this.m.root, "transfer-tmp"), onRetry: (event) => this.log("transfer-retry", void 0, event), onArchiveFallback: (event) => this.log("archive-fallback", void 0, event) });
   }
   async log(kind, because, details = {}) {
     if (because !== void 0) this.m.reason(because);
@@ -29474,13 +29651,17 @@ var Guest = class {
    */
   async acquire(input, network, signal) {
     const ttlHours = input.ttlHours ?? 4;
+    let owner;
     try {
       if (this.m.shuttingDown || this.closed) throw new Error("Relay manager is shutting down");
-      const images = await this.m.vm.images({ timeoutMs: 5e3, signal });
-      if (!images.images[input.image]?.base_available) throw new Error(`Image unavailable: ${input.image}`);
-      if (input.vnc) {
-        const capabilities = await this.m.readAcquisitionCapabilities(signal);
-        if (!capabilities.options.vnc.backends[images.images[input.image].kind].available) throw new Error("VNC backend unavailable for this image OS; ordinary acquisition was not attempted");
+      if (input.machine) owner = await this.m.durableOwner(input.machine);
+      else {
+        const image = input.image, images = await this.vm.images({ timeoutMs: 5e3, signal });
+        if (!images.images[image]?.base_available) throw new Error(`Image unavailable: ${image}`);
+        if (input.vnc) {
+          const capabilities = await this.m.readAcquisitionCapabilities(signal);
+          if (!capabilities.options.vnc.backends[images.images[image].kind].available) throw new Error("VNC backend unavailable for this image OS; ordinary acquisition was not attempted");
+        }
       }
       await this.lock();
     } catch (error2) {
@@ -29492,8 +29673,10 @@ var Guest = class {
     const stamp = startedAt.slice(0, 19).replace(/[T:]/g, "-") + "-Z";
     const project = this.m.options.project, environment = this.m.environment;
     const hostRoot = join13(this.m.options.outputRoot ?? resolve9(project, "relay-evidence"), purpose);
-    const row = { machine: environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
-    const e = this.enclosure = { backend: this.m.binding(), purpose, task: input.task, image: input.image, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    const subject = input.machine ?? input.image;
+    const row = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? "macos (durable)" : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
+    const e = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance } : this.m.binding(), purpose, task: input.task, image: subject, ...input.machine ? { machine: input.machine } : {}, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    if (owner) this.owner = owner.backend;
     let refused = false;
     try {
       await this.save();
@@ -29516,7 +29699,9 @@ var Guest = class {
         await this.save();
         const asked = Date.now();
         try {
-          e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? "none", ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
+          const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5;
+          e.lease = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? "none", ttl_hours } : { purpose, image: input.image, env: input.env ?? "none", ttl_hours, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
+          if (e.machine) e.guestRoot = durableRoot(e.lease.workspace, purpose);
           e.acquisitionInFlight = false;
           granted = asked;
           break;
@@ -29548,7 +29733,7 @@ var Guest = class {
       this.startHeartbeat();
       await this.save();
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join13(e.guestRoot, "workspace"), declarations: input.extractions, network, waitedForCapacityMs };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join13(e.guestRoot, "workspace"), declarations: input.extractions, ...e.machine ? { machine: e.machine, kind: "durable", network: "lan" } : { network }, waitedForCapacityMs };
     } catch (error2) {
       if (refused && await this.withdraw(error2)) throw error2;
       await this.fail(error2);
@@ -29593,7 +29778,7 @@ Guest ${this.name} keeps this acquisition's ownership record: name it to reconci
   async withdraw(error2) {
     const e = this.enclosure;
     try {
-      if (Object.values((await this.m.vm.list({ timeoutMs: 1e4 })).machines).some((lease) => lease.purpose === e.purpose)) return false;
+      if (Object.values((await this.vm.list({ timeoutMs: 1e4 })).machines).some((lease) => lease.purpose === e.purpose)) return false;
       await this.m.registry.remove(e.row);
       await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, released: false, acquired: false, reason: "machine-service refused the acquisition", error: String(error2), finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
       this.enclosure = void 0;
@@ -29647,7 +29832,7 @@ Guest ${this.name} keeps this acquisition's ownership record: name it to reconci
       }
       this.assertBinding();
       await this.m.assertBackend();
-      const renewed = await this.m.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 36e5 }, { timeoutMs: 1e4 });
+      const renewed = await this.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 36e5, ...lease.lease_id ? { lease_id: lease.lease_id } : {} }, { timeoutMs: 1e4 });
       if (this.enclosure !== e || e.released) return;
       e.expiresAt = renewed.ttl_expires_at;
       e.guestState = renewed.state;
@@ -29700,18 +29885,24 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const workspace = input.workspace === void 0 ? void 0 : await this.m.projectPath(input.workspace, "workspace");
     const bundle = this.m.options.runtimeBundle ?? fileURLToPath(new URL("../dist/receiver.mjs", import.meta.url));
     await access(bundle);
-    if (e.capture === void 0 && !e.staged) {
+    if (!e.machine && e.capture === void 0 && !e.staged) {
       e.capture = await this.captureSoftware(e, signal);
       await this.save();
     }
     const node2 = input.nodePath ?? e.node ?? "node";
-    const transfer = new Transfer(this.m.channel, e.lease.vm, node2, { guestRoot: e.guestRoot, hostTempRoot: join13(this.m.root, "transfer-tmp"), onRetry: (event) => this.log("transfer-retry", void 0, event), onArchiveFallback: (event) => this.log("archive-fallback", void 0, event) });
+    const transfer = new Transfer(this.channel, e.lease.vm, node2, { guestRoot: e.guestRoot, hostTempRoot: join13(this.m.root, "transfer-tmp"), onRetry: (event) => this.log("transfer-retry", void 0, event), onArchiveFallback: (event) => this.log("archive-fallback", void 0, event) });
     try {
       await transfer.checked([node2, "--version"]);
     } catch (error2) {
       throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node2} --version\` failed: ${error2 instanceof Error ? error2.message : String(error2)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error2 });
     }
-    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease.image_kind === "macos" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver");
+    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease.image_kind === "macos" || e.machine ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver");
+    if (e.machine) {
+      const decision = await this.durableCapture(e, cuaDriver, signal);
+      e.capture = decision.capture;
+      e.captureReason = decision.reason;
+      await this.save();
+    }
     if (e.capture !== false) await this.awaitCapture(transfer, e, node2, cuaDriver, signal);
     e.node = node2;
     e.cuaDriver = cuaDriver;
@@ -29730,7 +29921,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     this.transport = new VmTransport(transfer, e.guestRoot, join13(e.hostRoot, "host"), e.cuaDriver);
     this.transport.capture = e.capture !== false;
     relay.useTransport(() => this.transport);
-    this.session = await relay.start({ taskId: e.purpose, target: `machine-service:${e.lease.vm}` });
+    this.session = await relay.start({ taskId: e.purpose, target: `machine-service:${e.machine ? `durable:${e.machine}` : e.lease.vm}` });
     e.sessionId = this.session.sessionId;
     e.staged = true;
     await this.save();
@@ -29744,7 +29935,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   async captureSoftware(e, signal) {
     let catalog;
     try {
-      catalog = await this.m.vm.applications({ timeoutMs: 1e4, signal });
+      catalog = await this.vm.applications({ timeoutMs: 1e4, signal });
       validateCatalog(catalog);
     } catch (error2) {
       throw new Error(`relay_stage could not read the image catalog to learn whether ${e.image} lists capture software (cua-driver), so nothing was staged: ${error2 instanceof Error ? error2.message : String(error2)}`, { cause: error2 });
@@ -29752,6 +29943,26 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const capture = catalog.images.some((image) => image.image === e.image && image.applications.some((app) => CAPTURE_SOFTWARE.includes(app.id)));
     await this.log("capture-software", void 0, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
     return capture;
+  }
+  /**
+   * Whether a durable machine's runs take snapshots: its capabilities list
+   * cua-driver, and the cua-driver daemon, not machine-service, holds Screen
+   * Recording (DC-32).
+   */
+  async durableCapture(e, cuaDriver, signal) {
+    const software = (await this.vm.get(e.lease.vm, { timeoutMs: 1e4, signal })).capabilities?.software;
+    let answer;
+    if (software && typeof software === "object" && software.cua_driver) {
+      try {
+        answer = await this.channel.exec(e.lease.vm, [cuaDriver, "permissions", "status", "--json"], 3e4, { signal });
+      } catch (error2) {
+        if (signal?.aborted) throw error2;
+        answer = { error: message(error2) };
+      }
+    }
+    const decision = durableCapture(e.machine, software, answer);
+    await this.log("capture-permission", void 0, { machine: e.machine, ...decision, answer });
+    return decision;
   }
   /**
    * Waits until the guest's cua-driver takes a screenshot, as each run's
@@ -29786,6 +29997,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   /** What a lease's runs record: snapshots when its image lists cua-driver, none otherwise. */
   snapshotFacts(e) {
+    if (e.machine) return { taken: e.capture === true, reason: e.captureReason ?? "Decided at relay_stage." };
     return e.capture === false ? { taken: false, reason: `${e.image} lists no capture software (cua-driver), so runs take no snapshots and their records have none.` } : { taken: true, reason: e.capture ? `${e.image} lists cua-driver, so each run takes before and after snapshots.` : "This lease predates the capture decision, so each run takes before and after snapshots." };
   }
   async run(input, signal) {
@@ -29860,12 +30072,12 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       ensureGuest: async (signal, deadline) => {
         const options = { signal, timeoutMs: Math.max(1, Math.min(1e4, deadline - Date.now())) };
         if (this.m.environment) {
-          const health = await this.m.vm.health(options);
+          const health = await this.vm.health(options);
           if (!health.ok || !matchesEnvironment(health.environment, this.m.environment)) throw Object.assign(new Error("Selected backend identity changed."), { code: "unauthorized-reference" });
         }
         try {
-          const lease = await this.m.vm.get(e.lease.vm, options);
-          if (lease.purpose !== e.purpose) throw Object.assign(new Error("Lease ownership identity changed."), { code: "unauthorized-reference" });
+          const lease = await this.vm.get(e.lease.vm, options);
+          if (lease.purpose !== e.purpose || e.lease.lease_id && lease.lease_id !== e.lease.lease_id) throw Object.assign(new Error("Lease ownership identity changed."), { code: "unauthorized-reference" });
         } catch (error2) {
           if (error2 instanceof MachineServiceError && error2.status === 404) throw Object.assign(new Error("Saved image guest is no longer available."), { code: "stale-reference" });
           throw error2;
@@ -29894,16 +30106,16 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     }
     const store = this.imageStore(), result2 = await store.get(target, bounded3, deadline);
     if (result2.status !== "unauthorized-reference" || target.source !== "reference") return result2;
-    const named = job?.image ?? await this.namedImage(target.imageId);
-    if (named?.source !== "display") return result2;
-    const resolved = await store.get({ source: "display", sessionId: named.sessionId, executionId: named.executionId, phase: named.phase }, bounded3, deadline);
+    const named2 = job?.image ?? await this.namedImage(target.imageId);
+    if (named2?.source !== "display") return result2;
+    const resolved = await store.get({ source: "display", sessionId: named2.sessionId, executionId: named2.executionId, phase: named2.phase }, bounded3, deadline);
     return resolved.image && resolved.image.imageId !== target.imageId ? { status: "integrity-failed", diagnostic: "The display selector no longer names the referenced image." } : resolved;
   }
   /** The image a run named with this reference, from the step download records. No guest I/O. */
   async namedImage(imageId) {
     const records = join13(this.current().hostRoot, "host", "evidence-downloads");
     for (const name of (await readdir7(records).catch(() => [])).filter((n) => n.endsWith(".json"))) {
-      const image = await readFile9(join13(records, name), "utf8").then((text4) => JSON.parse(text4)?.image, () => void 0);
+      const image = await readFile9(join13(records, name), "utf8").then((text5) => JSON.parse(text5)?.image, () => void 0);
       if (image?.imageId === imageId) return image;
     }
     return void 0;
@@ -30178,7 +30390,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     await jsonFile(join13(e.hostRoot, "host", "diagnostics", `${executionId}.request.json`), request);
     let result2;
     try {
-      const r = await this.m.channel.exec(e.lease.vm, argv, timeoutMs2, { signal });
+      const r = await this.channel.exec(e.lease.vm, argv, timeoutMs2, { signal });
       result2 = { executionId, outcome: { kind: "completed", exitStatus: { code: r.code, signal: null } }, output: r.stdout, outputStreams: "stdout and stderr combined" };
     } catch (error2) {
       result2 = { executionId, outcome: { kind: "uncertain", diagnostic: String(error2) }, output: "", outputStreams: "stdout and stderr combined" };
@@ -30251,10 +30463,11 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     await this.m.assertBackend();
     const e = this.enclosure;
     if (!e) return;
+    await this.findOwner(e);
     this.stopTimer();
     if (!e.released) {
       if (!e.lease) {
-        const list = await this.m.vm.list({ timeoutMs: 1e4 });
+        const list = await this.vm.list({ timeoutMs: 1e4 });
         const matches = Object.values(list.machines).filter((lease) => lease.purpose === e.purpose);
         if (matches.length > 1) throw new Error("Ambiguous acquisition; refusing to remove ownership record");
         if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.dir}. Reconcile before retrying; never blindly acquire again.`);
@@ -30266,15 +30479,24 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         let released = false;
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
-            const response = await this.m.vm.release(e.lease.vm, { reason: reason2 }, { timeoutMs: timeoutMs2 });
+            const response = await this.vm.release(e.lease.vm, { reason: reason2, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: timeoutMs2 });
             if (!response.released) throw new Error("machine-service did not confirm destruction");
+            if (e.machine) {
+              e.hygiene = response.hygiene;
+              await this.save().catch(() => {
+              });
+            }
             released = true;
             break;
           } catch (error2) {
             await this.log("release-error", void 0, { vm: e.lease.vm, cause: reason2, attempt: attempt + 1, error: String(error2) }).catch(() => {
             });
             try {
-              await this.m.vm.get(e.lease.vm, { timeoutMs: 5e3 });
+              const record3 = await this.vm.get(e.lease.vm, { timeoutMs: 5e3 });
+              if (e.machine && record3.lease_id !== e.lease.lease_id) {
+                released = true;
+                break;
+              }
             } catch (getError) {
               if (getError instanceof MachineServiceError && getError.status === 404) {
                 released = true;
@@ -30285,7 +30507,9 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           }
         }
         if (!released) throw new Error("Lease release unconfirmed");
-        if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        if (e.machine) {
+          if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`);
+        } else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true;
       await this.save().catch(() => {
@@ -30295,11 +30519,15 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     await this.session?.close();
     this.session = void 0;
     this.transport = void 0;
-    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, guest: this.name, vm: e.lease?.vm, released: true, reason: reason2, failed: e.failed, delivered: e.delivered, finishedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
+    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, guest: this.name, vm: e.lease?.vm, ...e.machine ? { machine: e.machine, lease_id: e.lease?.lease_id, hygiene: e.hygiene ?? null } : {}, released: true, reason: reason2, failed: e.failed, delivered: e.delivered, finishedAt: (/* @__PURE__ */ new Date()).toISOString() }).catch(() => {
     });
     this.enclosure = void 0;
     await this.save();
     await this.m.forget(this);
+  }
+  /** A durable release is verified when the machine no longer names the lease (DC-33). */
+  async durableReleased(e) {
+    return (await this.vm.get(e.lease.vm, { timeoutMs: 1e4 })).lease_id !== e.lease.lease_id;
   }
   async destroyed(vm) {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
@@ -30333,7 +30561,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const remaining = this.remainingMs(e);
     if (remaining < MIN_RENEWAL_MS) return;
     try {
-      const renewed = await this.m.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 36e5 }, { timeoutMs: 1e4 });
+      const renewed = await this.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 36e5, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: 1e4 });
       if (this.enclosure === e && !e.released) {
         e.expiresAt = renewed.ttl_expires_at;
         e.guestState = renewed.state;
@@ -30375,7 +30603,8 @@ var relayContract = typebox_exports.Union([
   typebox_exports.Object({
     action: typebox_exports.Literal("acquire"),
     task: typebox_exports.String({ pattern: "^[a-z0-9][a-z0-9-]{0,35}$" }),
-    image: typebox_exports.String({ description: "Image key from relay action=probe, e.g. ubuntu2404 or macos26." }),
+    image: typebox_exports.Optional(typebox_exports.String({ description: "Image key from relay action=probe, e.g. ubuntu2404 or macos26, for a fresh VM. Give exactly one of image and machine." })),
+    machine: typebox_exports.Optional(typebox_exports.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", description: "A durable machine, a real Mac leased whole, by the name machctl list shows, e.g. Build-Mac-1. Give exactly one of image and machine." })),
     extractions: typebox_exports.Array(typebox_exports.Object({ path: typebox_exports.String({ description: "Relative guest-workspace path; no traversal or symlinks." }), name: typebox_exports.String({ description: "Unique output basename." }) }, closed2), { maxItems: 100 }),
     vnc: typebox_exports.Optional(typebox_exports.Boolean({ description: "Prepare guest console sharing, default false. Never opens a viewer automatically." })),
     ttlHours: typebox_exports.Optional(typebox_exports.Number({ minimum: 0.1, maximum: 720 })),
@@ -30432,6 +30661,7 @@ function toolInputSchema(action) {
 function validateRelayInput(value) {
   if (!Check2(relayContract, value)) throw new Error("Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.");
   if (value.action === "probe" && value.scope === "guest" && value.guest === void 0) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
+  if (value.action === "acquire" && value.image === void 0 === (value.machine === void 0)) throw new Error("Invalid relay input: relay_acquire takes exactly one of image, a VM image, and machine, a durable machine's name.");
   if (value.action === "run") {
     if (value.diagnostic && value.language !== "shell") throw new Error("Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver.");
     if (value.diagnostic && value.snapshots?.group) throw new Error("Diagnostic scripts cannot join snapshot groups.");
@@ -30441,7 +30671,7 @@ function validateRelayInput(value) {
 }
 
 // src/surface.ts
-import { mkdir as mkdir11, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir11, writeFile as writeFile5 } from "node:fs/promises";
 import { join as join14 } from "node:path";
 import { tmpdir as tmpdir2 } from "node:os";
 import { randomUUID as randomUUID7 } from "node:crypto";
@@ -30472,9 +30702,9 @@ var relayTools = [
   {
     name: "relay_acquire",
     action: "acquire",
-    title: "Acquire a VM",
+    title: "Acquire a machine",
     annotations: acts(false),
-    description: "Acquire one fresh VM, a guest, and start its ownership heartbeat. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` (a key from relay_probe or relay_search) and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
+    description: "Acquire one machine, a guest, and start its ownership heartbeat: a fresh VM from `image` (a key from relay_probe or relay_search), or a durable machine, a real Mac leased whole, by `machine` (its name as machctl list shows it, such as Build-Mac-1). Give exactly one of them. A durable machine is on the home network and not isolated from it, a CI job may share its desktop, it has no console (`vnc` is refused), and its runs take snapshots only while its cua-driver daemon holds Screen Recording; every other call works on it as on a VM. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` or `machine`, and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, or the durable machine is leased by someone else, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
   },
   {
     name: "relay_stage",
@@ -30551,15 +30781,15 @@ function relayToolInput(name, args) {
 var relayResultKind = "relay-image-result-v1";
 async function renderRelayResult(value, resultRoot = join14(tmpdir2(), "mcp-relay-results"), indent = 2) {
   const full = JSON.stringify(value, null, indent);
-  const text4 = new TextDecoder().decode(Buffer.from(full.split("\n").slice(0, 2e3).join("\n")).subarray(0, 50 * 1024), { stream: true });
-  if (text4 !== full) {
+  const text5 = new TextDecoder().decode(Buffer.from(full.split("\n").slice(0, 2e3).join("\n")).subarray(0, 50 * 1024), { stream: true });
+  if (text5 !== full) {
     await mkdir11(resultRoot, { recursive: true, mode: 448 });
     const path = join14(resultRoot, `${randomUUID7()}.json`);
-    await writeFile4(path, full, { mode: 384 });
-    return { text: `${text4}
+    await writeFile5(path, full, { mode: 384 });
+    return { text: `${text5}
 [Truncated. Full result: ${path}]`, details: { resultPath: path }, resultPath: path };
   }
-  return { text: text4, details: value };
+  return { text: text5, details: value };
 }
 async function imageResult(value, delivery, executionFailed = false) {
   const { content: image, ...imageDelivery } = delivery;
@@ -30640,7 +30870,7 @@ var SERVER_VERSION = true ? "0.16.0" : JSON.parse(readFileSync(fileURLToPath(new
 var STATUS_TOOL = "relay_status";
 var PLUGIN_TOOL_PREFIX = "mcp__plugin_mcp-relay_relay__";
 var message2 = (error2) => error2 instanceof Error ? error2.message : String(error2);
-var text3 = (value, isError = false) => ({ content: [{ type: "text", text: value }], isError });
+var text4 = (value, isError = false) => ({ content: [{ type: "text", text: value }], isError });
 function relayContent(result2) {
   return { content: [{ type: "text", text: result2.text }, ...result2.image ? [{ type: "image", data: result2.image.data, mimeType: result2.image.mimeType }] : []], isError: result2.isError };
 }
@@ -30689,11 +30919,11 @@ function createRelayServer(options = {}) {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     try {
-      if (name === STATUS_TOOL) return text3(JSON.stringify(statusPayload(), null, 2));
+      if (name === STATUS_TOOL) return text4(JSON.stringify(statusPayload(), null, 2));
       if (relayTools.some((tool) => tool.name === name)) return relayContent(await relayCall(get, relayToolInput(name, args ?? {}), { signal: AbortSignal.any([extra.signal, shutdownController.signal]), toolCallId: String(extra.requestId) }));
       throw new Error(`Unknown tool: ${name}`);
     } catch (error2) {
-      return text3(message2(error2), true);
+      return text4(message2(error2), true);
     }
   });
   const cleanup = async (reason2) => {

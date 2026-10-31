@@ -7,11 +7,10 @@ it for both Claude Code and pi, the latter loaded through `pi-mcp-adapter`. It
 is an MCP server: fourteen `relay_*` tools, each with its own schema, title
 and annotations, and the server's `instructions`. The user command, status,
 ships as one small command file per host (see "Commands"). There is no skill and no hook. Together they offer recorded,
-snapshot-evidenced scripts, commands included as shell scripts, in a fresh, dedicated VM, for any work
-the agent chooses to run there; a script drives the desktop or a browser
-through the software the image lists, such as cua-driver or Playwright. Nothing here executes local computer-use, spawns
-subagents, targets physical machines, records video, or attaches to existing
-browsers.
+snapshot-evidenced scripts, commands included as shell scripts, in a fresh, dedicated VM or on a
+durable machine, a real Mac leased whole, for any work the agent chooses to run there; a script drives the desktop or a browser
+through the software the image lists, such as cua-driver or Playwright. Nothing here executes local computer-use on the relay's own host, spawns
+subagents, records video, or attaches to existing browsers.
 
 The project was named mcp-vm-relay before v0.12.0. The npm package is now
 `@wezzard/mcp-relay`, the plugin and its marketplace are `mcp-relay`, and every
@@ -302,6 +301,26 @@ Failed or uncertain launches retain ownership; resolve or cancel the attempt
 rather than replaying it. Console tests use mocked backends; no live viewer,
 installation or platform acceptance is claimed here.
 
+## Durable machines
+
+`relay_acquire` takes `machine` in place of `image` to lease a durable machine,
+a real Mac that machine-service exposes, such as `Build-Mac-1`. Every other
+tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md)).
+
+- The relay finds the instance that owns the machine as `machctl list` does:
+  the loopback instance, then every `machine-service` registration of the
+  Consul agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`). A Mac
+  without its own Consul agent points `CONSUL_HTTP_ADDR` at one, for example
+  through an SSH tunnel.
+- Every call carries the lease's `lease_id`, files go as bytes, and the relay
+  stages under the lease's workspace, which machine-service removes at release.
+- Runs take snapshots only while the Mac's cua-driver daemon (`CuaDriver.app`,
+  `com.trycua.driver`) holds Screen Recording, read with
+  `cua-driver permissions status --json` in the lease. machine-service's own
+  permissions are not read, and it needs no Screen Recording grant.
+- A durable machine is on the home network and not isolated from it, a CI job
+  may share its desktop, and it has no console.
+
 ## Selected environments
 
 Set `VM_ENVIRONMENT_FILE` to a profile, at `schemaVersion` 2 with
@@ -352,7 +371,8 @@ keeps the VM for a retry after space is freed.
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
-- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers, redirects and physical targets are refused.
+- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when Consul lists it.
+- `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, for durable machines; default `http://127.0.0.1:8500`.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.
 - `MCP_RELAY_CAPACITY_WAIT`: how many seconds `relay_acquire` waits when the host is at capacity, such as at machine-service's limit of two running macOS VMs, asking again every 15 s; default 1800, and 0 for not at all. Any other value stops the server at startup.
@@ -362,7 +382,7 @@ keeps the VM for a retry after space is freed.
 - `MCP_RELAY_SHUTDOWN_GRACE_MS`: how long a session end waits for an in-flight operation, and with `MCP_RELAY_ON_EXIT=release` for the guests' releases, before cancelling it; default 120000.
 - `MCP_RELAY_PYTHON`: the Python 3 used for the registry lock; default `python3` on PATH.
 - `VM_ENVIRONMENT_FILE`: a selected environment profile; it overrides the URL, state directory and registry above and binds the Tart store.
-- Guest files go to `/var/tmp/<UTC-timestamp>-mcp-relay-<task>/`, with the runtime in `receiver.mjs`, support in `support/` and work in `workspace/`.
+- Guest files go to `/var/tmp/<UTC-timestamp>-mcp-relay-<task>/` on a VM and to `<lease workspace>/work/mcp-relay-<task>/` on a durable machine, with the runtime in `receiver.mjs`, support in `support/` and work in `workspace/`.
 
 ## Development
 
