@@ -18,14 +18,17 @@ flowchart LR
   M --> D[cua-driver daemon: Screen Recording, Accessibility]
 ```
 
-## 2. Choosing a machine (DC-29)
+## 2. Choosing a machine (DC-29, DC-35)
 
 - `relay_acquire` takes exactly one of `image` and `machine`. `machine` is the durable machine's name as `machctl list` shows it, such as `Build-Mac-1`.
 - The relay finds the instance that owns the machine, as machctl does ([FD-2](../../vm-service/docs/arch/federation.md#fd-2-discovery)):
   1. It asks the loopback instance at `MCP_RELAY_URL` (default `http://localhost:6240`) for `GET /machines`.
-  2. It asks the Consul agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`) for `GET /v1/health/service/machine-service`, and each registration's address and port for `GET /machines`. A registration published as `loopback_only` on another Mac is skipped.
-  3. The owner is the instance whose list holds a record of `kind: "durable"` with that name. No owner, or two, refuses the acquisition before anything is reserved.
-- The relay talks to a non-loopback origin only when Consul lists it as `machine-service`. The agent cannot name an address. Redirects and credentials in a URL stay refused.
+  2. It finds the other instances in the mode `MACHINE_SERVICE_DISCOVERY` chooses, as machine-service and machctl do (machine-service DC-84):
+     - `bonjour`, the default: a one-shot Multicast DNS query for `_machine-service._tcp.local` (RFC 6762 §5.1), sent to 224.0.0.251:5353 from an ephemeral port, whose answers are read for 2 seconds, with one follow-up query for any SRV, TXT or A record the first answers left out. Each instance's TXT record states its `instance`. Node.js has no DNS-SD API, so the relay builds and reads the messages itself, with no dependency.
+     - `consul`: the Consul agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`), `GET /v1/health/service/machine-service`. A registration published as `loopback_only` on another Mac is skipped.
+  3. It asks each instance found that way for its `/health`, and uses it only when it answers machine-service with the ID it was found under; a registration that states no ID is not confirmed (DC-35). Then it asks for `GET /machines`.
+  4. The owner is the instance whose list holds a record of `kind: "durable"` with that name. The same instance reached twice, such as the loopback instance and its own advertisement, counts once, by its instance ID. No owner, or two instances, refuses the acquisition before anything is reserved.
+- The relay talks to a non-loopback origin only when discovery found it. The agent cannot name an address. Redirects and credentials in a URL stay refused.
 - The guest's record keeps the owner's origin and instance ID. A restored guest finds its owner again, and refuses to act when the owner's origin or instance ID has changed.
 - A durable acquisition sends `machine`, `purpose`, `ttl_hours` and `env`. It sends none of `image`, `network`, `vnc` or `wait`, which machine-service refuses for a durable machine, so `vnc` is refused before anything is asked.
 

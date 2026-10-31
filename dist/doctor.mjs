@@ -120,7 +120,7 @@ var MachineService = class {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP(host) === 4 && host.startsWith("127.");
     if (!loopback && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");

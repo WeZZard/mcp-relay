@@ -86,7 +86,7 @@ export interface MachineServiceOptions {
   timeoutMs?: number;
   acquireTimeoutMs?: number;
   maxResponseBytes?: number;
-  /** The origin is a `machine-service` registration that Consul lists, which may be on another Mac (DC-29). */
+  /** The origin is an instance that discovery found, by its Bonjour advertisement or its Consul registration, which may be on another Mac (DC-29, DC-35). */
   listed?: boolean;
 }
 
@@ -179,7 +179,7 @@ export class MachineService {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
     if ((!loopback && !options.listed) || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 660_000, "timeoutMs");

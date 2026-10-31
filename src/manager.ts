@@ -22,7 +22,8 @@ import { ImageStore, imageCapability, type ImageDescriptor, type ImageTarget, ty
 import { DownloadQueue, type DownloadJob, type StepResult } from './downloads.js';
 import type { LocalSource } from './transfer.js';
 import { refreshEvidenceState } from './evidence-merge.js';
-import { findDurableOwner, type DurableOwner } from './discovery.js';
+import { findDurableOwner, type DiscoveryMode, type DurableOwner } from './discovery.js';
+import type { Advertised } from './mdns.js';
 import { durableCapture, type PermissionAnswer } from './capture-gate.js';
 
 export interface Extraction { path: string; name: string }
@@ -109,9 +110,13 @@ export interface ManagerOptions {
   captureReadyWaitMs?: number;
   /** How often relay_stage asks the guest's cua-driver again; default CAPTURE_READY_RETRY_MS (DC-24). */
   captureReadyRetryMs?: number;
-  /** The Consul agent that lists machine-service instances; default CONSUL_HTTP_ADDR (DC-29). */
+  /** How instances are found; default MACHINE_SERVICE_DISCOVERY, `bonjour` when unset (DC-35). */
+  discovery?: DiscoveryMode;
+  /** Test seam: a Bonjour browse. */
+  bonjourBrowse?: () => Promise<Advertised[]>;
+  /** The Consul agent that lists machine-service instances in Consul mode; default CONSUL_HTTP_ADDR (DC-29). */
   consul?: string;
-  /** Test seam: the backend for an instance Consul lists. */
+  /** Test seam: the backend for an instance discovery found. */
   durableBackend?: (origin: string) => VmBackend;
   /** Test seam: Consul's answer. */
   consulFetch?: (url: string) => Promise<unknown>;
@@ -222,7 +227,7 @@ export class RelayManager {
   }
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
   durableOwner(machine: string): Promise<DurableOwner> {
-    return findDurableOwner(machine, { local: this.vm, ...(this.options.consul ? { consul: this.options.consul } : {}), ...(this.options.durableBackend ? { backend: this.options.durableBackend } : {}), ...(this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}) });
+    return findDurableOwner(machine, { local: this.vm, ...(this.options.discovery ? { mode: this.options.discovery } : {}), ...(this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}), ...(this.options.consul ? { consul: this.options.consul } : {}), ...(this.options.durableBackend ? { backend: this.options.durableBackend } : {}), ...(this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}) });
   }
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn); this.queue = next.catch(() => {}); return next;
