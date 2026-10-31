@@ -1,6 +1,6 @@
 {
   "name": "@wezzard/mcp-relay",
-  "version": "0.17.1",
+  "version": "0.18.0",
   "type": "module",
   "description": "MCP server and Claude Code plugin. Runs an agent's code on fresh, isolated VMs, several at once, each run recorded with evidence",
   "license": "MIT",
