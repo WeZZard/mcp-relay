@@ -48,6 +48,7 @@ async function command(argv, options = {}) {
 // src/machine-service.ts
 import { isIP } from "node:net";
 import { createHash as createHash2 } from "node:crypto";
+import { open, rm } from "node:fs/promises";
 var MachineServiceError = class extends Error {
   constructor(message, status, responseBody, options) {
     super(message, options);
@@ -77,6 +78,7 @@ function expectMachineService(health, origin) {
   if (health.service === SERVICE_NAME) return;
   throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
 }
+var PULL_IDLE_MS = 12e4;
 var AcquireIndeterminateError = class extends MachineServiceError {
   constructor(purpose, cause) {
     super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /machines before retrying or ending the enclosure`, void 0, void 0, { cause });
@@ -205,18 +207,39 @@ var MachineService = class {
    */
   async pushBytes(vm, body, options = {}) {
     const sha256 = createHash2("sha256").update(body.bytes).digest("hex");
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength) }, options, this.maxResponseBytes);
     const answer = this.json(response.path, response.text);
     if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
     return answer;
   }
-  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
+  /**
+   * Pull one file as bytes, `GET /machines/<name>/files`, into `to`, which
+   * must not exist. The bytes stream to disk as they are hashed, so a file of
+   * any size needs no memory of its size, and the pull is abandoned only when
+   * no byte arrives for its timeout. The file is removed unless the bytes
+   * match the digest the instance states (DC-31).
+   */
   async pullBytes(vm, body, options = {}) {
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
-    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
-    const digest = createHash2("sha256").update(response.bytes).digest("hex");
-    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
-    return response.bytes;
+    const hash2 = createHash2("sha256"), file = await open(body.to, "wx", 384);
+    let bytes = 0;
+    try {
+      const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async (chunk) => {
+        hash2.update(chunk);
+        bytes += chunk.byteLength;
+        await file.write(chunk);
+      } });
+      if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+      const digest = hash2.digest("hex");
+      if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+      await file.sync();
+      await file.close();
+      return { sha256: digest, bytes };
+    } catch (error) {
+      await file.close().catch(() => {
+      });
+      await rm(body.to, { force: true });
+      throw error;
+    }
   }
   filesPath(vm, remote, lease_id) {
     const query = new URLSearchParams({ ...lease_id ? { lease_id } : {}, path: remote });
@@ -241,14 +264,20 @@ var MachineService = class {
       throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
     }
   }
-  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
-  async fetchBounded(path, init, options, maxBytes) {
+  /**
+   * One request whose answer is read up to `maxBytes`; an error answer is read
+   * up to 4 KiB and thrown with its status. With `sink`, a successful answer is
+   * handed over chunk by chunk instead of kept; with `idle`, the timeout counts
+   * from the last chunk rather than from the start.
+   */
+  async fetchBounded(path, init, options, maxBytes, stream = {}) {
     options.signal?.throwIfAborted();
     const timeoutMs = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
+    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`));
+    let timer = setTimeout(expire, timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: init.method,
@@ -268,6 +297,15 @@ var MachineService = class {
           for (; ; ) {
             const { value, done } = await reader.read();
             if (done) break;
+            if (stream.idle) {
+              clearTimeout(timer);
+              timer = setTimeout(expire, timeoutMs);
+            }
+            if (response.ok && stream.sink) {
+              size += value.byteLength;
+              await stream.sink(value);
+              continue;
+            }
             const remaining = bound - size;
             chunks.push(value.subarray(0, remaining));
             size += Math.min(value.byteLength, remaining);
@@ -288,7 +326,7 @@ var MachineService = class {
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;
-      throw new MachineServiceError(`machine-service ${path}: request failed`, void 0, void 0, { cause });
+      throw new MachineServiceError(`machine-service ${path}: request failed${cause instanceof Error ? `: ${cause.message}` : ""}`, void 0, void 0, { cause });
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -298,7 +336,7 @@ var MachineService = class {
 
 // src/registry.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { link, lstat, mkdir, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open as open2, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 
@@ -648,7 +686,7 @@ var Registry = class {
       const updated = transform(original);
       if (original === updated) return false;
       temporary = join3(dirname2(target), `.${target.split("/").at(-1)}.${token}.tmp`);
-      const handle = await open(temporary, "wx", before.mode & 511);
+      const handle = await open2(temporary, "wx", before.mode & 511);
       try {
         await handle.chmod(before.mode & 511);
         await handle.writeFile(updated, "utf8");
@@ -664,7 +702,7 @@ var Registry = class {
       lock.check();
       await rename(temporary, target);
       temporary = void 0;
-      const dir = await open(dirname2(target), "r");
+      const dir = await open2(dirname2(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -691,7 +729,7 @@ var Registry = class {
       if (!errno(error, "ENOENT")) throw error;
     }
     const temporary = join3(dirname2(target), `.registry.${randomUUID2()}.tmp`);
-    const handle = await open(temporary, "wx", 384);
+    const handle = await open2(temporary, "wx", 384);
     try {
       try {
         await handle.chmod(384);
@@ -706,7 +744,7 @@ var Registry = class {
       } catch (error) {
         if (!errno(error, "EEXIST")) throw error;
       }
-      const dir = await open(dirname2(target), "r");
+      const dir = await open2(dirname2(target), "r");
       try {
         await dir.sync();
       } finally {

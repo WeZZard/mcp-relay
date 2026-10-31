@@ -37,7 +37,7 @@ flowchart LR
 
 ## 4. Files and staging (DC-31)
 
-- On a durable machine every file goes as bytes. A push is `PUT /machines/<name>/files?lease_id=<id>&path=<remote>` with the file as `application/octet-stream` and its SHA-256 in `X-Content-SHA256`. A pull is the matching `GET`, whose digest the relay checks before it keeps a byte. Both are single files, as every relay transfer already is.
+- On a durable machine every file goes as bytes. A push is `PUT /machines/<name>/files?lease_id=<id>&path=<remote>` with the file as `application/octet-stream` and its SHA-256 in `X-Content-SHA256`. A pull is the matching `GET`, whose digest the relay checks before it keeps a byte. Both are single files, as every relay transfer already is. A pull streams to disk as it is hashed, so a file of any size takes no memory of its size, and it is abandoned only when no byte arrives for 120 s, however long the whole file takes.
 - The relay's root on a durable machine is `<workspace>/work/mcp-relay-<purpose>`, where `workspace` is what acquisition returns. machine-service removes the workspace at release, after the relay has extracted its evidence.
 - VMs keep the path-based push and pull and `/var/tmp/<UTC time>-mcp-relay-<purpose>`.
 

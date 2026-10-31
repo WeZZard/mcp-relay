@@ -74,6 +74,52 @@ test('a non-loopback origin is accepted only when Consul listed it', () => {
   assert.throws(() => new MachineService({ baseUrl: 'http://user:pw@192.0.2.4:6240', listed: true }), /without credentials/);
 });
 
+/** A one-route stand-in for `GET /machines/<name>/files`: `bytes` zero bytes in 1 MiB chunks, with `digest` as the stated SHA-256, pausing `stallMs` after the first chunk. */
+async function filesServer(t: TestContext, bytes: number, digest: (actual: string) => string, stallMs = 0) {
+  const zero = Buffer.alloc(1 << 20), hash = createHash('sha256');
+  for (let left = bytes; left > 0; left -= zero.length) hash.update(zero.subarray(0, Math.min(zero.length, left)));
+  const actual = hash.digest('hex');
+  const server = createServer(async (_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(bytes), 'x-content-sha256': digest(actual) });
+    for (let left = bytes, first = true; left > 0; left -= zero.length, first = false) {
+      if (!res.write(zero.subarray(0, Math.min(zero.length, left)))) await new Promise(done => res.once('drain', done));
+      if (first && stallMs) await new Promise(done => setTimeout(done, stallMs));
+    }
+    res.end();
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const addr = server.address(); assert.ok(addr && typeof addr !== 'string');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-pull-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return { service: new MachineService({ baseUrl: `http://127.0.0.1:${addr.port}`, timeoutMs: 15000 }), actual, to: join(root, 'pulled.bin') };
+}
+
+test('a byte pull larger than a string can hold streams to disk and checks its digest (DC-31)', { timeout: 120000 }, async t => {
+  // Past V8's longest string (0x1fffffe8 characters), which a pull that decoded its body could not hold.
+  const size = 0x1fffffe8 + (8 << 20);
+  const f = await filesServer(t, size, actual => actual);
+  const before = process.memoryUsage().rss;
+  const pulled = await f.service.pullBytes(MACHINE, { lease_id: 'lease', remote_path: '/big.bin', to: f.to });
+  assert.deepEqual(pulled, { sha256: f.actual, bytes: size });
+  assert.equal((await import('node:fs')).statSync(f.to).size, size);
+  assert.ok(process.memoryUsage().rss - before < 256 << 20, 'the pull never held the file in memory');
+});
+
+test('a byte pull whose bytes differ from the stated digest leaves no file', async t => {
+  const f = await filesServer(t, 3 << 20, () => '0'.repeat(64));
+  await assert.rejects(f.service.pullBytes(MACHINE, { remote_path: '/x.bin', to: f.to }), /differs from the stated/);
+  await assert.rejects(readFile(f.to), /ENOENT/);
+});
+
+test('a byte pull is abandoned only when no byte arrives for its timeout', async t => {
+  const f = await filesServer(t, 3 << 20, actual => actual, 600);
+  await assert.rejects(f.service.pullBytes(MACHINE, { remote_path: '/x.bin', to: f.to }, { timeoutMs: 300 }), /timed out after 300ms without a byte/);
+  await assert.rejects(readFile(f.to), /ENOENT/);
+  const g = await filesServer(t, 3 << 20, actual => actual, 200);
+  assert.equal((await g.service.pullBytes(MACHINE, { remote_path: '/x.bin', to: g.to }, { timeoutMs: 400 })).bytes, 3 << 20, 'a pull that keeps moving finishes however long it takes');
+});
+
 test('relay_acquire takes exactly one of image and machine', () => {
   const base = { action: 'acquire', guest: undefined, task: 'durable', extractions: [] };
   delete (base as { guest?: unknown }).guest;

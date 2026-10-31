@@ -17184,7 +17184,7 @@ var StdioServerTransport = class {
 
 // src/manager.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
-import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm4, cp, access, statfs, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm5, cp, access, statfs } from "node:fs/promises";
 import { join as join13, resolve as resolve9 } from "node:path";
 
 // src/config.ts
@@ -17749,6 +17749,7 @@ init_evidence_package();
 // src/machine-service.ts
 import { isIP as isIP2 } from "node:net";
 import { createHash as createHash3 } from "node:crypto";
+import { open as open2, rm } from "node:fs/promises";
 var MachineServiceError = class extends Error {
   constructor(message3, status, responseBody, options) {
     super(message3, options);
@@ -17778,6 +17779,7 @@ function expectMachineService(health, origin) {
   if (health.service === SERVICE_NAME) return;
   throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
 }
+var PULL_IDLE_MS = 12e4;
 var AcquireIndeterminateError = class extends MachineServiceError {
   constructor(purpose, cause) {
     super(`Acquisition outcome unknown for purpose '${purpose}'; reconcile GET /machines before retrying or ending the enclosure`, void 0, void 0, { cause });
@@ -17906,18 +17908,39 @@ var MachineService = class {
    */
   async pushBytes(vm, body, options = {}) {
     const sha256 = createHash3("sha256").update(body.bytes).digest("hex");
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes.buffer, body.bytes.byteOffset, body.bytes.byteLength) }, options, this.maxResponseBytes);
     const answer = this.json(response.path, response.text);
     if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
     return answer;
   }
-  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
+  /**
+   * Pull one file as bytes, `GET /machines/<name>/files`, into `to`, which
+   * must not exist. The bytes stream to disk as they are hashed, so a file of
+   * any size needs no memory of its size, and the pull is abandoned only when
+   * no byte arrives for its timeout. The file is removed unless the bytes
+   * match the digest the instance states (DC-31).
+   */
   async pullBytes(vm, body, options = {}) {
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
-    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
-    const digest = createHash3("sha256").update(response.bytes).digest("hex");
-    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
-    return response.bytes;
+    const hash3 = createHash3("sha256"), file = await open2(body.to, "wx", 384);
+    let bytes = 0;
+    try {
+      const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async (chunk) => {
+        hash3.update(chunk);
+        bytes += chunk.byteLength;
+        await file.write(chunk);
+      } });
+      if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+      const digest = hash3.digest("hex");
+      if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+      await file.sync();
+      await file.close();
+      return { sha256: digest, bytes };
+    } catch (error2) {
+      await file.close().catch(() => {
+      });
+      await rm(body.to, { force: true });
+      throw error2;
+    }
   }
   filesPath(vm, remote, lease_id) {
     const query = new URLSearchParams({ ...lease_id ? { lease_id } : {}, path: remote });
@@ -17942,14 +17965,20 @@ var MachineService = class {
       throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, void 0, void 0, { cause });
     }
   }
-  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
-  async fetchBounded(path, init, options, maxBytes) {
+  /**
+   * One request whose answer is read up to `maxBytes`; an error answer is read
+   * up to 4 KiB and thrown with its status. With `sink`, a successful answer is
+   * handed over chunk by chunk instead of kept; with `idle`, the timeout counts
+   * from the last chunk rather than from the start.
+   */
+  async fetchBounded(path, init, options, maxBytes, stream = {}) {
     options.signal?.throwIfAborted();
     const timeoutMs2 = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms`)), timeoutMs2);
+    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms${stream.idle ? " without a byte" : ""}`));
+    let timer = setTimeout(expire, timeoutMs2);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: init.method,
@@ -17969,6 +17998,15 @@ var MachineService = class {
           for (; ; ) {
             const { value, done } = await reader.read();
             if (done) break;
+            if (stream.idle) {
+              clearTimeout(timer);
+              timer = setTimeout(expire, timeoutMs2);
+            }
+            if (response.ok && stream.sink) {
+              size += value.byteLength;
+              await stream.sink(value);
+              continue;
+            }
             const remaining = bound - size;
             chunks.push(value.subarray(0, remaining));
             size += Math.min(value.byteLength, remaining);
@@ -17989,7 +18027,7 @@ var MachineService = class {
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;
-      throw new MachineServiceError(`machine-service ${path}: request failed`, void 0, void 0, { cause });
+      throw new MachineServiceError(`machine-service ${path}: request failed${cause instanceof Error ? `: ${cause.message}` : ""}`, void 0, void 0, { cause });
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
@@ -18002,7 +18040,7 @@ import { homedir as homedir4 } from "node:os";
 
 // src/registry.ts
 import { randomUUID } from "node:crypto";
-import { link, lstat, mkdir as mkdir2, open as open2, readFile as readFile3, realpath, rename as rename2, unlink } from "node:fs/promises";
+import { link, lstat, mkdir as mkdir2, open as open3, readFile as readFile3, realpath, rename as rename2, unlink } from "node:fs/promises";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { spawn as spawn2 } from "node:child_process";
@@ -18184,7 +18222,7 @@ var Registry = class {
       const updated = transform2(original);
       if (original === updated) return false;
       temporary = join5(dirname3(target), `.${target.split("/").at(-1)}.${token2}.tmp`);
-      const handle = await open2(temporary, "wx", before.mode & 511);
+      const handle = await open3(temporary, "wx", before.mode & 511);
       try {
         await handle.chmod(before.mode & 511);
         await handle.writeFile(updated, "utf8");
@@ -18200,7 +18238,7 @@ var Registry = class {
       lock.check();
       await rename2(temporary, target);
       temporary = void 0;
-      const dir = await open2(dirname3(target), "r");
+      const dir = await open3(dirname3(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -18227,7 +18265,7 @@ var Registry = class {
       if (!errno(error2, "ENOENT")) throw error2;
     }
     const temporary = join5(dirname3(target), `.registry.${randomUUID()}.tmp`);
-    const handle = await open2(temporary, "wx", 384);
+    const handle = await open3(temporary, "wx", 384);
     try {
       try {
         await handle.chmod(384);
@@ -18242,7 +18280,7 @@ var Registry = class {
       } catch (error2) {
         if (!errno(error2, "EEXIST")) throw error2;
       }
-      const dir = await open2(dirname3(target), "r");
+      const dir = await open3(dirname3(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -18317,7 +18355,7 @@ var Registry = class {
 };
 
 // src/transfer.ts
-import { copyFile, mkdir as mkdir5, readFile as readFile5, lstat as lstat3, mkdtemp, rm, open as open5, link as link2 } from "node:fs/promises";
+import { copyFile, mkdir as mkdir5, readFile as readFile5, lstat as lstat3, mkdtemp, rm as rm2, open as open6, link as link2 } from "node:fs/promises";
 import { constants as constants3, linkSync } from "node:fs";
 import { dirname as dirname6, join as join7, resolve as resolve5, relative as relative4, isAbsolute as isAbsolute4 } from "node:path";
 import { tmpdir } from "node:os";
@@ -18326,11 +18364,11 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 // src/util.ts
 import { spawn as spawn3 } from "node:child_process";
 import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
-import { mkdir as mkdir3, rename as rename3, lstat as lstat2, readdir as readdir2, open as open3 } from "node:fs/promises";
+import { mkdir as mkdir3, rename as rename3, lstat as lstat2, readdir as readdir2, open as open4 } from "node:fs/promises";
 import { dirname as dirname4, join as join6, resolve as resolve4, relative as relative3, isAbsolute as isAbsolute3 } from "node:path";
 var hash = (bytes) => createHash4("sha256").update(bytes).digest("hex");
 async function hashFile(path) {
-  const file = await open3(path, "r");
+  const file = await open4(path, "r");
   try {
     const digest = createHash4("sha256"), chunk = Buffer.alloc(8 * 1024 * 1024);
     let bytes = 0;
@@ -18348,7 +18386,7 @@ async function hashFile(path) {
 async function jsonFile(path, value) {
   await mkdir3(dirname4(path), { recursive: true, mode: 448 });
   const tmp = `${path}.${randomUUID2()}.tmp`;
-  const file = await open3(tmp, "wx", 384);
+  const file = await open4(tmp, "wx", 384);
   try {
     await file.writeFile(JSON.stringify(value, null, 2) + "\n");
     await file.sync();
@@ -18356,7 +18394,7 @@ async function jsonFile(path, value) {
     await file.close();
   }
   await rename3(tmp, path);
-  const directory2 = await open3(dirname4(path), "r");
+  const directory2 = await open4(dirname4(path), "r");
   try {
     await directory2.sync();
   } finally {
@@ -18420,7 +18458,7 @@ async function command(argv, options = {}) {
 }
 
 // src/archive.ts
-import { open as open4, mkdir as mkdir4 } from "node:fs/promises";
+import { open as open5, mkdir as mkdir4 } from "node:fs/promises";
 import { constants as constants2 } from "node:fs";
 import { createHash as createHash5 } from "node:crypto";
 import { dirname as dirname5 } from "node:path";
@@ -18449,7 +18487,7 @@ function archiveChunks(files, maxArgvBytes = 64 * 1024) {
   return chunks;
 }
 async function unpackArchive(archive, directory2, requested, options = {}) {
-  const input = await open4(archive, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+  const input = await open5(archive, constants2.O_RDONLY | constants2.O_NOFOLLOW);
   const unpacked = [];
   try {
     const buffer = Buffer.alloc(8 * 1024 * 1024);
@@ -18495,7 +18533,7 @@ async function unpackArchive(archive, directory2, requested, options = {}) {
       const bytes = head.bytes;
       const target = within(directory2, fact.path);
       await mkdir4(dirname5(target), { recursive: true, mode: 448 });
-      const output = await open4(target, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
+      const output = await open5(target, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
       const digest = createHash5("sha256");
       try {
         for (let left = bytes; left > 0; ) {
@@ -18817,7 +18855,7 @@ var Transfer = class {
       const info = await lstat3(path);
       if (!info.isFile()) throw new ImageTransferError("unsafe-path", "Expected a regular local image");
       if (info.size !== identity.bytes) throw new ImageTransferError("integrity-failed", "Local image size conflicts with original");
-      const fd = await open5(path, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+      const fd = await open6(path, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
       try {
         const same = (s) => s.isFile() && s.dev === info.dev && s.ino === info.ino && s.size === info.size && s.mtimeMs === info.mtimeMs && s.ctimeMs === info.ctimeMs;
         if (!same(await fd.stat())) throw new ImageTransferError("integrity-failed", "Local image changed before verification");
@@ -18897,7 +18935,7 @@ var Transfer = class {
         const clean = async () => {
           try {
             await assertHostPath(approvedLocalRoot, staging);
-            await rm(staging, { recursive: true, force: true });
+            await rm2(staging, { recursive: true, force: true });
           } catch {
           }
         };
@@ -18995,7 +19033,7 @@ var Transfer = class {
         await this.checked([this.node, "-e", REMOVE_FRAME, guestRoot, frame]);
       } finally {
         await assertHostPath(tempRoot, hostDirectory);
-        await rm(hostDirectory, { recursive: true, force: true });
+        await rm2(hostDirectory, { recursive: true, force: true });
       }
     }
   }
@@ -19020,7 +19058,7 @@ var Transfer = class {
       }
       if (written) {
         await assertHostPath(localRoot, path);
-        await rm(path, { force: true });
+        await rm2(path, { force: true });
       }
     }
     return false;
@@ -19076,7 +19114,7 @@ var Transfer = class {
           await this.checked([this.node, "-e", REMOVE_FRAME, guestRoot, archive]);
         } finally {
           await assertHostPath(localRoot, staging);
-          await rm(staging, { recursive: true, force: true });
+          await rm2(staging, { recursive: true, force: true });
         }
       }
     }
@@ -19229,7 +19267,7 @@ var VmTransport = class {
 
 // src/package.ts
 import { createHash as createHash6 } from "node:crypto";
-import { lstat as lstat4, readFile as readFile6, readdir as readdir3, mkdir as mkdir6, writeFile as writeFile3, rm as rm2 } from "node:fs/promises";
+import { lstat as lstat4, readFile as readFile6, readdir as readdir3, mkdir as mkdir6, writeFile as writeFile3, rm as rm3 } from "node:fs/promises";
 import { dirname as dirname7, join as join9, resolve as resolve6, parse as parse4 } from "node:path";
 var generated = ["OPENING.txt", "manifest.json"];
 var hash2 = (bytes) => createHash6("sha256").update(bytes).digest("hex");
@@ -19624,7 +19662,7 @@ async function deliverPackage(rootDir, options) {
     })));
     return await verifyDeliveredPackage(root);
   } catch (error2) {
-    for (const path of created.reverse()) await rm2(join9(root, path), { force: true });
+    for (const path of created.reverse()) await rm3(join9(root, path), { force: true });
     throw error2;
   }
 }
@@ -19701,7 +19739,7 @@ async function probeLocal(run = command, platform = process.platform) {
 // src/owner-lock.ts
 import { spawn as spawn4 } from "node:child_process";
 import { constants as constants4 } from "node:fs";
-import { open as open6 } from "node:fs/promises";
+import { open as open7 } from "node:fs/promises";
 var OwnerLockError = class extends Error {
   constructor(message3, options) {
     super(message3, options);
@@ -19726,7 +19764,7 @@ async function acquireOwnerLock(path, options = {}) {
   const executable = options.pythonExecutable === void 0 ? pythonExecutable() : nonblank(options.pythonExecutable, "pythonExecutable");
   const signal = options.signal;
   signal?.throwIfAborted();
-  const file = await open6(path, constants4.O_RDWR | constants4.O_CREAT | constants4.O_NOFOLLOW, 384);
+  const file = await open7(path, constants4.O_RDWR | constants4.O_CREAT | constants4.O_NOFOLLOW, 384);
   try {
     if (!(await file.stat()).isFile()) throw new OwnerLockError("Owner lock must be a regular file");
     signal?.throwIfAborted();
@@ -27628,7 +27666,7 @@ function acquisitionCapabilities(value) {
 }
 
 // src/images.ts
-import { mkdir as mkdir8, lstat as lstat6, open as open7, readdir as readdir5, rm as rm3 } from "node:fs/promises";
+import { mkdir as mkdir8, lstat as lstat6, open as open8, readdir as readdir5, rm as rm4 } from "node:fs/promises";
 import { constants as constants5, linkSync as linkSync2 } from "node:fs";
 import { join as join11, dirname as dirname8, extname } from "node:path";
 import { randomUUID as randomUUID5 } from "node:crypto";
@@ -28139,7 +28177,7 @@ async function readBounded(root, path, limit, signal) {
   const before = await lstat6(path);
   if (!before.isFile()) fail("unsafe-path", "Image evidence must be a regular file.");
   if (before.size < 1 || before.size > limit) fail("integrity-failed", "Image evidence exceeds its size bound.");
-  const fd = await open7(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  const fd = await open8(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
   try {
     const same = (s) => s.isFile() && s.dev === before.dev && s.ino === before.ino && s.size === before.size && s.mtimeMs === before.mtimeMs && s.ctimeMs === before.ctimeMs;
     if (!same(await fd.stat())) fail("integrity-failed", "Image evidence changed before reading.");
@@ -28185,7 +28223,7 @@ async function publish(root, path, bytes, signal) {
   await hostPath(root, path, true);
   guard(signal);
   const temporary = join11(dirname8(path), `.image-${randomUUID5()}.tmp`);
-  const fd = await open7(temporary, "wx", 384);
+  const fd = await open8(temporary, "wx", 384);
   try {
     try {
       await fd.writeFile(bytes);
@@ -28204,9 +28242,9 @@ async function publish(root, path, bytes, signal) {
     }
   } finally {
     await hostPath(root, temporary, true);
-    await rm3(temporary, { force: true });
+    await rm4(temporary, { force: true });
   }
-  const directory2 = await open7(dirname8(path), "r");
+  const directory2 = await open8(dirname8(path), "r");
   try {
     await directory2.sync();
   } finally {
@@ -28359,7 +28397,7 @@ var ImageStore = class {
     const request = await optional2(() => readMetadata(recording.path, join11(recording.path, "host", "requests", `${target.executionId}.json`), options.signal));
     if (!request) fail("unauthorized-reference", "Execution does not belong to this enclosure.");
     if (request.sessionId !== target.sessionId || request.executionId !== target.executionId) fail("integrity-failed", "Execution identity does not match its recording.");
-    if (request.capture === false) return { status: "not-requested", diagnostic: "The image lists no capture software (cua-driver), so this run took no snapshots." };
+    if (request.capture === false) return { status: "not-requested", diagnostic: "This lease's runs take no snapshots: its image lists no capture software (cua-driver), or its durable machine's cua-driver daemon cannot record the screen, as relay_stage's `snapshots.reason` says; so this run took none." };
     const group = request.snapshots?.group;
     const requested = !request.diagnostic && (target.phase === "before" ? !group || group.phase === "first" : !group || group.phase === "last");
     if (!requested) return { status: "not-requested", diagnostic: "The declared snapshot plan does not capture this phase." };
@@ -28868,7 +28906,6 @@ var MIN_RENEWAL_MS = 0.1 * 36e5;
 var DEFAULT_AFTER_INTERVAL_MS = 500;
 var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
 var durableRoot = (workspace, purpose) => join13(workspace, "work", `mcp-relay-${purpose}`);
-var PULL_MAX_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
 var CAPACITY_RETRY_MS = 15e3;
@@ -29404,9 +29441,8 @@ var Guest = class {
       pull: async (name, remote_path, local_path, options) => {
         if (!durable) return this.vm.pull(name, { remote_path, local_path, ...identity() }, options);
         if (!this.vm.pullBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
-        const bytes = await this.vm.pullBytes(name, { remote_path, maxBytes: PULL_MAX_BYTES, ...identity() }, options);
-        await rm4(local_path, { force: true });
-        await writeFile4(local_path, bytes, { flag: "wx", mode: 384 });
+        await rm5(local_path, { force: true });
+        await this.vm.pullBytes(name, { remote_path, to: local_path, ...identity() }, options);
         return { vm: name, pulled: remote_path, to: local_path };
       }
     };
@@ -30164,7 +30200,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     for (let attempt = 1; !files; attempt++) {
       try {
         await assertHostPath(e.hostRoot, folder, true);
-        await rm4(folder, { recursive: true, force: true });
+        await rm5(folder, { recursive: true, force: true });
         files = await this.transfer().pullArchive(e.guestRoot, e.guestRoot, requested, folder, e.hostRoot, { present: true, once: true, signal: bounded3 });
       } catch (error2) {
         const transient2 = !bounded3.aborted && transientTransfer(error2);
@@ -30226,7 +30262,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   async removeStepFolders(recording) {
     const steps = join13(recording, "host", "steps");
     await assertHostPath(recording, steps, true);
-    await rm4(steps, { recursive: true, force: true });
+    await rm5(steps, { recursive: true, force: true });
   }
   /** A lifecycle operation's gate (AD-5): every download ends before the guest state is touched; the queue opens again after. */
   async drained(fn) {
@@ -30671,7 +30707,7 @@ function validateRelayInput(value) {
 }
 
 // src/surface.ts
-import { mkdir as mkdir11, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir11, writeFile as writeFile4 } from "node:fs/promises";
 import { join as join14 } from "node:path";
 import { tmpdir as tmpdir2 } from "node:os";
 import { randomUUID as randomUUID7 } from "node:crypto";
@@ -30785,7 +30821,7 @@ async function renderRelayResult(value, resultRoot = join14(tmpdir2(), "mcp-rela
   if (text5 !== full) {
     await mkdir11(resultRoot, { recursive: true, mode: 448 });
     const path = join14(resultRoot, `${randomUUID7()}.json`);
-    await writeFile5(path, full, { mode: 384 });
+    await writeFile4(path, full, { mode: 384 });
     return { text: `${text5}
 [Truncated. Full result: ${path}]`, details: { resultPath: path }, resultPath: path };
   }

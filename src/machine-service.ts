@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { createHash } from "node:crypto";
+import { open, rm } from "node:fs/promises";
 import type { SelectedEnvironment, EnvironmentIdentity } from './environment.js';
 
 /**
@@ -124,6 +125,8 @@ export function expectMachineService(health: { service?: unknown }, origin: stri
   if (health.service === SERVICE_NAME) return;
   throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
 }
+/** A pull over the byte-carrying endpoint is abandoned when no byte arrives for this long, however large the file. */
+const PULL_IDLE_MS = 120_000;
 /** No acquire retry is safe: the daemon has no idempotency key/cancel endpoint. */
 export class AcquireIndeterminateError extends MachineServiceError {
   constructor(readonly purpose: string, cause: unknown) {
@@ -256,18 +259,32 @@ export class MachineService {
    */
   async pushBytes(vm: string, body: { remote_path: string; bytes: Buffer } & LeaseIdentity, options: RequestOptions = {}): Promise<BytesResponse> {
     const sha256 = createHash("sha256").update(body.bytes).digest("hex");
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes) }, options, this.maxResponseBytes);
+    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes.buffer as ArrayBuffer, body.bytes.byteOffset, body.bytes.byteLength) }, options, this.maxResponseBytes);
     const answer = this.json<BytesResponse>(response.path, response.text);
     if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
     return answer;
   }
-  /** Pull one file as bytes, `GET /machines/<name>/files`; refused unless the bytes match the digest the instance states (DC-31). */
-  async pullBytes(vm: string, body: { remote_path: string; maxBytes: number } & LeaseIdentity, options: RequestOptions = {}): Promise<Buffer> {
-    const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, options, body.maxBytes);
-    if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
-    const digest = createHash("sha256").update(response.bytes).digest("hex");
-    if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
-    return response.bytes;
+  /**
+   * Pull one file as bytes, `GET /machines/<name>/files`, into `to`, which
+   * must not exist. The bytes stream to disk as they are hashed, so a file of
+   * any size needs no memory of its size, and the pull is abandoned only when
+   * no byte arrives for its timeout. The file is removed unless the bytes
+   * match the digest the instance states (DC-31).
+   */
+  async pullBytes(vm: string, body: { remote_path: string; to: string } & LeaseIdentity, options: RequestOptions = {}): Promise<BytesResponse> {
+    const hash = createHash("sha256"), file = await open(body.to, "wx", 0o600);
+    let bytes = 0;
+    try {
+      const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async chunk => { hash.update(chunk); bytes += chunk.byteLength; await file.write(chunk); } });
+      if (response.contentType !== "application/octet-stream") throw new MachineServiceError(`machine-service ${response.path}: expected one file, got ${response.contentType ?? "no content type"}`);
+      const digest = hash.digest("hex");
+      if (!response.sha256 || digest !== response.sha256.toLowerCase()) throw new MachineServiceError(`machine-service ${response.path}: the bytes' SHA-256 ${digest} differs from the stated ${response.sha256 ?? "none"}`);
+      await file.sync(); await file.close();
+      return { sha256: digest, bytes };
+    } catch (error) {
+      await file.close().catch(() => {}); await rm(body.to, { force: true });
+      throw error;
+    }
   }
   private filesPath(vm: string, remote: string, lease_id?: string): string {
     const query = new URLSearchParams({ ...(lease_id ? { lease_id } : {}), path: remote });
@@ -289,14 +306,20 @@ export class MachineService {
     try { return JSON.parse(text) as T; }
     catch (cause) { throw new MachineServiceError(`machine-service ${path}: invalid JSON response`, undefined, undefined, { cause }); }
   }
-  /** One request whose answer is read up to `maxBytes`; an error answer is read up to 4 KiB and thrown with its status. */
-  private async fetchBounded(path: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array<ArrayBuffer> }, options: RequestOptions, maxBytes: number) {
+  /**
+   * One request whose answer is read up to `maxBytes`; an error answer is read
+   * up to 4 KiB and thrown with its status. With `sink`, a successful answer is
+   * handed over chunk by chunk instead of kept; with `idle`, the timeout counts
+   * from the last chunk rather than from the start.
+   */
+  private async fetchBounded(path: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array<ArrayBuffer> }, options: RequestOptions, maxBytes: number, stream: { sink?: (chunk: Uint8Array) => Promise<void>; idle?: boolean } = {}) {
     options.signal?.throwIfAborted();
     const timeoutMs = positive(options.timeoutMs ?? this.timeoutMs, "timeoutMs");
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(() => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms`)), timeoutMs);
+    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`));
+    let timer = setTimeout(expire, timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method: init.method,
@@ -315,6 +338,8 @@ export class MachineService {
           for (;;) {
             const { value, done } = await reader.read();
             if (done) break;
+            if (stream.idle) { clearTimeout(timer); timer = setTimeout(expire, timeoutMs); }
+            if (response.ok && stream.sink) { size += value.byteLength; await stream.sink(value); continue; }
             const remaining = bound - size;
             chunks.push(value.subarray(0, remaining));
             size += Math.min(value.byteLength, remaining);
@@ -322,6 +347,7 @@ export class MachineService {
           }
         } finally { reader.releaseLock(); }
       }
+      // Only an answer that was kept is decoded: a streamed one never becomes a string, whose length is bounded.
       const bytes = Buffer.concat(chunks), text = bytes.toString("utf8");
       if (!response.ok) throw new MachineServiceError(`machine-service ${path}: HTTP ${response.status}: ${text}${truncated ? " [truncated]" : ""}`, response.status, text);
       if (truncated) throw new MachineServiceError(`machine-service ${path}: response exceeds ${bound} bytes`);
@@ -329,7 +355,7 @@ export class MachineService {
     } catch (cause) {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (cause instanceof MachineServiceError) throw cause;
-      throw new MachineServiceError(`machine-service ${path}: request failed`, undefined, undefined, { cause });
+      throw new MachineServiceError(`machine-service ${path}: request failed${cause instanceof Error ? `: ${cause.message}` : ""}`, undefined, undefined, { cause });
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
