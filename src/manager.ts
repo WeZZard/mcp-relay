@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, cp, access, statfs, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
@@ -22,9 +22,12 @@ import { ImageStore, imageCapability, type ImageDescriptor, type ImageTarget, ty
 import { DownloadQueue, type DownloadJob, type StepResult } from './downloads.js';
 import type { LocalSource } from './transfer.js';
 import { refreshEvidenceState } from './evidence-merge.js';
+import { findDurableOwner, type DurableOwner } from './discovery.js';
+import { durableCapture, type PermissionAnswer } from './capture-gate.js';
 
 export interface Extraction { path: string; name: string }
-export interface AcquireInput { task: string; image: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean }
+/** Exactly one of `image`, a VM image, and `machine`, a durable machine's name (DC-29). */
+export interface AcquireInput { task: string; image?: string; machine?: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean }
 /**
  * `guest` names the guest a call acts on (DC-20). The MCP tools require it;
  * a caller of the manager itself may leave it out while the session holds
@@ -43,11 +46,19 @@ export interface StageInput extends GuestSelector { resetRecording?: boolean; wo
 export interface RunInput extends GuestSelector { because?: string; timeoutMs?: number; diagnostic?: boolean; step?: Partial<StepDescription>; snapshots?: SnapshotsRequest; inline: boolean; localPath?: string; language: 'shell' | 'javascript' | 'typescript' | 'python'; code?: string }
 /** The file name extension of a script file the relay uploads, by language. */
 const SCRIPT_EXTENSIONS = { shell: 'sh', javascript: 'js', typescript: 'ts', python: 'py' } as const;
-interface BackendBinding { endpoint: string; tartHome: string; environmentFingerprint?: string }
+/** The backend a guest's lease lives on: the loopback instance and its Tart store, or for a durable machine the owner's origin and instance ID (DC-29). */
+interface BackendBinding { endpoint: string; tartHome?: string; environmentFingerprint?: string; instance?: string }
 /** One guest's durable ownership record, `guests/<guest>/lease.json` in the session's state directory. */
 interface Enclosure {
   backend?: BackendBinding;
+  /** The VM image, or for a durable machine its name. */
   purpose: string; task: string; image: string; project: string; startedAt: string;
+  /** A durable machine's name; absent for a VM (docs/durable-machines.md). */
+  machine?: string;
+  /** Why a durable machine's runs take snapshots or not, from its cua-driver daemon (DC-32). */
+  captureReason?: string;
+  /** The durable release's hygiene record (DC-33). */
+  hygiene?: unknown;
   guestRoot: string; hostRoot: string; ttlHours: number; extractions: Extraction[]; fullWorkspace: boolean;
   lease?: VmLease; row: RegistryRow; staged: boolean; node?: string; cuaDriver?: string; sessionId?: string;
   /** Whether the image lists capture software, decided once at the first stage; absent on older leases, which capture. */
@@ -98,6 +109,12 @@ export interface ManagerOptions {
   captureReadyWaitMs?: number;
   /** How often relay_stage asks the guest's cua-driver again; default CAPTURE_READY_RETRY_MS (DC-24). */
   captureReadyRetryMs?: number;
+  /** The Consul agent that lists machine-service instances; default CONSUL_HTTP_ADDR (DC-29). */
+  consul?: string;
+  /** Test seam: the backend for an instance Consul lists. */
+  durableBackend?: (origin: string) => VmBackend;
+  /** Test seam: Consul's answer. */
+  consulFetch?: (url: string) => Promise<unknown>;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -122,6 +139,10 @@ export const DEFAULT_AFTER_INTERVAL_MS = 500;
  * (docs/guest-code-runs.md §3).
  */
 export const CAPTURE_SOFTWARE: readonly string[] = ['bundle:com.trycua.driver', 'dpkg:cua-driver'];
+/** A durable guest's root, under its lease's workspace, which machine-service removes at release (DC-31). */
+export const durableRoot = (workspace: string, purpose: string) => join(workspace, 'work', `mcp-relay-${purpose}`);
+/** The most bytes one pull over the byte-carrying endpoint may bring back; relay evidence is otherwise unbounded, so this only bounds memory. */
+const PULL_MAX_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 /** Background step downloads a run may leave queued before it waits for the oldest (DC-4). */
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
@@ -152,7 +173,7 @@ async function settleEach(work: Array<Promise<unknown>>) {
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers fourteen tools for guests, VMs that run the work you choose to run there: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. The relay never targets a physical or local display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job may share its desktop, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host\'s display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
 export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
@@ -172,7 +193,6 @@ export class RelayManager {
   readonly tartPath: string;
   readonly registry: Registry;
   readonly root: string;
-  readonly channel: VmChannel;
   /** The most guests this session holds at once (DC-20). */
   readonly maxGuests: number;
   /** How long an acquisition waits for a host at capacity, and how often it is asked again (DC-22). */
@@ -201,14 +221,10 @@ export class RelayManager {
     this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
     this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
     this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
-    this.channel = {
-      exec: async (name, argv, timeoutMs = 180000, options) => {
-        const result = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs / 1000) }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal });
-        return { stdout: result.output, stderr: result.output, code: result.rc };
-      },
-      push: (name, local_path, remote_path) => this.vm.push(name, { local_path, remote_path }),
-      pull: (name, remote_path, local_path, options) => this.vm.pull(name, { remote_path, local_path }, options),
-    };
+  }
+  /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
+  durableOwner(machine: string): Promise<DurableOwner> {
+    return findDurableOwner(machine, { local: this.vm, ...(this.options.consul ? { consul: this.options.consul } : {}), ...(this.options.durableBackend ? { backend: this.options.durableBackend } : {}), ...(this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}) });
   }
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn); this.queue = next.catch(() => {}); return next;
@@ -303,6 +319,8 @@ export class RelayManager {
   }
   binding(): BackendBinding { return { endpoint: this.vm.baseUrl, tartHome: this.tartHome, ...(this.environment ? { environmentFingerprint: this.environment.identity.fingerprint } : {}) }; }
   bindingMatches(e: Enclosure): boolean {
+    // A durable machine's owner is found again from Consul when the guest is reconciled (DC-29).
+    if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
     if (e.backend) {
       const expected = this.binding();
       return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => e.backend![key as keyof BackendBinding] === value);
@@ -398,6 +416,9 @@ export class RelayManager {
       const network = this.options.guestNetwork ?? guestNetwork();
       if (!(GUEST_NETWORKS as readonly string[]).includes(network)) throw new Error(`guestNetwork must be nat or internet, not ${JSON.stringify(network)}`);
       if (typeof input.task !== 'string' || !TASK.test(input.task)) throw new Error('task must be a lowercase slug (1–36 chars)');
+      if ((input.image === undefined) === (input.machine === undefined)) throw new Error('relay_acquire takes exactly one of image, a VM image, and machine, a durable machine\'s name');
+      if (input.machine !== undefined && (typeof input.machine !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.machine))) throw new Error('machine must be a durable machine\'s name, as machctl list shows it');
+      if (input.machine !== undefined && input.vnc) throw new Error('A durable machine has no console: view it with Screen Sharing, outside the relay; nothing was acquired');
       if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error('Declare up to 100 extractions before work');
       const names = new Set<string>();
       for (const extraction of input.extractions) {
@@ -543,6 +564,50 @@ class Guest {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   readonly downloads: DownloadQueue;
+  /** A durable machine's owner, once found (DC-29). */
+  private owner?: VmBackend;
+  /** The backend this guest's lease lives on: the loopback instance, or a durable machine's owner. */
+  get vm(): VmBackend {
+    const e = this.enclosure;
+    if (!e?.machine) return this.m.vm;
+    if (this.owner) return this.owner;
+    if (!e.backend?.endpoint || e.backend.endpoint === this.m.vm.baseUrl) return this.owner = this.m.vm;
+    throw new Error(`The owner of durable machine ${e.machine} has not been found again in this process; nothing was sent`);
+  }
+  /**
+   * machine-service as the guest's only channel. Every call names the lease's
+   * `lease_id` (DC-30); on a durable machine every file goes as bytes (DC-31).
+   */
+  get channel(): VmChannel {
+    const identity = () => { const id = this.enclosure?.lease?.lease_id; return id ? { lease_id: id } : {}; };
+    const durable = !!this.enclosure?.machine;
+    return {
+      exec: async (name, argv, timeoutMs = 180000, options) => {
+        const result = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs / 1000), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal });
+        return { stdout: result.output, stderr: result.output, code: result.rc };
+      },
+      push: async (name, local_path, remote_path) => {
+        if (!durable) return this.vm.push(name, { local_path, remote_path, ...identity() });
+        if (!this.vm.pushBytes) throw new Error('Backend lacks byte transfers; upgrade machine-service');
+        return this.vm.pushBytes(name, { remote_path, bytes: await readFile(local_path), ...identity() });
+      },
+      pull: async (name, remote_path, local_path, options) => {
+        if (!durable) return this.vm.pull(name, { remote_path, local_path, ...identity() }, options);
+        if (!this.vm.pullBytes) throw new Error('Backend lacks byte transfers; upgrade machine-service');
+        const bytes = await this.vm.pullBytes(name, { remote_path, maxBytes: PULL_MAX_BYTES, ...identity() }, options);
+        // As machine-service's path-based pull does, a pull replaces the file in place.
+        await rm(local_path, { force: true }); await writeFile(local_path, bytes, { flag: 'wx', mode: 0o600 });
+        return { vm: name, pulled: remote_path, to: local_path };
+      },
+    };
+  }
+  /** Find a durable machine's owner again, and refuse when its origin or instance changed (DC-29). */
+  private async findOwner(e: Enclosure) {
+    if (!e.machine || this.owner) return;
+    const owner = await this.m.durableOwner(e.machine);
+    if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
+    this.owner = owner.backend;
+  }
   constructor(readonly m: RelayManager, readonly name: string, record?: Enclosure) {
     this.dir = join(m.root, 'guests', name);
     if (record) { this.enclosure = record; record.active = false; }
@@ -581,15 +646,22 @@ class Guest {
   }
   private async reconcile() {
     const e = this.enclosure; if (!e) return;
-    this.assertBinding(); await this.m.assertBackend();
+    this.assertBinding(); await this.m.assertBackend(); await this.findOwner(e);
     e.backend ??= this.m.binding();
     if (!e.lease) {
-      const matches = Object.values((await this.m.vm.list({ timeoutMs: 10000 })).machines).filter(v => v.purpose === e.purpose);
+      const matches = Object.values((await this.vm.list({ timeoutMs: 10000 })).machines).filter(v => v.purpose === e.purpose);
       if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
       e.lease = matches[0]; e.acquisitionInFlight = false;
+      if (e.machine && e.lease.workspace) e.guestRoot = durableRoot(e.lease.workspace, e.purpose);
     }
     try {
-      const lease = await this.m.vm.get(e.lease.vm, { timeoutMs: 10000 });
+      const lease = await this.vm.get(e.lease.vm, { timeoutMs: 10000 });
+      // A durable machine outlives its leases: a record that names another lease, or none, means ours has ended (DC-33).
+      if (e.machine && lease.lease_id !== e.lease.lease_id) {
+        await this.m.registry.remove(e.row);
+        await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, machine: e.machine, released: true, reason: 'the durable machine no longer names this lease', finishedAt: new Date().toISOString() });
+        this.enclosure = undefined; await this.save(); await this.m.forget(this); return;
+      }
       if (lease.purpose !== e.purpose || (e.lease.lease_id && lease.lease_id !== e.lease.lease_id)) throw new Error('Lease ownership identity mismatch');
       if (e.lease.console?.console_id && lease.console?.console_id !== e.lease.console.console_id) throw new Error('Console instance identity mismatch during lease reconciliation');
       if (lease.console) {
@@ -628,19 +700,21 @@ class Guest {
     // Only Node.js is required, by staging; the other runtimes are facts (DC-13). `/bin/sh` has no portable --version, so it runs `exit 0`.
     for (const [name, language, argv] of [['node', 'javascript', [e.node ?? 'node', '--version']], ['tsx', 'typescript', ['tsx', '--version']], ['python3', 'python', ['python3', '--version']], ['sh', 'shell', ['/bin/sh', '-c', 'exit 0']]] as const) {
       const required = name === 'node';
-      try { const r = await this.m.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, language, required, ...r, ready: r.code === 0 }); }
+      try { const r = await this.channel.exec(e.lease!.vm, [...argv], 10000); checks.push({ name, language, required, ...r, ready: r.code === 0 }); }
       catch (error) { checks.push({ name, language, required, ready: false, diagnostic: String(error) }); }
     }
     // Without tsx, TypeScript runs with the guest Node.js's own type stripping, 22.6 or later (DC-25).
     const tsx = checks[1] as { ready: boolean; runsWith?: string }, nodeVersion = /^v(\d+)\.(\d+)/.exec(String((checks[0] as { stdout?: string }).stdout ?? ''));
     if (!tsx.ready && nodeVersion && (Number(nodeVersion[1]) > 22 || (Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) >= 6))) Object.assign(tsx, { ready: true, runsWith: 'Node.js type stripping' });
-    let software: { image: string; applications?: unknown[]; diagnostic?: string };
-    try {
-      const catalog: unknown = await this.m.vm.applications({ timeoutMs: 10000 }); validateCatalog(catalog);
+    let software: { image?: string; machine?: string; applications?: unknown[]; software?: unknown; diagnostic?: string };
+    // A durable machine reports its own software in its capabilities (MM-3).
+    if (e.machine) software = { machine: e.machine, software: (await this.vm.get(e.lease!.vm, { timeoutMs: 10000 })).capabilities?.software ?? null };
+    else try {
+      const catalog: unknown = await this.vm.applications({ timeoutMs: 10000 }); validateCatalog(catalog);
       const listed = catalog.images.find(image => image.image === e.image);
       software = listed ? { image: e.image, applications: listed.applications } : { image: e.image, applications: [], diagnostic: `The catalog does not list ${e.image}.` };
     } catch (error) { software = { image: e.image, diagnostic: `The image catalog could not be read: ${message(error)}` }; }
-    const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
+    const snapshots = e.capture === undefined && !e.staged ? { taken: null, reason: e.machine ? 'Decided at relay_stage: runs take snapshots only when the machine\'s cua-driver daemon holds Screen Recording.' : 'Decided at relay_stage: runs take snapshots only when the image lists capture software (cua-driver).' } : this.snapshotFacts(e);
     const facts = { scope: 'guest', guest: this.name, observedAt: new Date().toISOString(), owned: this.status(), checks, software, snapshots, note: 'A ready runtime means its --version, or for /bin/sh `exit 0`, exited 0. Listed software is what the catalog says the image holds; it never proves that a program runs, that a browser renders on the display or that capture works.', captureVerified: false, browserVerified: false };
     await this.log('guest-readiness', undefined, facts); return facts;
   }
@@ -654,9 +728,9 @@ class Guest {
   }
   async resolveConsole(signal?: AbortSignal) {
     const e = await this.consoleOwner(signal);
-    if (!this.m.vm.consoleResolve) throw new Error('Backend lacks console API; upgrade machine-service');
+    if (!this.vm.consoleResolve) throw new Error('Backend lacks console API; upgrade machine-service');
     let observation: ConsoleStatus;
-    try { observation = consoleStatus(await this.m.vm.consoleResolve(e.lease!.vm, { lease_id: e.lease!.lease_id! }, { signal, timeoutMs: 10000 })); }
+    try { observation = consoleStatus(await this.vm.consoleResolve(e.lease!.vm, { lease_id: e.lease!.lease_id! }, { signal, timeoutMs: 10000 })); }
     catch (error) {
       if (e.consoleObservation && e.consoleObservation.status !== 'revoked') e.consoleObservation = { ...e.consoleObservation, status: 'unknown' };
       await this.save(); throw error;
@@ -677,7 +751,7 @@ class Guest {
     const resolved = await this.resolveConsole(signal), e = this.current();
     if (!e.lease!.console?.console_id) throw new Error('This lease has no acquired console; automatic VNC retrofit is forbidden');
     if (resolved.console_id !== input.console_id) throw new Error('Console instance identity mismatch');
-    const method = operation === 'open' ? this.m.vm.consoleOpen : this.m.vm.consoleCancel;
+    const method = operation === 'open' ? this.vm.consoleOpen : this.vm.consoleCancel;
     if (!method) throw new Error('Backend lacks console API; upgrade machine-service');
     if (operation === 'open') {
       if (resolved.viewer_location !== 'service-host') throw new Error('Only a viewer on the declared service host is supported; no remote-client viewer fallback');
@@ -697,7 +771,7 @@ class Guest {
     await this.save();
     await this.log(`console-${operation}-intent`, 'reason' in input ? input.reason : undefined, { ...body, ...('expected' in input ? { expected: input.expected } : {}), screenshotEvidence: false });
     try {
-      const observation = consoleStatus(await method.call(this.m.vm, e.lease!.vm, body, { signal, timeoutMs: 30000 }));
+      const observation = consoleStatus(await method.call(this.vm, e.lease!.vm, body, { signal, timeoutMs: 30000 }));
       this.assertConsoleIdentity(observation, e);
       if (observation.console_id !== body.console_id || observation.attempt?.attempt_id !== body.attempt_id) throw new Error('Console response identity mismatch');
       e.consoleObservation = observation; e.consoleAttempt.status = observation.attempt.status;
@@ -709,7 +783,7 @@ class Guest {
     }
   }
   private current() { this.assertBinding(); if (!this.enclosure?.lease || this.enclosure.released) throw new Error(`No active lease for guest ${this.name}; use relay_acquire`); return this.enclosure; }
-  private transfer() { const e = this.current(); if (!e.node) throw new Error('Stage runtime first'); return new Transfer(this.m.channel, e.lease!.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) }); }
+  private transfer() { const e = this.current(); if (!e.node) throw new Error('Stage runtime first'); return new Transfer(this.channel, e.lease!.vm, e.node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) }); }
   async log(kind: string, because?: string, details: unknown = {}) {
     if (because !== undefined) this.m.reason(because);
     const e = this.enclosure;
@@ -723,13 +797,17 @@ class Guest {
    */
   async acquire(input: AcquireInput, network: GuestNetwork, signal?: AbortSignal) {
     const ttlHours = input.ttlHours ?? 4;
+    let owner: DurableOwner | undefined;
     try {
       if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
-      const images = await this.m.vm.images({ timeoutMs: 5000, signal });
-      if (!images.images[input.image]?.base_available) throw new Error(`Image unavailable: ${input.image}`);
-      if (input.vnc) {
-        const capabilities = await this.m.readAcquisitionCapabilities(signal);
-        if (!capabilities.options.vnc.backends[images.images[input.image]!.kind].available) throw new Error('VNC backend unavailable for this image OS; ordinary acquisition was not attempted');
+      if (input.machine) owner = await this.m.durableOwner(input.machine);
+      else {
+        const image = input.image!, images = await this.vm.images({ timeoutMs: 5000, signal });
+        if (!images.images[image]?.base_available) throw new Error(`Image unavailable: ${image}`);
+        if (input.vnc) {
+          const capabilities = await this.m.readAcquisitionCapabilities(signal);
+          if (!capabilities.options.vnc.backends[images.images[image]!.kind].available) throw new Error('VNC backend unavailable for this image OS; ordinary acquisition was not attempted');
+        }
       }
       await this.lock();
     } catch (error) { await this.m.forget(this); throw error; }
@@ -738,8 +816,11 @@ class Guest {
     const stamp = startedAt.slice(0, 19).replace(/[T:]/g, '-') + '-Z';
     const project = this.m.options.project, environment = this.m.environment;
     const hostRoot = join(this.m.options.outputRoot ?? resolve(project, 'relay-evidence'), purpose);
-    const row: RegistryRow = { machine: environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: input.image, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
-    const e: Enclosure = this.enclosure = { backend: this.m.binding(), purpose, task: input.task, image: input.image, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    const subject = input.machine ?? input.image!;
+    const row: RegistryRow = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? 'macos (durable)' : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
+    // A durable guest's root moves under the lease's workspace once the lease names it (DC-31).
+    const e: Enclosure = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance } : this.m.binding(), purpose, task: input.task, image: subject, ...(input.machine ? { machine: input.machine } : {}), project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    if (owner) this.owner = owner.backend;
     let refused = false;
     try { await this.save(); }
     catch (error) { this.enclosure = undefined; await this.m.forget(this); throw error; }
@@ -754,7 +835,10 @@ class Guest {
         e.acquisitionInFlight = true; await this.save();
         const asked = Date.now();
         try {
-          e.lease = await this.m.vm.acquire({ purpose, image: input.image, env: input.env ?? 'none', ttl_hours: Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+          const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000;
+          // A durable acquisition names the machine and nothing a running Mac cannot apply (DM-3).
+          e.lease = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? 'none', ttl_hours } : { purpose, image: input.image, env: input.env ?? 'none', ttl_hours, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+          if (e.machine) e.guestRoot = durableRoot(e.lease.workspace!, purpose);
           e.acquisitionInFlight = false; granted = asked; break;
         } catch (error) {
           if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
@@ -781,7 +865,7 @@ class Guest {
       // that arrived after the caller cancelled stays owned and renewed, and
       // the error says so, so the agent can continue, finish or release it.
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease!.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, network, waitedForCapacityMs };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, ...(e.machine ? { machine: e.machine, kind: 'durable' as const, network: 'lan' as const } : { network }), waitedForCapacityMs };
     } catch (error) {
       if (refused && await this.withdraw(error)) throw error;
       await this.fail(error);
@@ -818,7 +902,7 @@ class Guest {
   private async withdraw(error: unknown) {
     const e = this.enclosure!;
     try {
-      if (Object.values((await this.m.vm.list({ timeoutMs: 10000 })).machines).some(lease => lease.purpose === e.purpose)) return false;
+      if (Object.values((await this.vm.list({ timeoutMs: 10000 })).machines).some(lease => lease.purpose === e.purpose)) return false;
       await this.m.registry.remove(e.row);
       await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, released: false, acquired: false, reason: 'machine-service refused the acquisition', error: String(error), finishedAt: new Date().toISOString() });
       this.enclosure = undefined; await this.save(); await this.m.forget(this);
@@ -854,7 +938,7 @@ class Guest {
       const remaining = this.remainingMs(e);
       if (remaining < MIN_RENEWAL_MS) { await this.stopRenewal(e); return; }
       this.assertBinding(); await this.m.assertBackend();
-      const renewed = await this.m.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 3600000 }, { timeoutMs: 10000 });
+      const renewed = await this.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 3600000, ...(lease.lease_id ? { lease_id: lease.lease_id } : {}) }, { timeoutMs: 10000 });
       if (this.enclosure !== e || e.released) return;
       e.expiresAt = renewed.ttl_expires_at; e.guestState = renewed.state; await this.save();
     }
@@ -892,13 +976,18 @@ class Guest {
     const bundle = this.m.options.runtimeBundle ?? fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
     await access(bundle);
     // The host decides once per lease whether its runs take snapshots (DC-13).
-    if (e.capture === undefined && !e.staged) { e.capture = await this.captureSoftware(e, signal); await this.save(); }
+    if (!e.machine && e.capture === undefined && !e.staged) { e.capture = await this.captureSoftware(e, signal); await this.save(); }
     const node = input.nodePath ?? e.node ?? 'node';
-    const transfer = new Transfer(this.m.channel, e.lease!.vm, node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) });
+    const transfer = new Transfer(this.channel, e.lease!.vm, node, { guestRoot: e.guestRoot, hostTempRoot: join(this.m.root, 'transfer-tmp'), onRetry: event => this.log('transfer-retry', undefined, event), onArchiveFallback: event => this.log('archive-fallback', undefined, event) });
     // Node.js is the only software staging assumes: it runs the relay's own guest code (DC-13).
     try { await transfer.checked([node, '--version']); }
     catch (error) { throw new Error(`relay_stage needs Node.js in the guest to run the relay's own code, and \`${node} --version\` failed: ${error instanceof Error ? error.message : String(error)}. The relay pushes no runtime, so an image without Node.js cannot be staged; choose an image that lists Node.js (relay_search), or name the guest's Node.js with nodePath.`, { cause: error }); }
-    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease!.image_kind === 'macos' ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver');
+    const cuaDriver = input.cuaDriver ?? e.cuaDriver ?? (e.lease!.image_kind === 'macos' || e.machine ? '/Applications/CuaDriver.app/Contents/MacOS/cua-driver' : 'cua-driver');
+    // A durable machine's cua-driver daemon decides at every stage, since its grants can change (DC-32).
+    if (e.machine) {
+      const decision = await this.durableCapture(e, cuaDriver, signal);
+      e.capture = decision.capture; e.captureReason = decision.reason; await this.save();
+    }
     if (e.capture !== false) await this.awaitCapture(transfer, e, node, cuaDriver, signal);
     e.node = node; e.cuaDriver = cuaDriver;
     await this.save();
@@ -912,7 +1001,7 @@ class Guest {
     this.transport = new VmTransport(transfer, e.guestRoot, join(e.hostRoot, 'host'), e.cuaDriver);
     this.transport.capture = e.capture !== false;
     relay.useTransport(() => this.transport!);
-    this.session = await relay.start({ taskId: e.purpose, target: `machine-service:${e.lease!.vm}` });
+    this.session = await relay.start({ taskId: e.purpose, target: `machine-service:${e.machine ? `durable:${e.machine}` : e.lease!.vm}` });
     e.sessionId = this.session.sessionId; e.staged = true; await this.save();
     return { staged: true, workspace: join(e.guestRoot, 'workspace'), files: staged, extractions: e.extractions, snapshots: this.snapshotFacts(e), capabilities: { image: imageCapability } };
   }
@@ -923,11 +1012,27 @@ class Guest {
    */
   private async captureSoftware(e: Enclosure, signal?: AbortSignal): Promise<boolean> {
     let catalog: unknown;
-    try { catalog = await this.m.vm.applications({ timeoutMs: 10000, signal }); validateCatalog(catalog); }
+    try { catalog = await this.vm.applications({ timeoutMs: 10000, signal }); validateCatalog(catalog); }
     catch (error) { throw new Error(`relay_stage could not read the image catalog to learn whether ${e.image} lists capture software (cua-driver), so nothing was staged: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
     const capture = catalog.images.some(image => image.image === e.image && image.applications.some(app => CAPTURE_SOFTWARE.includes(app.id)));
     await this.log('capture-software', undefined, { image: e.image, capture, ids: CAPTURE_SOFTWARE });
     return capture;
+  }
+  /**
+   * Whether a durable machine's runs take snapshots: its capabilities list
+   * cua-driver, and the cua-driver daemon, not machine-service, holds Screen
+   * Recording (DC-32).
+   */
+  private async durableCapture(e: Enclosure, cuaDriver: string, signal?: AbortSignal) {
+    const software = (await this.vm.get(e.lease!.vm, { timeoutMs: 10000, signal })).capabilities?.software;
+    let answer: PermissionAnswer | undefined;
+    if (software && typeof software === 'object' && software.cua_driver) {
+      try { answer = await this.channel.exec(e.lease!.vm, [cuaDriver, 'permissions', 'status', '--json'], 30000, { signal }); }
+      catch (error) { if (signal?.aborted) throw error; answer = { error: message(error) }; }
+    }
+    const decision = durableCapture(e.machine!, software, answer);
+    await this.log('capture-permission', undefined, { machine: e.machine, ...decision, answer });
+    return decision;
   }
   /**
    * Waits until the guest's cua-driver takes a screenshot, as each run's
@@ -959,6 +1064,7 @@ class Guest {
   }
   /** What a lease's runs record: snapshots when its image lists cua-driver, none otherwise. */
   private snapshotFacts(e: Enclosure) {
+    if (e.machine) return { taken: e.capture === true, reason: e.captureReason ?? 'Decided at relay_stage.' };
     return e.capture === false
       ? { taken: false, reason: `${e.image} lists no capture software (cua-driver), so runs take no snapshots and their records have none.` }
       : { taken: true, reason: e.capture ? `${e.image} lists cua-driver, so each run takes before and after snapshots.` : 'This lease predates the capture decision, so each run takes before and after snapshots.' };
@@ -1032,12 +1138,12 @@ class Guest {
       ensureGuest: async (signal, deadline) => {
         const options = { signal, timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())) };
         if (this.m.environment) {
-          const health = await this.m.vm.health(options);
+          const health = await this.vm.health(options);
           if (!health.ok || !matchesEnvironment(health.environment, this.m.environment)) throw Object.assign(new Error('Selected backend identity changed.'), { code: 'unauthorized-reference' });
         }
         try {
-          const lease = await this.m.vm.get(e.lease!.vm, options);
-          if (lease.purpose !== e.purpose) throw Object.assign(new Error('Lease ownership identity changed.'), { code: 'unauthorized-reference' });
+          const lease = await this.vm.get(e.lease!.vm, options);
+          if (lease.purpose !== e.purpose || (e.lease!.lease_id && lease.lease_id !== e.lease!.lease_id)) throw Object.assign(new Error('Lease ownership identity changed.'), { code: 'unauthorized-reference' });
         } catch (error) {
           if (error instanceof MachineServiceError && error.status === 404) throw Object.assign(new Error('Saved image guest is no longer available.'), { code: 'stale-reference' });
           throw error;
@@ -1307,7 +1413,7 @@ class Guest {
     let result;
     try {
       // A cancelled command stops waiting for the guest; the outcome is then uncertain.
-      const r = await this.m.channel.exec(e.lease!.vm, argv, timeoutMs, { signal });
+      const r = await this.channel.exec(e.lease!.vm, argv, timeoutMs, { signal });
       // machine-service returns one stream with stdout and stderr interleaved; report it once, as what it is.
       result = { executionId, outcome: { kind: 'completed' as const, exitStatus: { code: r.code, signal: null } }, output: r.stdout, outputStreams: 'stdout and stderr combined' };
     } catch (error) { result = { executionId, outcome: { kind: 'uncertain' as const, diagnostic: String(error) }, output: '', outputStreams: 'stdout and stderr combined' }; }
@@ -1353,10 +1459,11 @@ class Guest {
   private async releaseInternal(reason: 'finished' | 'failed' | 'released', { attempts = 3, timeoutMs = 120000 } = {}) {
     this.assertBinding(); await this.m.assertBackend();
     const e = this.enclosure; if (!e) return;
+    await this.findOwner(e);
     this.stopTimer();
     if (!e.released) {
       if (!e.lease) {
-        const list = await this.m.vm.list({ timeoutMs: 10000 });
+        const list = await this.vm.list({ timeoutMs: 10000 });
         const matches = Object.values(list.machines).filter(lease => lease.purpose === e.purpose);
         if (matches.length > 1) throw new Error('Ambiguous acquisition; refusing to remove ownership record');
         if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.dir}. Reconcile before retrying; never blindly acquire again.`);
@@ -1365,24 +1472,33 @@ class Guest {
       if (e.lease) {
         let released = false;
         for (let attempt = 0; attempt < attempts; attempt++) {
-          try { const response = await this.m.vm.release(e.lease.vm, { reason }, { timeoutMs }); if (!response.released) throw new Error('machine-service did not confirm destruction'); released = true; break; }
-          catch (error) {
+          try {
+            const response = await this.vm.release(e.lease.vm, { reason, ...(e.lease.lease_id ? { lease_id: e.lease.lease_id } : {}) }, { timeoutMs });
+            if (!response.released) throw new Error('machine-service did not confirm destruction');
+            if (e.machine) { e.hygiene = response.hygiene; await this.save().catch(() => {}); }
+            released = true; break;
+          } catch (error) {
             await this.log('release-error', undefined, { vm: e.lease.vm, cause: reason, attempt: attempt + 1, error: String(error) }).catch(() => {});
-            try { await this.m.vm.get(e.lease.vm, { timeoutMs: 5000 }); }
+            try { const record = await this.vm.get(e.lease.vm, { timeoutMs: 5000 }); if (e.machine && record.lease_id !== e.lease.lease_id) { released = true; break; } }
             catch (getError) { if (getError instanceof MachineServiceError && getError.status === 404) { released = true; break; } }
             if (attempt === attempts - 1) throw error;
           }
         }
         if (!released) throw new Error('Lease release unconfirmed');
-        if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        if (e.machine) { if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`); }
+        else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true; await this.save().catch(() => {});
     }
     await this.m.registry.remove(e.row);
     await this.session?.close(); this.session = undefined; this.transport = undefined;
-    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, guest: this.name, vm: e.lease?.vm, released: true, reason, failed: e.failed, delivered: e.delivered, finishedAt: new Date().toISOString() }).catch(() => {});
+    await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, guest: this.name, vm: e.lease?.vm, ...(e.machine ? { machine: e.machine, lease_id: e.lease?.lease_id, hygiene: e.hygiene ?? null } : {}), released: true, reason, failed: e.failed, delivered: e.delivered, finishedAt: new Date().toISOString() }).catch(() => {});
     this.enclosure = undefined; await this.save();
     await this.m.forget(this);
+  }
+  /** A durable release is verified when the machine no longer names the lease (DC-33). */
+  private async durableReleased(e: Enclosure): Promise<boolean> {
+    return (await this.vm.get(e.lease!.vm, { timeoutMs: 10000 })).lease_id !== e.lease!.lease_id;
   }
   private async destroyed(vm: string): Promise<boolean> {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
@@ -1416,7 +1532,7 @@ class Guest {
     const remaining = this.remainingMs(e);
     if (remaining < MIN_RENEWAL_MS) return;
     try {
-      const renewed = await this.m.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 3600000 }, { timeoutMs: 10000 });
+      const renewed = await this.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 3600000, ...(e.lease.lease_id ? { lease_id: e.lease.lease_id } : {}) }, { timeoutMs: 10000 });
       if (this.enclosure === e && !e.released) { e.expiresAt = renewed.ttl_expires_at; e.guestState = renewed.state; }
     } catch (error) {
       await this.log('final-renewal-failed', undefined, { error: String(error), expiresAt: e.expiresAt ?? e.lease.ttl_expires_at }).catch(() => {});
