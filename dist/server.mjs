@@ -27,9 +27,9 @@ var __export = (target, all) => {
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    for (let key2 of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key2) && key2 !== except)
+        __defProp(to, key2, { get: () => from[key2], enumerable: !(desc = __getOwnPropDesc(from, key2)) || desc.enumerable });
   }
   return to;
 };
@@ -178,15 +178,15 @@ var require_code = __commonJS({
       return JSON.stringify(x).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     }
     exports.safeStringify = safeStringify;
-    function getProperty(key) {
-      return typeof key == "string" && exports.IDENTIFIER.test(key) ? new _Code(`.${key}`) : _`[${key}]`;
+    function getProperty(key2) {
+      return typeof key2 == "string" && exports.IDENTIFIER.test(key2) ? new _Code(`.${key2}`) : _`[${key2}]`;
     }
     exports.getProperty = getProperty;
-    function getEsmExportName(key) {
-      if (typeof key == "string" && exports.IDENTIFIER.test(key)) {
-        return new _Code(`${key}`);
+    function getEsmExportName(key2) {
+      if (typeof key2 == "string" && exports.IDENTIFIER.test(key2)) {
+        return new _Code(`${key2}`);
       }
-      throw new Error(`CodeGen: invalid export name: ${key}, use explicit $id name mapping`);
+      throw new Error(`CodeGen: invalid export name: ${key2}, use explicit $id name mapping`);
     }
     exports.getEsmExportName = getEsmExportName;
     function regexpCode(rx) {
@@ -813,11 +813,11 @@ var require_codegen = __commonJS({
       // returns code for object literal for the passed argument list of key-value pairs
       object(...keyValues) {
         const code = ["{"];
-        for (const [key, value] of keyValues) {
+        for (const [key2, value] of keyValues) {
           if (code.length > 1)
             code.push(",");
-          code.push(key);
-          if (key !== value || this.opts.es5) {
+          code.push(key2);
+          if (key2 !== value || this.opts.es5) {
             code.push(":");
             (0, code_1.addCodeArg)(code, value);
           }
@@ -1092,17 +1092,17 @@ var require_util = __commonJS({
       if (typeof schema === "boolean")
         return;
       const rules = self.RULES.keywords;
-      for (const key in schema) {
-        if (!rules[key])
-          checkStrictMode(it, `unknown keyword: "${key}"`);
+      for (const key2 in schema) {
+        if (!rules[key2])
+          checkStrictMode(it, `unknown keyword: "${key2}"`);
       }
     }
     exports.checkUnknownRules = checkUnknownRules;
     function schemaHasRules(schema, rules) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (rules[key])
+      for (const key2 in schema)
+        if (rules[key2])
           return true;
       return false;
     }
@@ -1110,8 +1110,8 @@ var require_util = __commonJS({
     function schemaHasRulesButRef(schema, RULES) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (key !== "$ref" && RULES.all[key])
+      for (const key2 in schema)
+        if (key2 !== "$ref" && RULES.all[key2])
           return true;
       return false;
     }
@@ -1689,8 +1689,8 @@ var require_defaults = __commonJS({
     function assignDefaults(it, ty) {
       const { properties, items } = it.schema;
       if (ty === "object" && properties) {
-        for (const key in properties) {
-          assignDefault(it, key, properties[key].default);
+        for (const key2 in properties) {
+          assignDefault(it, key2, properties[key2].default);
         }
       } else if (ty === "array" && Array.isArray(items)) {
         items.forEach((sch, i) => assignDefault(it, i, sch.default));
@@ -2074,8 +2074,8 @@ var require_fast_deep_equal = __commonJS({
         for (i = length; i-- !== 0; )
           if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
         for (i = length; i-- !== 0; ) {
-          var key = keys[i];
-          if (!equal(a[key], b[key])) return false;
+          var key2 = keys[i];
+          if (!equal(a[key2], b[key2])) return false;
         }
         return true;
       }
@@ -2147,20 +2147,20 @@ var require_json_schema_traverse = __commonJS({
     function _traverse(opts, pre, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
       if (schema && typeof schema == "object" && !Array.isArray(schema)) {
         pre(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
-        for (var key in schema) {
-          var sch = schema[key];
+        for (var key2 in schema) {
+          var sch = schema[key2];
           if (Array.isArray(sch)) {
-            if (key in traverse.arrayKeywords) {
+            if (key2 in traverse.arrayKeywords) {
               for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
+                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key2 + "/" + i, rootSchema, jsonPtr, key2, schema, i);
             }
-          } else if (key in traverse.propsKeywords) {
+          } else if (key2 in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
               for (var prop in sch)
-                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
+                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key2 + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key2, schema, prop);
             }
-          } else if (key in traverse.keywords || opts.allKeys && !(key in traverse.skipKeywords)) {
-            _traverse(opts, pre, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
+          } else if (key2 in traverse.keywords || opts.allKeys && !(key2 in traverse.skipKeywords)) {
+            _traverse(opts, pre, post, sch, jsonPtr + "/" + key2, rootSchema, jsonPtr, key2, schema);
           }
         }
         post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
@@ -2217,10 +2217,10 @@ var require_resolve = __commonJS({
       "$dynamicAnchor"
     ]);
     function hasRef(schema) {
-      for (const key in schema) {
-        if (REF_KEYWORDS.has(key))
+      for (const key2 in schema) {
+        if (REF_KEYWORDS.has(key2))
           return true;
-        const sch = schema[key];
+        const sch = schema[key2];
         if (Array.isArray(sch) && sch.some(hasRef))
           return true;
         if (typeof sch == "object" && hasRef(sch))
@@ -2230,14 +2230,14 @@ var require_resolve = __commonJS({
     }
     function countKeys(schema) {
       let count = 0;
-      for (const key in schema) {
-        if (key === "$ref")
+      for (const key2 in schema) {
+        if (key2 === "$ref")
           return Infinity;
         count++;
-        if (SIMPLE_INLINED.has(key))
+        if (SIMPLE_INLINED.has(key2))
           continue;
-        if (typeof schema[key] == "object") {
-          (0, util_1.eachItem)(schema[key], (sch) => count += countKeys(sch));
+        if (typeof schema[key2] == "object") {
+          (0, util_1.eachItem)(schema[key2], (sch) => count += countKeys(sch));
         }
         if (count === Infinity)
           return Infinity;
@@ -2426,8 +2426,8 @@ var require_validate = __commonJS({
     function schemaCxtHasRules({ schema, self }) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (self.RULES.all[key])
+      for (const key2 in schema)
+        if (self.RULES.all[key2])
           return true;
       return false;
     }
@@ -3496,7 +3496,7 @@ var require_utils = __commonJS({
     function encodeUserinfo(input) {
       return encodeComponent(input, isUserinfoCharacter);
     }
-    function encodeQuery(input) {
+    function encodeQuery2(input) {
       return encodeComponent(input, isQueryFragmentCharacter);
     }
     function encodeFragment(input) {
@@ -3602,7 +3602,7 @@ var require_utils = __commonJS({
       serializePathEncoding,
       normalizeQueryFragmentEncoding,
       encodeUserinfo,
-      encodeQuery,
+      encodeQuery: encodeQuery2,
       encodeFragment,
       escapePreservingEscapes,
       removeDotSegments,
@@ -3829,7 +3829,7 @@ var require_schemes = __commonJS({
 var require_fast_uri = __commonJS({
   "node_modules/fast-uri/index.js"(exports, module) {
     "use strict";
-    var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
+    var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, serializePathEncoding, normalizeQueryFragmentEncoding, encodeQuery: encodeQuery2, encodeFragment, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
     var VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u;
     var MALFORMED_SCHEME_ERROR = "URI scheme is malformed.";
@@ -4002,7 +4002,7 @@ var require_fast_uri = __commonJS({
         uriTokens.push(s);
       }
       if (component.query !== void 0) {
-        uriTokens.push("?", encodeQuery(component.query));
+        uriTokens.push("?", encodeQuery2(component.query));
       }
       if (component.fragment !== void 0) {
         uriTokens.push("#", encodeFragment(component.fragment));
@@ -4465,7 +4465,7 @@ var require_core = __commonJS({
         }
       }
       // Adds schema to the instance
-      addSchema(schema, key, _meta, _validateSchema = this.opts.validateSchema) {
+      addSchema(schema, key2, _meta, _validateSchema = this.opts.validateSchema) {
         if (Array.isArray(schema)) {
           for (const sch of schema)
             this.addSchema(sch, void 0, _meta, _validateSchema);
@@ -4479,15 +4479,15 @@ var require_core = __commonJS({
             throw new Error(`schema ${schemaId} must be string`);
           }
         }
-        key = (0, resolve_1.normalizeId)(key || id2);
-        this._checkUnique(key);
-        this.schemas[key] = this._addSchema(schema, _meta, key, _validateSchema, true);
+        key2 = (0, resolve_1.normalizeId)(key2 || id2);
+        this._checkUnique(key2);
+        this.schemas[key2] = this._addSchema(schema, _meta, key2, _validateSchema, true);
         return this;
       }
       // Add schema that will be used to validate other schemas
       // options in META_IGNORE_OPTIONS are alway set to false
-      addMetaSchema(schema, key, _validateSchema = this.opts.validateSchema) {
-        this.addSchema(schema, key, true, _validateSchema);
+      addMetaSchema(schema, key2, _validateSchema = this.opts.validateSchema) {
+        this.addSchema(schema, key2, true, _validateSchema);
         return this;
       }
       //  Validate schema against its meta-schema
@@ -4643,14 +4643,14 @@ var require_core = __commonJS({
           let keywords = metaSchema;
           for (const seg of segments)
             keywords = keywords[seg];
-          for (const key in rules) {
-            const rule = rules[key];
+          for (const key2 in rules) {
+            const rule = rules[key2];
             if (typeof rule != "object")
               continue;
             const { $data } = rule.definition;
-            const schema = keywords[key];
+            const schema = keywords[key2];
             if ($data && schema)
-              keywords[key] = schemaOrData(schema);
+              keywords[key2] = schemaOrData(schema);
           }
         }
         return metaSchema;
@@ -4723,10 +4723,10 @@ var require_core = __commonJS({
     Ajv2.MissingRefError = ref_error_1.default;
     exports.default = Ajv2;
     function checkOptions(checkOpts, options, msg, log = "error") {
-      for (const key in checkOpts) {
-        const opt = key;
+      for (const key2 in checkOpts) {
+        const opt = key2;
         if (opt in options)
-          this.logger[log](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log](`${msg}: option ${key2}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -4740,8 +4740,8 @@ var require_core = __commonJS({
       if (Array.isArray(optsSchemas))
         this.addSchema(optsSchemas);
       else
-        for (const key in optsSchemas)
-          this.addSchema(optsSchemas[key], key);
+        for (const key2 in optsSchemas)
+          this.addSchema(optsSchemas[key2], key2);
     }
     function addInitialFormats() {
       for (const name in this.opts.formats) {
@@ -5789,11 +5789,11 @@ var require_dependencies = __commonJS({
     function splitDependencies({ schema }) {
       const propertyDeps = {};
       const schemaDeps = {};
-      for (const key in schema) {
-        if (key === "__proto__")
+      for (const key2 in schema) {
+        if (key2 === "__proto__")
           continue;
-        const deps = Array.isArray(schema[key]) ? propertyDeps : schemaDeps;
-        deps[key] = schema[key];
+        const deps = Array.isArray(schema[key2]) ? propertyDeps : schemaDeps;
+        deps[key2] = schema[key2];
       }
       return [propertyDeps, schemaDeps];
     }
@@ -5870,13 +5870,13 @@ var require_propertyNames = __commonJS({
         if ((0, util_1.alwaysValidSchema)(it, schema))
           return;
         const valid = gen.name("valid");
-        gen.forIn("key", data, (key) => {
-          cxt.setParams({ propertyName: key });
+        gen.forIn("key", data, (key2) => {
+          cxt.setParams({ propertyName: key2 });
           cxt.subschema({
             keyword: "propertyNames",
-            data: key,
+            data: key2,
             dataTypes: ["string"],
-            propertyName: key,
+            propertyName: key2,
             compositeRule: true
           }, valid);
           gen.if((0, codegen_1.not)(valid), () => {
@@ -5925,38 +5925,38 @@ var require_additionalProperties = __commonJS({
         checkAdditionalProperties();
         cxt.ok((0, codegen_1._)`${errsCount} === ${names_1.default.errors}`);
         function checkAdditionalProperties() {
-          gen.forIn("key", data, (key) => {
+          gen.forIn("key", data, (key2) => {
             if (!props.length && !patProps.length)
-              additionalPropertyCode(key);
+              additionalPropertyCode(key2);
             else
-              gen.if(isAdditional(key), () => additionalPropertyCode(key));
+              gen.if(isAdditional(key2), () => additionalPropertyCode(key2));
           });
         }
-        function isAdditional(key) {
+        function isAdditional(key2) {
           let definedProp;
           if (props.length > 8) {
             const propsSchema = (0, util_1.schemaRefOrVal)(it, parentSchema.properties, "properties");
-            definedProp = (0, code_1.isOwnProperty)(gen, propsSchema, key);
+            definedProp = (0, code_1.isOwnProperty)(gen, propsSchema, key2);
           } else if (props.length) {
-            definedProp = (0, codegen_1.or)(...props.map((p) => (0, codegen_1._)`${key} === ${p}`));
+            definedProp = (0, codegen_1.or)(...props.map((p) => (0, codegen_1._)`${key2} === ${p}`));
           } else {
             definedProp = codegen_1.nil;
           }
           if (patProps.length) {
-            definedProp = (0, codegen_1.or)(definedProp, ...patProps.map((p) => (0, codegen_1._)`${(0, code_1.usePattern)(cxt, p)}.test(${key})`));
+            definedProp = (0, codegen_1.or)(definedProp, ...patProps.map((p) => (0, codegen_1._)`${(0, code_1.usePattern)(cxt, p)}.test(${key2})`));
           }
           return (0, codegen_1.not)(definedProp);
         }
-        function deleteAdditional(key) {
-          gen.code((0, codegen_1._)`delete ${data}[${key}]`);
+        function deleteAdditional(key2) {
+          gen.code((0, codegen_1._)`delete ${data}[${key2}]`);
         }
-        function additionalPropertyCode(key) {
+        function additionalPropertyCode(key2) {
           if (opts.removeAdditional === "all" || opts.removeAdditional && schema === false) {
-            deleteAdditional(key);
+            deleteAdditional(key2);
             return;
           }
           if (schema === false) {
-            cxt.setParams({ additionalProperty: key });
+            cxt.setParams({ additionalProperty: key2 });
             cxt.error();
             if (!allErrors)
               gen.break();
@@ -5965,22 +5965,22 @@ var require_additionalProperties = __commonJS({
           if (typeof schema == "object" && !(0, util_1.alwaysValidSchema)(it, schema)) {
             const valid = gen.name("valid");
             if (opts.removeAdditional === "failing") {
-              applyAdditionalSchema(key, valid, false);
+              applyAdditionalSchema(key2, valid, false);
               gen.if((0, codegen_1.not)(valid), () => {
                 cxt.reset();
-                deleteAdditional(key);
+                deleteAdditional(key2);
               });
             } else {
-              applyAdditionalSchema(key, valid);
+              applyAdditionalSchema(key2, valid);
               if (!allErrors)
                 gen.if((0, codegen_1.not)(valid), () => gen.break());
             }
           }
         }
-        function applyAdditionalSchema(key, valid, errors) {
+        function applyAdditionalSchema(key2, valid, errors) {
           const subschema = {
             keyword: "additionalProperties",
-            dataProp: key,
+            dataProp: key2,
             dataPropType: util_1.Type.Str
           };
           if (errors === false) {
@@ -6105,19 +6105,19 @@ var require_patternProperties = __commonJS({
           }
         }
         function validateProperties(pat) {
-          gen.forIn("key", data, (key) => {
-            gen.if((0, codegen_1._)`${(0, code_1.usePattern)(cxt, pat)}.test(${key})`, () => {
+          gen.forIn("key", data, (key2) => {
+            gen.if((0, codegen_1._)`${(0, code_1.usePattern)(cxt, pat)}.test(${key2})`, () => {
               const alwaysValid = alwaysValidPatterns.includes(pat);
               if (!alwaysValid) {
                 cxt.subschema({
                   keyword: "patternProperties",
                   schemaProp: pat,
-                  dataProp: key,
+                  dataProp: key2,
                   dataPropType: util_2.Type.Str
                 }, valid);
               }
               if (it.opts.unevaluated && props !== true) {
-                gen.assign((0, codegen_1._)`${props}[${key}]`, true);
+                gen.assign((0, codegen_1._)`${props}[${key2}]`, true);
               } else if (!alwaysValid && !it.allErrors) {
                 gen.if((0, codegen_1.not)(valid), () => gen.break());
               }
@@ -7600,9 +7600,9 @@ function floatSafeRemainder(val, step2) {
   return ratio - roundedRatio;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy(object6, key, getter) {
+function defineLazy(object6, key2, getter) {
   let value = void 0;
-  Object.defineProperty(object6, key, {
+  Object.defineProperty(object6, key2, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -7614,7 +7614,7 @@ function defineLazy(object6, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object6, key, {
+      Object.defineProperty(object6, key2, {
         value: v
         // configurable: true,
       });
@@ -7640,47 +7640,47 @@ function rawShape(def) {
 function sourceShape(schema) {
   return rawShape(schema._zod.def) ?? schema._zod.def.shape;
 }
-function deferProp(target, key, getter) {
-  Object.defineProperty(target, key, {
+function deferProp(target, key2, getter) {
+  Object.defineProperty(target, key2, {
     get() {
       const value = getter();
-      assignProp(this, key, value);
+      assignProp(this, key2, value);
       return value;
     },
     enumerable: true,
     configurable: true
   });
 }
-function putProp(target, key, value) {
-  if (key in target)
-    assignProp(target, key, value);
+function putProp(target, key2, value) {
+  if (key2 in target)
+    assignProp(target, key2, value);
   else
-    target[key] = value;
+    target[key2] = value;
 }
 function mirrorShape(target, source, keys, wrap) {
   const raw = sourceShape(source);
-  for (const key of keys) {
-    const desc = Object.getOwnPropertyDescriptor(raw, key);
+  for (const key2 of keys) {
+    const desc = Object.getOwnPropertyDescriptor(raw, key2);
     if (!desc.enumerable)
       continue;
     if (desc.get) {
-      deferProp(target, key, () => {
-        const value = source._zod.def.shape[key];
-        return wrap ? wrap(value, key) : value;
+      deferProp(target, key2, () => {
+        const value = source._zod.def.shape[key2];
+        return wrap ? wrap(value, key2) : value;
       });
     } else
-      putProp(target, key, wrap ? wrap(desc.value, key) : desc.value);
+      putProp(target, key2, wrap ? wrap(desc.value, key2) : desc.value);
   }
 }
 function mirrorProps(target, source) {
-  for (const key of Reflect.ownKeys(source)) {
-    const desc = Object.getOwnPropertyDescriptor(source, key);
+  for (const key2 of Reflect.ownKeys(source)) {
+    const desc = Object.getOwnPropertyDescriptor(source, key2);
     if (!desc.enumerable)
       continue;
     if (desc.get)
-      deferProp(target, key, () => source[key]);
+      deferProp(target, key2, () => source[key2]);
     else
-      putProp(target, key, desc.value);
+      putProp(target, key2, desc.value);
   }
 }
 function mergeDefs(...defs) {
@@ -7697,11 +7697,11 @@ function cloneDef(schema) {
 function getElementAtPath(obj, path) {
   if (!path)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path.reduce((acc, key2) => acc?.[key2], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
-  const promises = keys.map((key) => promisesObj[key]);
+  const promises = keys.map((key2) => promisesObj[key2]);
   return Promise.all(promises).then((results) => {
     const resolvedObj = {};
     for (let i = 0; i < keys.length; i++) {
@@ -7773,8 +7773,8 @@ function shallowClone(o) {
 }
 function numKeys(data) {
   let keyCount = 0;
-  for (const key in data) {
-    if (Object.prototype.hasOwnProperty.call(data, key)) {
+  for (const key2 in data) {
+    if (Object.prototype.hasOwnProperty.call(data, key2)) {
       keyCount++;
     }
   }
@@ -7928,12 +7928,12 @@ function pick(schema, mask) {
 function maskedKeys(schema, mask) {
   const raw = sourceShape(schema);
   const keys = [];
-  for (const key of Reflect.ownKeys(mask)) {
-    if (!Object.getOwnPropertyDescriptor(raw, key)?.enumerable) {
-      throw new Error(`Unrecognized key: "${String(key)}"`);
+  for (const key2 of Reflect.ownKeys(mask)) {
+    if (!Object.getOwnPropertyDescriptor(raw, key2)?.enumerable) {
+      throw new Error(`Unrecognized key: "${String(key2)}"`);
     }
-    if (mask[key])
-      keys.push(key);
+    if (mask[key2])
+      keys.push(key2);
   }
   return keys;
 }
@@ -7946,7 +7946,7 @@ function omit(schema, mask) {
   }
   const omitted = new Set(maskedKeys(schema, mask));
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)).filter((key) => !omitted.has(key)));
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)).filter((key2) => !omitted.has(key2)));
   return clone(schema, mergeDefs(currDef, { shape: newShape, checks: [] }));
 }
 function extend(schema, shape) {
@@ -7957,8 +7957,8 @@ function extend(schema, shape) {
   const hasChecks = checks && checks.length > 0;
   if (hasChecks) {
     const existingShape = sourceShape(schema);
-    for (const key of Reflect.ownKeys(shape)) {
-      if (Object.getOwnPropertyDescriptor(existingShape, key) !== void 0) {
+    for (const key2 of Reflect.ownKeys(shape)) {
+      if (Object.getOwnPropertyDescriptor(existingShape, key2) !== void 0) {
         throw new Error("Cannot overwrite keys on object schemas containing refinements. Use `.safeExtend()` instead.");
       }
     }
@@ -8005,15 +8005,15 @@ function partial(Class2, schema, mask, name = "partial") {
   }
   const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), Class2 && ((value, key) => selected && !selected.has(key) ? value : new Class2({ type: "optional", innerType: value })));
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), Class2 && ((value, key2) => selected && !selected.has(key2) ? value : new Class2({ type: "optional", innerType: value })));
   return clone(schema, mergeDefs(schema._zod.def, { shape: newShape, checks: [] }));
 }
 function required(Class2, schema, mask) {
   const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), (value, key) => (
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), (value, key2) => (
     // overwrite with non-optional
-    selected && !selected.has(key) ? value : new Class2({ type: "nonoptional", innerType: value })
+    selected && !selected.has(key2) ? value : new Class2({ type: "nonoptional", innerType: value })
   ));
   return clone(schema, mergeDefs(schema._zod.def, { shape: newShape }));
 }
@@ -8188,46 +8188,46 @@ var Class = class {
   }
 };
 function members(proto, table2) {
-  for (const key in table2) {
-    const desc = Object.getOwnPropertyDescriptor(table2, key);
+  for (const key2 in table2) {
+    const desc = Object.getOwnPropertyDescriptor(table2, key2);
     if (desc.get)
-      Object.defineProperty(proto, key, { ...desc, enumerable: false });
+      Object.defineProperty(proto, key2, { ...desc, enumerable: false });
     else
-      defineBound(proto, key, desc.value);
+      defineBound(proto, key2, desc.value);
   }
 }
-function own(inst, key, value, enumerable = true) {
-  Object.defineProperty(inst, key, { configurable: true, writable: true, enumerable, value });
+function own(inst, key2, value, enumerable = true) {
+  Object.defineProperty(inst, key2, { configurable: true, writable: true, enumerable, value });
   return value;
 }
-function hide(inst, key, value) {
-  return own(inst, key, value, false);
+function hide(inst, key2, value) {
+  return own(inst, key2, value, false);
 }
 // @__NO_SIDE_EFFECTS__
 function derived(computes, table2) {
-  for (const key in computes) {
-    const compute = computes[key];
-    Object.defineProperty(table2, key, {
+  for (const key2 in computes) {
+    const compute = computes[key2];
+    Object.defineProperty(table2, key2, {
       configurable: true,
       enumerable: true,
       get() {
-        return own(this, key, compute(this));
+        return own(this, key2, compute(this));
       },
       set(value) {
-        own(this, key, value);
+        own(this, key2, value);
       }
     });
   }
   return table2;
 }
-function defineBound(proto, key, fn) {
-  Object.defineProperty(proto, key, {
+function defineBound(proto, key2, fn) {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
-      return this == null ? fn : own(this, key, fn.bind(this));
+      return this == null ? fn : own(this, key2, fn.bind(this));
     },
     set(value) {
-      own(this, key, value);
+      own(this, key2, value);
     }
   });
 }
@@ -8244,53 +8244,53 @@ var breaker = {
     return void 0;
   }
 };
-function defineLazyInternal(inst, key, compute) {
+function defineLazyInternal(inst, key2, compute) {
   const proto = Object.getPrototypeOf(inst._zod);
-  if (key in proto && installing !== inst._zod) {
+  if (key2 in proto && installing !== inst._zod) {
     installing = void 0;
     return;
   }
   installing = inst._zod;
-  Object.defineProperty(proto, key, {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
-      Object.defineProperty(this, key, breaker);
+      Object.defineProperty(this, key2, breaker);
       const outer = broke;
       broke = false;
       try {
         const value = compute(this);
         if (broke)
-          delete this[key];
+          delete this[key2];
         else
-          Object.defineProperty(this, key, { configurable: true, writable: true, value });
+          Object.defineProperty(this, key2, { configurable: true, writable: true, value });
         broke = broke || outer;
         return value;
       } catch (err) {
-        delete this[key];
+        delete this[key2];
         broke = broke || outer;
         throw err;
       }
     },
     set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, value });
+      Object.defineProperty(this, key2, { configurable: true, writable: true, value });
     }
   });
 }
-function installLazyProp(inst, key, make, enumerable) {
-  const proto = claim(inst, key);
+function installLazyProp(inst, key2, make, enumerable) {
+  const proto = claim(inst, key2);
   if (!proto)
     return;
-  Object.defineProperty(proto, key, {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
       const desc = { configurable: true, writable: true, enumerable, value: void 0 };
-      Object.defineProperty(this, key, desc);
+      Object.defineProperty(this, key2, desc);
       desc.value = make(this);
-      Object.defineProperty(this, key, desc);
+      Object.defineProperty(this, key2, desc);
       return desc.value;
     },
     set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, enumerable, value });
+      Object.defineProperty(this, key2, { configurable: true, writable: true, enumerable, value });
     }
   });
 }
@@ -8463,15 +8463,15 @@ var $ZodError = $constructor("$ZodError", initializer);
 var $ZodRealError = $constructor("$ZodError", initializer, void 0, {
   Parent: Error
 });
-function node(obj, key, make) {
-  if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-    if (key === "__proto__") {
-      Object.defineProperty(obj, key, { value: make(), writable: true, enumerable: true, configurable: true });
+function node(obj, key2, make) {
+  if (!Object.prototype.hasOwnProperty.call(obj, key2)) {
+    if (key2 === "__proto__") {
+      Object.defineProperty(obj, key2, { value: make(), writable: true, enumerable: true, configurable: true });
     } else {
-      obj[key] = make();
+      obj[key2] = make();
     }
   }
-  return obj[key];
+  return obj[key2];
 }
 function flattenError(error2, mapper = (issue2) => issue2.message) {
   const fieldErrors = {};
@@ -9725,8 +9725,8 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     return payload;
   };
 });
-function handlePropertyResult(result2, final, key, input, optin, optout) {
-  const isPresent = key in input;
+function handlePropertyResult(result2, final, key2, input, optin, optout) {
+  const isPresent = key2 in input;
   const isOptionalOut = optout === "optional";
   if (!isPresent && isOptionalOut && optin === "optional") {
     return;
@@ -9735,7 +9735,7 @@ function handlePropertyResult(result2, final, key, input, optin, optout) {
     if (optin !== void 0 && isOptionalOut && !isPresent) {
       return;
     }
-    final.issues.push(...prefixIssues(key, result2.issues));
+    final.issues.push(...prefixIssues(key2, result2.issues));
   }
   if (!isPresent && optin === void 0) {
     if (!result2.issues.length) {
@@ -9743,17 +9743,17 @@ function handlePropertyResult(result2, final, key, input, optin, optout) {
         code: "invalid_type",
         expected: "nonoptional",
         input: void 0,
-        path: [key]
+        path: [key2]
       });
     }
     return;
   }
   if (result2.value === void 0) {
     if (isPresent || optin === "defaulted" && !isOptionalOut) {
-      final.value[key] = void 0;
+      final.value[key2] = void 0;
     }
   } else {
-    final.value[key] = result2.value;
+    final.value[key2] = result2.value;
   }
 }
 var NO_SYMBOL_KEYS = [];
@@ -9786,28 +9786,28 @@ function handleCatchall(proms, input, payload, ctx, def, inst, abortEarly) {
   const optin = _catchall.optin;
   const optout = _catchall.optout;
   let seen = 0;
-  for (const key in input) {
+  for (const key2 in input) {
     if (abortEarly && payload.issues.length !== seen) {
       if (aborted(payload, seen))
         break;
       seen = payload.issues.length;
     }
-    if (keySet.has(key))
+    if (keySet.has(key2))
       continue;
-    if (key === "__proto__") {
+    if (key2 === "__proto__") {
       if (t === "never")
-        unrecognized.push(key);
+        unrecognized.push(key2);
       continue;
     }
     if (t === "never") {
-      unrecognized.push(key);
+      unrecognized.push(key2);
       continue;
     }
-    const r = _catchall.run({ value: input[key], issues: [] }, ctx);
+    const r = _catchall.run({ value: input[key2], issues: [] }, ctx);
     if (r instanceof Promise) {
-      proms.push(r.then((r2) => handlePropertyResult(r2, payload, key, input, optin, optout)));
+      proms.push(r.then((r2) => handlePropertyResult(r2, payload, key2, input, optin, optout)));
     } else {
-      handlePropertyResult(r, payload, key, input, optin, optout);
+      handlePropertyResult(r, payload, key2, input, optin, optout);
     }
   }
   if (unrecognized.length) {
@@ -9844,16 +9844,16 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   defineLazyInternal(inst, "propValues", (zod) => {
     const shape = zod.def.shape;
     const propValues = {};
-    for (const key in shape) {
-      const field = shape[key]._zod;
+    for (const key2 in shape) {
+      const field = shape[key2]._zod;
       if (field.values) {
-        if (!Object.prototype.hasOwnProperty.call(propValues, key)) {
-          assignProp(propValues, key, /* @__PURE__ */ new Set());
+        if (!Object.prototype.hasOwnProperty.call(propValues, key2)) {
+          assignProp(propValues, key2, /* @__PURE__ */ new Set());
         }
         for (const v of field.values)
-          propValues[key].add(v);
+          propValues[key2].add(v);
         if (field.optin !== void 0)
-          propValues[key].add(void 0);
+          propValues[key2].add(void 0);
       }
     }
     return propValues;
@@ -9880,22 +9880,22 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     const shape = value.shape;
     const abortEarly = ctx?.abortEarly;
     let seen = payload.issues.length;
-    for (const key of value.allKeys) {
+    for (const key2 of value.allKeys) {
       if (abortEarly && payload.issues.length !== seen) {
         if (aborted(payload, seen))
           break;
         seen = payload.issues.length;
       }
-      if (key === "__proto__")
+      if (key2 === "__proto__")
         continue;
-      const el = shape[key];
+      const el = shape[key2];
       const optin = el._zod.optin;
       const optout = el._zod.optout;
-      const r = el._zod.run({ value: input[key], issues: [] }, ctx);
+      const r = el._zod.run({ value: input[key2], issues: [] }, ctx);
       if (r instanceof Promise) {
-        proms.push(r.then((r2) => handlePropertyResult(r2, payload, key, input, optin, optout)));
+        proms.push(r.then((r2) => handlePropertyResult(r2, payload, key2, input, optin, optout)));
       } else {
-        handlePropertyResult(r, payload, key, input, optin, optout);
+        handlePropertyResult(r, payload, key2, input, optin, optout);
       }
     }
     if (!catchall) {
@@ -9929,17 +9929,17 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     doc.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
-    for (const key of normalized.allKeys) {
-      ids[key] = `key_${counter++}`;
+    for (const key2 of normalized.allKeys) {
+      ids[key2] = `key_${counter++}`;
     }
     doc.write(memo2 ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-    for (const key of normalized.allKeys) {
-      if (key === "__proto__")
+    for (const key2 of normalized.allKeys) {
+      if (key2 === "__proto__")
         continue;
-      const id2 = ids[key];
-      const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : esc(key);
+      const id2 = ids[key2];
+      const k = typeof key2 === "symbol" ? `syms[${syms.indexOf(key2)}]` : esc(key2);
       const isPresent = `${k} in input`;
-      const schema = shape[key];
+      const schema = shape[key2];
       const optin = schema?._zod?.optin;
       const isOptionalIn = optin !== void 0;
       const isOptionalOut = schema?._zod?.optout === "optional";
@@ -10203,21 +10203,21 @@ function mergeValues(a, b) {
   }
   if (isPlainObject(a) && isPlainObject(b)) {
     const bKeys = Object.keys(b);
-    const sharedKeys = Object.keys(a).filter((key) => bKeys.indexOf(key) !== -1);
+    const sharedKeys = Object.keys(a).filter((key2) => bKeys.indexOf(key2) !== -1);
     const newObj = { ...a, ...b };
     if (Object.prototype.hasOwnProperty.call(newObj, "__proto__"))
       delete newObj.__proto__;
-    for (const key of sharedKeys) {
-      if (key === "__proto__")
+    for (const key2 of sharedKeys) {
+      if (key2 === "__proto__")
         continue;
-      const sharedValue = mergeValues(a[key], b[key]);
+      const sharedValue = mergeValues(a[key2], b[key2]);
       if (!sharedValue.valid) {
         return {
           valid: false,
-          mergeErrorPath: [key, ...sharedValue.mergeErrorPath]
+          mergeErrorPath: [key2, ...sharedValue.mergeErrorPath]
         };
       }
-      newObj[key] = sharedValue.data;
+      newObj[key2] = sharedValue.data;
     }
     return { valid: true, data: newObj };
   }
@@ -10313,12 +10313,12 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
     if (values && !def.partial) {
       payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
       const recordKeys = /* @__PURE__ */ new Set();
-      for (const key of values) {
-        if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
-          recordKeys.add(typeof key === "number" ? key.toString() : key);
-          if (key === "__proto__")
+      for (const key2 of values) {
+        if (typeof key2 === "string" || typeof key2 === "number" || typeof key2 === "symbol") {
+          recordKeys.add(typeof key2 === "number" ? key2.toString() : key2);
+          if (key2 === "__proto__")
             continue;
-          const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+          const keyResult = def.keyType._zod.run({ value: key2, issues: [] }, ctx);
           if (keyResult instanceof Promise) {
             throw new Error("Async schemas not supported in object keys currently");
           }
@@ -10327,8 +10327,8 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
               code: "invalid_key",
               origin: "record",
               issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
+              input: key2,
+              path: [key2],
               inst
             });
             continue;
@@ -10336,32 +10336,32 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
           const outKey = keyResult.value;
           if (outKey === "__proto__")
             continue;
-          const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+          const result2 = def.valueType._zod.run({ value: input[key2], issues: [] }, ctx);
           if (result2 instanceof Promise) {
             proms.push(result2.then((result3) => {
               if (result3.issues.length) {
-                payload.issues.push(...prefixIssues(key, result3.issues));
+                payload.issues.push(...prefixIssues(key2, result3.issues));
               }
               payload.value[outKey] = result3.value;
             }));
           } else {
             if (result2.issues.length) {
-              payload.issues.push(...prefixIssues(key, result2.issues));
+              payload.issues.push(...prefixIssues(key2, result2.issues));
             }
             payload.value[outKey] = result2.value;
           }
         }
       }
       let unrecognized;
-      for (const key in input) {
-        if (!recordKeys.has(key)) {
+      for (const key2 in input) {
+        if (!recordKeys.has(key2)) {
           if (def.mode === "loose") {
-            if (key === "__proto__")
+            if (key2 === "__proto__")
               continue;
-            payload.value[key] = input[key];
+            payload.value[key2] = input[key2];
           } else {
             unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
+            unrecognized.push(key2);
           }
         }
       }
@@ -10377,18 +10377,18 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
     } else {
       payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
       let unrecognized;
-      for (const key of Reflect.ownKeys(input)) {
-        if (key === "__proto__")
+      for (const key2 of Reflect.ownKeys(input)) {
+        if (key2 === "__proto__")
           continue;
-        if (!Object.prototype.propertyIsEnumerable.call(input, key))
+        if (!Object.prototype.propertyIsEnumerable.call(input, key2))
           continue;
-        let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+        let keyResult = def.keyType._zod.run({ value: key2, issues: [] }, ctx);
         if (keyResult instanceof Promise) {
           throw new Error("Async schemas not supported in object keys currently");
         }
-        const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
+        const checkNumericKey = typeof key2 === "string" && number.test(key2) && keyResult.issues.length;
         if (checkNumericKey) {
-          const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
+          const retryResult = def.keyType._zod.run({ value: Number(key2), issues: [] }, ctx);
           if (retryResult instanceof Promise) {
             throw new Error("Async schemas not supported in object keys currently");
           }
@@ -10398,17 +10398,17 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
         }
         if (keyResult.issues.length) {
           if (def.mode === "loose") {
-            payload.value[key] = input[key];
+            payload.value[key2] = input[key2];
           } else if (values) {
             unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
+            unrecognized.push(key2);
           } else {
             payload.issues.push({
               code: "invalid_key",
               origin: "record",
               issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
+              input: key2,
+              path: [key2],
               inst
             });
           }
@@ -10417,17 +10417,17 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
         const outKey = keyResult.value;
         if (outKey === "__proto__")
           continue;
-        const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+        const result2 = def.valueType._zod.run({ value: input[key2], issues: [] }, ctx);
         if (result2 instanceof Promise) {
           proms.push(result2.then((result3) => {
             if (result3.issues.length) {
-              payload.issues.push(...prefixIssues(key, result3.issues));
+              payload.issues.push(...prefixIssues(key2, result3.issues));
             }
             payload.value[outKey] = result3.value;
           }));
         } else {
           if (result2.issues.length) {
-            payload.issues.push(...prefixIssues(key, result2.issues));
+            payload.issues.push(...prefixIssues(key2, result2.issues));
           }
           payload.value[outKey] = result2.value;
         }
@@ -10789,8 +10789,8 @@ function isRecursive(inst, stack, resolve11) {
   };
   const shape = (sh, spread) => {
     let answer = NONE;
-    for (const key of Reflect.ownKeys(sh)) {
-      const desc = Object.getOwnPropertyDescriptor(sh, key);
+    for (const key2 of Reflect.ownKeys(sh)) {
+      const desc = Object.getOwnPropertyDescriptor(sh, key2);
       if (spread && !desc.enumerable)
         continue;
       const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve11) : NONE;
@@ -10886,8 +10886,8 @@ function isRecursive(inst, stack, resolve11) {
       break;
     default: {
       kind;
-      for (const key in def) {
-        const desc = Object.getOwnPropertyDescriptor(def, key);
+      for (const key2 in def) {
+        const desc = Object.getOwnPropertyDescriptor(def, key2);
         if (!desc || desc.get)
           continue;
         const value = desc.value;
@@ -11730,9 +11730,9 @@ function _check(fn, params) {
 // node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
-    for (const key of Reflect.ownKeys(source)) {
-      if (Object.prototype.propertyIsEnumerable.call(source, key)) {
-        assignProp(target, key, source[key]);
+    for (const key2 of Reflect.ownKeys(source)) {
+      if (Object.prototype.propertyIsEnumerable.call(source, key2)) {
+        assignProp(target, key2, source[key2]);
       }
     }
   }
@@ -11878,8 +11878,8 @@ function extractDefs(ctx, schema) {
     if (defId)
       seen.defId = defId;
     const schema2 = seen.schema;
-    for (const key in schema2) {
-      delete schema2[key];
+    for (const key2 in schema2) {
+      delete schema2[key2];
     }
     schema2.$ref = ref;
   };
@@ -11960,8 +11960,8 @@ function foldObjects(members2) {
   for (const member of members2) {
     if (typeof member !== "object" || member.type !== "object")
       return null;
-    for (const key in member) {
-      if (!FOLDABLE_KEYS.has(key))
+    for (const key2 in member) {
+      if (!FOLDABLE_KEYS.has(key2))
         return null;
     }
     objects.push(member);
@@ -11969,22 +11969,22 @@ function foldObjects(members2) {
   const properties = {};
   const required2 = /* @__PURE__ */ new Set();
   for (const object6 of objects) {
-    for (const key in object6.properties) {
-      if (Object.prototype.hasOwnProperty.call(properties, key))
+    for (const key2 in object6.properties) {
+      if (Object.prototype.hasOwnProperty.call(properties, key2))
         continue;
       const parts = [];
       for (const other of objects) {
-        const part = other.properties?.[key] ?? undeclaredConstraint(other);
+        const part = other.properties?.[key2] ?? undeclaredConstraint(other);
         if (part === null || part === void 0)
           continue;
         if (!parts.some((seen) => JSON.stringify(seen) === JSON.stringify(part)))
           parts.push(part);
       }
       const merged = parts.length === 1 ? parts[0] : foldObjects(parts) ?? { allOf: parts };
-      assignProp(properties, key, merged);
+      assignProp(properties, key2, merged);
     }
-    for (const key of object6.required ?? [])
-      required2.add(key);
+    for (const key2 of object6.required ?? [])
+      required2.add(key2);
   }
   const folded = { type: "object", properties };
   if (required2.size)
@@ -12009,8 +12009,8 @@ function foldIntersection(json2) {
   const allOf = json2.allOf;
   if (!Array.isArray(allOf) || allOf.length < 2)
     return;
-  for (const key of FOLDABLE_KEYS)
-    if (key in json2)
+  for (const key2 of FOLDABLE_KEYS)
+    if (key2 in json2)
       return;
   const unions = allOf.filter((m) => UNION_KEYS.some((k) => Array.isArray(m[k])));
   let folded = null;
@@ -12057,20 +12057,20 @@ function finalize(ctx, schema) {
       assignProps(schema2, _cached);
       const isParentRef = zodSchema._zod.parent === ref;
       if (isParentRef) {
-        for (const key in schema2) {
-          if (key === "$ref" || key === "allOf")
+        for (const key2 in schema2) {
+          if (key2 === "$ref" || key2 === "allOf")
             continue;
-          if (!(key in _cached)) {
-            delete schema2[key];
+          if (!(key2 in _cached)) {
+            delete schema2[key2];
           }
         }
       }
       if (refSchema.$ref && refSeen.def) {
-        for (const key in schema2) {
-          if (key === "$ref" || key === "allOf")
+        for (const key2 in schema2) {
+          if (key2 === "$ref" || key2 === "allOf")
             continue;
-          if (key in refSeen.def && JSON.stringify(schema2[key]) === JSON.stringify(refSeen.def[key])) {
-            delete schema2[key];
+          if (key2 in refSeen.def && JSON.stringify(schema2[key2]) === JSON.stringify(refSeen.def[key2])) {
+            delete schema2[key2];
           }
         }
       }
@@ -12082,11 +12082,11 @@ function finalize(ctx, schema) {
       if (parentSeen?.schema.$ref) {
         schema2.$ref = parentSeen.schema.$ref;
         if (parentSeen.def) {
-          for (const key in schema2) {
-            if (key === "$ref" || key === "allOf")
+          for (const key2 in schema2) {
+            if (key2 === "$ref" || key2 === "allOf")
               continue;
-            if (key in parentSeen.def && JSON.stringify(schema2[key]) === JSON.stringify(parentSeen.def[key])) {
-              delete schema2[key];
+            if (key2 in parentSeen.def && JSON.stringify(schema2[key2]) === JSON.stringify(parentSeen.def[key2])) {
+              delete schema2[key2];
             }
           }
         }
@@ -12219,8 +12219,8 @@ function isTransforming(_schema, _ctx) {
     return isTransforming(def.in, ctx) || isTransforming(def.out, ctx);
   }
   if (def.type === "object") {
-    for (const key in def.shape) {
-      if (isTransforming(def.shape[key], ctx))
+    for (const key2 in def.shape) {
+      if (isTransforming(def.shape[key2], ctx))
         return true;
     }
     return false;
@@ -12258,13 +12258,13 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
 };
 
 // node_modules/zod/v4/core/json-schema-processors.js
-var narrowMin = (agg, key, value) => {
-  if (agg[key] === void 0 || value > agg[key])
-    agg[key] = value;
+var narrowMin = (agg, key2, value) => {
+  if (agg[key2] === void 0 || value > agg[key2])
+    agg[key2] = value;
 };
-var narrowMax = (agg, key, value) => {
-  if (agg[key] === void 0 || value < agg[key])
-    agg[key] = value;
+var narrowMax = (agg, key2, value) => {
+  if (agg[key2] === void 0 || value < agg[key2])
+    agg[key2] = value;
 };
 var narrowBoth = (agg, value) => {
   narrowMin(agg, "minimum", value);
@@ -12543,17 +12543,17 @@ var objectProcessor = (schema, ctx, _json, params) => {
   }
   json2.type = "object";
   json2.properties = {};
-  for (const key in shape) {
-    assignProp(json2.properties, key, processSchema(shape[key], ctx, {
+  for (const key2 in shape) {
+    assignProp(json2.properties, key2, processSchema(shape[key2], ctx, {
       ...params,
-      path: [...params.path, "properties", key]
+      path: [...params.path, "properties", key2]
     }));
   }
   const requiredKeys = [];
-  for (const key of Object.keys(shape)) {
-    const field = def.shape[key];
+  for (const key2 of Object.keys(shape)) {
+    const field = def.shape[key2];
     if (ctx.io === "input" ? inputOptin(field) === void 0 : field._zod.optout === void 0) {
-      requiredKeys.push(key);
+      requiredKeys.push(key2);
     }
   }
   if (requiredKeys.length > 0) {
@@ -12860,17 +12860,17 @@ function getLiteralValue(schema) {
 
 // node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
-function _lazyMethod(proto, key, make) {
-  Object.defineProperty(proto, key, {
+function _lazyMethod(proto, key2, make) {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     enumerable: false,
     get() {
       const value = make(this);
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
+      Object.defineProperty(this, key2, { value, configurable: true, writable: true });
       return value;
     },
     set(value) {
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
+      Object.defineProperty(this, key2, { value, configurable: true, writable: true });
     }
   });
 }
@@ -16373,8 +16373,8 @@ function isPlainObject2(value) {
 }
 function mergeCapabilities(base, additional) {
   const result2 = { ...base };
-  for (const key in additional) {
-    const k = key;
+  for (const key2 in additional) {
+    const k = key2;
     const addValue = additional[k];
     if (addValue === void 0)
       continue;
@@ -17253,9 +17253,9 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
       let next = i + 1;
       while (/\s/.test(text5[next] ?? "") && next < text5.length) next++;
       if (depth === 1 && text5[next] === ":") {
-        const key = JSON.parse(text5.slice(start, i + 1));
-        if (seen.has(key)) throw new Error(`Duplicate environment profile key: ${key}`);
-        seen.add(key);
+        const key2 = JSON.parse(text5.slice(start, i + 1));
+        if (seen.has(key2)) throw new Error(`Duplicate environment profile key: ${key2}`);
+        seen.add(key2);
       }
     } else if (text5[i] === "{" || text5[i] === "[") depth++;
     else if (text5[i] === "}" || text5[i] === "]") depth--;
@@ -17266,24 +17266,24 @@ function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) 
   const p = raw;
   if (p.schemaVersion !== 2 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
   const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
-  for (const key of paths) profile[key] = canonicalPath(p[key]);
+  for (const key2 of paths) profile[key2] = canonicalPath(p[key2]);
   if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, "images")).isDirectory()) throw new Error("Selected imageRepository must contain images/");
-  for (const key of ["machctlPath", "tartPath"]) {
-    if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
-    accessSync(profile[key], constants.X_OK);
+  for (const key2 of ["machctlPath", "tartPath"]) {
+    if (!statSync(profile[key2]).isFile()) throw new Error(`${key2} must be a regular executable file`);
+    accessSync(profile[key2], constants.X_OK);
   }
   const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
   const names = ["machine-service", "vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
   const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
-  for (const key of mutable) {
-    const value = profile[key];
+  for (const key2 of mutable) {
+    const value = profile[key2];
     try {
-      if (!statSync(value).isDirectory()) throw new Error(`${key} must be a directory`);
+      if (!statSync(value).isDirectory()) throw new Error(`${key2} must be a directory`);
     } catch (error2) {
       if (error2.code !== "ENOENT") throw error2;
     }
-    if (overlaps(value, profile.imageRepository) || defaults.some((root) => overlaps(value, root))) throw new Error(`${key} overlaps the repository or a legacy default store/state root`);
-    for (const other of mutable) if (key !== other && overlaps(value, profile[other])) throw new Error("Environment mutable roots must be disjoint");
+    if (overlaps(value, profile.imageRepository) || defaults.some((root) => overlaps(value, root))) throw new Error(`${key2} overlaps the repository or a legacy default store/state root`);
+    for (const other of mutable) if (key2 !== other && overlaps(value, profile[other])) throw new Error("Environment mutable roots must be disjoint");
   }
   const ordered = Object.fromEntries(Object.keys(profile).sort().map((k) => [k, profile[k]]));
   const fingerprint = createHash("sha256").update(JSON.stringify(ordered), "utf8").digest("hex");
@@ -17325,7 +17325,7 @@ function environmentVariables(selected) {
 function matchesEnvironment(actual, selected) {
   if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
   const identity = actual;
-  return Object.keys(identity).length === Object.keys(selected.identity).length && Object.entries(selected.identity).every(([key, value]) => identity[key] === value);
+  return Object.keys(identity).length === Object.keys(selected.identity).length && Object.entries(selected.identity).every(([key2, value]) => identity[key2] === value);
 }
 
 // src/config.ts
@@ -17821,7 +17821,7 @@ var MachineService = class {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
     if (!loopback && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
-      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one Consul lists as machine-service, without credentials, path, query or fragment");
+      throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
     this.baseUrl = url.origin;
     this.timeoutMs = positive(options.timeoutMs ?? 66e4, "timeoutMs");
@@ -18053,10 +18053,10 @@ var RegistryError = class extends Error {
 };
 var columns = ["machine", "os", "taskName", "agent", "project", "startDate"];
 function cells(row) {
-  return columns.map((key) => {
-    const value = row[key];
+  return columns.map((key2) => {
+    const value = row[key2];
     if (typeof value !== "string" || !value.trim() || value !== value.trim() || /[|\r\n\u0000-\u001f\u007f]/.test(value)) {
-      throw new RegistryError(`Registry ${key} must be nonempty trimmed text without pipes or control characters`);
+      throw new RegistryError(`Registry ${key2} must be nonempty trimmed text without pipes or control characters`);
     }
     return value;
   });
@@ -18957,9 +18957,9 @@ var Transfer = class {
             await bounded3(async () => {
               await this.options.onRetry?.({ operation: "pull", attempt, diagnostic });
             });
-            const wait = options.retryDelaysMs?.[attempt - 1];
-            if (wait) await bounded3(() => new Promise((done) => {
-              const timer2 = setTimeout(done, wait);
+            const wait2 = options.retryDelaysMs?.[attempt - 1];
+            if (wait2) await bounded3(() => new Promise((done) => {
+              const timer2 = setTimeout(done, wait2);
               controller.signal.addEventListener("abort", () => {
                 clearTimeout(timer2);
                 done();
@@ -19224,7 +19224,7 @@ var VmTransport = class {
     await assertHostPath(this.hostRoot, local, true);
     await jsonFile(local, payload);
     await this.transfer.pushFile(local, remote, this.hostRoot);
-    const wait = request.snapshots?.group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs ?? 0;
+    const wait2 = request.snapshots?.group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs ?? 0;
     let response;
     try {
       const result2 = await this.transfer.vm.exec(this.transfer.name, [
@@ -19236,7 +19236,7 @@ var VmTransport = class {
         INVOKE,
         join8(this.guestRoot, "receiver.mjs"),
         remote
-      ], this.timeoutMs + 18e4 + wait, { signal: this.signal });
+      ], this.timeoutMs + 18e4 + wait2, { signal: this.signal });
       if (result2.code !== 0) throw new Error(`Receiver exit ${result2.code}: ${result2.stderr.slice(0, 1e3)}`);
       const guestReceipt = join8(this.guestRoot, "state", "receiver", "receipts", `${request.executionId}.json`);
       const originalReceipt = join8(this.hostRoot, "receiver-receipts", `${request.executionId}.json`);
@@ -19460,9 +19460,9 @@ async function analyze(root, options, files) {
   const receipts = [];
   const retainReceipt = (raw, envelope) => {
     const receipt = object3(raw, "execution receipt");
-    for (const key of ["executionId", "actionId", "sessionId"]) {
-      if (receipt[key] !== void 0) text(receipt[key], `receipt ${key}`);
-      if (envelope?.[key] !== void 0 && receipt[key] !== void 0 && envelope[key] !== receipt[key]) throw new Error(`receipt ${key} identity mismatch`);
+    for (const key2 of ["executionId", "actionId", "sessionId"]) {
+      if (receipt[key2] !== void 0) text(receipt[key2], `receipt ${key2}`);
+      if (envelope?.[key2] !== void 0 && receipt[key2] !== void 0 && envelope[key2] !== receipt[key2]) throw new Error(`receipt ${key2} identity mismatch`);
     }
     if (receipt.sessionId !== void 0 && receipt.sessionId !== options.sessionId) throw new Error("receipt session identity mismatch");
     const executionId = receipt.executionId ?? envelope?.executionId;
@@ -19574,7 +19574,7 @@ Original subprocess/action evidence (not an authoritative input-success verdict)
     }
   }
   const bearing = (finding) => /^action \S+ (has no retained start or refusal|is missing reverse snapshot reference |has no materialized action record|lacks durable reverse snapshot references)/.test(finding) ? "defects" : /^request \S+ has no retained guest execution$/.test(finding) ? "execution" : "snapshots";
-  const explained = (key) => findings.filter((f) => bearing(f) === key).map((finding) => explainFinding(finding, steps, stepsByExecution));
+  const explained = (key2) => findings.filter((f) => bearing(f) === key2).map((finding) => explainFinding(finding, steps, stepsByExecution));
   const snapshotReasons = explained("snapshots"), unexecuted = explained("execution"), defectReasons = explained("defects");
   const completeness = snapshotReasons.length ? "incomplete" : "complete";
   const receiptFailed = receipts.some((r) => ["refused", "failed"].includes(receiptOutcome(r)));
@@ -20102,14 +20102,14 @@ function Counted(value, callback) {
 function ShiftLeft(array2, true_, false_) {
   return IsEqual(array2.length, 0) ? false_() : true_(array2[0], array2.slice(1));
 }
-function IsUnsafePropertyKey(key) {
-  return IsEqual(key, "__proto__") || IsEqual(key, "constructor") || IsEqual(key, "prototype");
+function IsUnsafePropertyKey(key2) {
+  return IsEqual(key2, "__proto__") || IsEqual(key2, "constructor") || IsEqual(key2, "prototype");
 }
-function HasPropertyKey(value, key) {
-  return IsUnsafePropertyKey(key) ? Object.prototype.hasOwnProperty.call(value, key) : key in value;
+function HasPropertyKey(value, key2) {
+  return IsUnsafePropertyKey(key2) ? Object.prototype.hasOwnProperty.call(value, key2) : key2 in value;
 }
 function EntriesRegExp(value) {
-  return Keys(value).map((key) => [new RegExp(`^${key}$`), value[key]]);
+  return Keys(value).map((key2) => [new RegExp(`^${key2}$`), value[key2]]);
 }
 function Entries(value) {
   return Object.entries(value);
@@ -20127,7 +20127,7 @@ function DeepEqualObject(left, right) {
   if (!IsObject(right))
     return false;
   const keys = Keys(left);
-  return IsEqual(keys.length, Keys(right).length) && keys.every((key) => IsDeepEqual(left[key], right[key]));
+  return IsEqual(keys.length, Keys(right).length) && keys.every((key2) => IsDeepEqual(left[key2], right[key2]));
 }
 function DeepEqualArray(left, right) {
   return IsArray(right) && IsEqual(left.length, right.length) && left.every((_, index) => IsDeepEqual(left[index], right[index]));
@@ -20244,10 +20244,10 @@ function Reset() {
   settings.unionPrioritySort = true;
 }
 function Set2(options) {
-  for (const key of guard_exports.Keys(options)) {
-    const value = options[key];
+  for (const key2 of guard_exports.Keys(options)) {
+    const value = options[key2];
     if (value !== void 0) {
-      Object.defineProperty(settings, key, { value });
+      Object.defineProperty(settings, key2, { value });
     }
   }
 }
@@ -20275,28 +20275,28 @@ function IsSchemaObject(value) {
 }
 function FromSchemaObject(value) {
   const result2 = {};
-  for (const key of guard_exports.Keys(value)) {
-    if (guard_exports.IsUnsafePropertyKey(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (guard_exports.IsUnsafePropertyKey(key2))
       continue;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key2);
     descriptor.value = FromValue(descriptor.value);
     if (guard_exports.IsEqual(descriptor.enumerable, true)) {
-      result2[key] = descriptor.value;
+      result2[key2] = descriptor.value;
     } else {
-      Object.defineProperty(result2, key, descriptor);
+      Object.defineProperty(result2, key2, descriptor);
     }
   }
   return result2;
 }
 function FromPlainObject(value) {
   const result2 = {};
-  for (const key of guard_exports.Keys(value)) {
-    if (guard_exports.IsUnsafePropertyKey(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (guard_exports.IsUnsafePropertyKey(key2))
       continue;
-    result2[key] = FromValue(value[key]);
+    result2[key2] = FromValue(value[key2]);
   }
-  for (const key of guard_exports.Symbols(value)) {
-    result2[key] = FromValue(value[key]);
+  for (const key2 of guard_exports.Symbols(value)) {
+    result2[key2] = FromValue(value[key2]);
   }
   return result2;
 }
@@ -20328,12 +20328,12 @@ function Clone(value) {
 
 // node_modules/typebox/build/system/memory/create.mjs
 function MergeHidden(left, right) {
-  for (const key of Object.keys(right)) {
-    Object.defineProperty(left, key, {
+  for (const key2 of Object.keys(right)) {
+    Object.defineProperty(left, key2, {
       configurable: true,
       writable: true,
       enumerable: false,
-      value: right[key]
+      value: right[key2]
     });
   }
   return left;
@@ -20352,12 +20352,12 @@ function Create(hidden, enumerable, options = {}) {
 function Discard(value, propertyKeys) {
   Metrics.discard += 1;
   const result2 = {};
-  for (const key of guard_exports.Keys(value)) {
-    if (propertyKeys.includes(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (propertyKeys.includes(key2))
       continue;
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key2);
     descriptor.value = Clone(descriptor.value);
-    Object.defineProperty(result2, key, descriptor);
+    Object.defineProperty(result2, key2, descriptor);
   }
   return Freeze(result2);
 }
@@ -20367,20 +20367,20 @@ function Update(current, hidden, enumerable) {
   Metrics.update += 1;
   const settings2 = settings_exports.Get();
   const result2 = Clone(current);
-  for (const key of Object.keys(hidden)) {
-    Object.defineProperty(result2, key, {
+  for (const key2 of Object.keys(hidden)) {
+    Object.defineProperty(result2, key2, {
       configurable: true,
       writable: true,
       enumerable: settings2.enumerableKind,
-      value: hidden[key]
+      value: hidden[key2]
     });
   }
-  for (const key of Object.keys(enumerable)) {
-    Object.defineProperty(result2, key, {
+  for (const key2 of Object.keys(enumerable)) {
+    Object.defineProperty(result2, key2, {
       configurable: true,
       enumerable: true,
       writable: true,
-      value: enumerable[key]
+      value: enumerable[key2]
     });
   }
   return Freeze(result2);
@@ -20512,7 +20512,7 @@ function IsOptional(value) {
 
 // node_modules/typebox/build/type/types/properties.mjs
 function RequiredArray(properties) {
-  return guard_exports.Keys(properties).filter((key) => !IsOptional(properties[key]));
+  return guard_exports.Keys(properties).filter((key2) => !IsOptional(properties[key2]));
 }
 function PropertyKeys(properties) {
   return guard_exports.Keys(properties);
@@ -20544,8 +20544,8 @@ function IsUnknown(value) {
 
 // node_modules/typebox/build/type/types/cyclic.mjs
 function Cyclic($defs, $ref, options) {
-  const defs = guard_exports.Keys($defs).reduce((result2, key) => {
-    return { ...result2, [key]: memory_exports.Update($defs[key], {}, { $id: key }) };
+  const defs = guard_exports.Keys($defs).reduce((result2, key2) => {
+    return { ...result2, [key2]: memory_exports.Update($defs[key2], {}, { $id: key2 }) };
   }, {});
   return memory_exports.Create({ ["~kind"]: "Cyclic" }, { $defs: defs, $ref }, options);
 }
@@ -20600,8 +20600,8 @@ function IsTypeScriptEnumLike(value) {
   return guard_exports.IsObjectNotArray(value);
 }
 function TypeScriptEnumToEnumValues(type) {
-  const keys = guard_exports.Keys(type).filter((key) => isNaN(key));
-  return keys.reduce((result2, key) => [...result2, type[key]], []);
+  const keys = guard_exports.Keys(type).filter((key2) => isNaN(key2));
+  return keys.reduce((result2, key2) => [...result2, type[key2]], []);
 }
 
 // node_modules/typebox/build/type/types/enum.mjs
@@ -20644,9 +20644,9 @@ function InstanceKeys(value) {
   const propertyKeys = /* @__PURE__ */ new Set();
   let current = value;
   while (current && current !== Object.prototype) {
-    for (const key of Reflect.ownKeys(current)) {
-      if (key !== "constructor" && typeof key !== "symbol")
-        propertyKeys.add(key);
+    for (const key2 of Reflect.ownKeys(current)) {
+      if (key2 !== "constructor" && typeof key2 !== "symbol")
+        propertyKeys.add(key2);
     }
     current = Object.getPrototypeOf(current);
   }
@@ -20730,9 +20730,9 @@ function FromNumber(value) {
 }
 function FromObject2(value) {
   FNV1A64_OP(ByteMarker.Object);
-  for (const key of InstanceKeys(value).sort()) {
-    FromValue2(key);
-    FromValue2(value[key]);
+  for (const key2 of InstanceKeys(value).sort()) {
+    FromValue2(key2);
+    FromValue2(value[key2]);
   }
 }
 function FromRegExp2(value) {
@@ -21137,9 +21137,9 @@ function TemplateLiteralDecode(pattern) {
 }
 
 // node_modules/typebox/build/type/engine/record/record_create.mjs
-function CreateRecord(key, value) {
+function CreateRecord(key2, value) {
   const type = "object";
-  const patternProperties = { [key]: value };
+  const patternProperties = { [key2]: value };
   return memory_exports.Create({ ["~kind"]: "Record" }, { type, patternProperties });
 }
 
@@ -21237,13 +21237,13 @@ function CompositeProperty(left, right) {
   const property = RemoveReadonly(RemoveOptional(evaluated));
   return isReadonly && isOptional ? AddReadonly(AddOptional(property)) : isReadonly && !isOptional ? AddReadonly(property) : !isReadonly && isOptional ? AddOptional(property) : property;
 }
-function CompositePropertyKey(left, right, key) {
-  return key in left ? key in right ? CompositeProperty(left[key], right[key]) : left[key] : key in right ? right[key] : Never();
+function CompositePropertyKey(left, right, key2) {
+  return key2 in left ? key2 in right ? CompositeProperty(left[key2], right[key2]) : left[key2] : key2 in right ? right[key2] : Never();
 }
 function CompositeProperties(left, right) {
   const keys = /* @__PURE__ */ new Set([...guard_exports.Keys(left), ...guard_exports.Keys(right)]);
-  const result2 = [...keys].reduce((result3, key) => {
-    return { ...result3, [key]: CompositePropertyKey(left, right, key) };
+  const result2 = [...keys].reduce((result3, key2) => {
+    return { ...result3, [key2]: CompositePropertyKey(left, right, key2) };
   }, {});
   return result2;
 }
@@ -21368,8 +21368,8 @@ function FromIntersectKey(types, value) {
 }
 
 // node_modules/typebox/build/type/engine/record/from_key_literal.mjs
-function FromLiteralKey(key, value) {
-  return guard_exports.IsString(key) || guard_exports.IsNumber(key) ? _Object_({ [key]: value }) : guard_exports.IsEqual(key, false) ? _Object_({ false: value }) : guard_exports.IsEqual(key, true) ? _Object_({ true: value }) : _Object_({});
+function FromLiteralKey(key2, value) {
+  return guard_exports.IsString(key2) || guard_exports.IsNumber(key2) ? _Object_({ [key2]: value }) : guard_exports.IsEqual(key2, false) ? _Object_({ false: value }) : guard_exports.IsEqual(key2, true) ? _Object_({ true: value }) : _Object_({});
 }
 
 // node_modules/typebox/build/type/engine/record/from_key_number.mjs
@@ -21379,8 +21379,8 @@ function FromNumberKey(_key, value) {
 }
 
 // node_modules/typebox/build/type/engine/record/from_key_string.mjs
-function FromStringKey(key, value) {
-  return guard_exports.HasPropertyKey(key, "pattern") && (guard_exports.IsString(key.pattern) || key.pattern instanceof RegExp) ? CreateRecord(key.pattern.toString(), value) : CreateRecord(StringKey, value);
+function FromStringKey(key2, value) {
+  return guard_exports.HasPropertyKey(key2, "pattern") && (guard_exports.IsString(key2.pattern) || key2.pattern instanceof RegExp) ? CreateRecord(key2.pattern.toString(), value) : CreateRecord(StringKey, value);
 }
 
 // node_modules/typebox/build/type/engine/record/from_key_template_literal.mjs
@@ -21424,18 +21424,18 @@ function FromUnionKey(types, value) {
 }
 
 // node_modules/typebox/build/type/engine/record/from_key.mjs
-function FromKey(key, value) {
-  const result2 = IsAny(key) ? FromAnyKey(value) : IsBoolean3(key) ? FromBooleanKey(value) : IsEnum(key) ? FromEnumKey(key.enum, value) : IsInteger2(key) ? FromIntegerKey(key, value) : IsIntersect(key) ? FromIntersectKey(key.allOf, value) : IsLiteral(key) ? FromLiteralKey(key.const, value) : IsNumber3(key) ? FromNumberKey(key, value) : IsUnion(key) ? FromUnionKey(key.anyOf, value) : IsString3(key) ? FromStringKey(key, value) : IsTemplateLiteral(key) ? FromTemplateKey(key.pattern, value) : _Object_({});
+function FromKey(key2, value) {
+  const result2 = IsAny(key2) ? FromAnyKey(value) : IsBoolean3(key2) ? FromBooleanKey(value) : IsEnum(key2) ? FromEnumKey(key2.enum, value) : IsInteger2(key2) ? FromIntegerKey(key2, value) : IsIntersect(key2) ? FromIntersectKey(key2.allOf, value) : IsLiteral(key2) ? FromLiteralKey(key2.const, value) : IsNumber3(key2) ? FromNumberKey(key2, value) : IsUnion(key2) ? FromUnionKey(key2.anyOf, value) : IsString3(key2) ? FromStringKey(key2, value) : IsTemplateLiteral(key2) ? FromTemplateKey(key2.pattern, value) : _Object_({});
   return result2;
 }
 
 // node_modules/typebox/build/type/engine/record/instantiate.mjs
-function RecordAction(key, value, options) {
-  const result2 = CanInstantiate([key]) ? memory_exports.Update(FromKey(key, value), {}, options) : RecordDeferred(key, value, options);
+function RecordAction(key2, value, options) {
+  const result2 = CanInstantiate([key2]) ? memory_exports.Update(FromKey(key2, value), {}, options) : RecordDeferred(key2, value, options);
   return result2;
 }
-function RecordInstantiate(context, state, key, value, options) {
-  const instantiatedKey = InstantiateType(context, state, key);
+function RecordInstantiate(context, state, key2, value, options) {
+  const instantiatedKey = InstantiateType(context, state, key2);
   const instantiatedValue = InstantiateType(context, state, value);
   return RecordAction(instantiatedKey, instantiatedValue, options);
 }
@@ -21444,11 +21444,11 @@ function RecordInstantiate(context, state, key, value, options) {
 var IntegerKey = `^${IntegerPattern}$`;
 var NumberKey = `^${NumberPattern}$`;
 var StringKey = `^${StringPattern}$`;
-function RecordDeferred(key, value, options = {}) {
-  return Deferred("Record", [key, value], options);
+function RecordDeferred(key2, value, options = {}) {
+  return Deferred("Record", [key2, value], options);
 }
-function Record(key, value, options = {}) {
-  return RecordAction(key, value, options);
+function Record(key2, value, options = {}) {
+  return RecordAction(key2, value, options);
 }
 function RecordFromPattern(pattern, value) {
   return CreateRecord(pattern, value);
@@ -21719,9 +21719,9 @@ function OptionalMapping(input) {
   return input.length > 0;
 }
 function PropertyMapping(input) {
-  const [isReadonly, key, isOptional, _colon, type] = input;
+  const [isReadonly, key2, isOptional, _colon, type] = input;
   return {
-    [key]: isReadonly && isOptional ? AddReadonlyDeferred(AddOptionalDeferred(type)) : isReadonly && !isOptional ? AddReadonlyDeferred(type) : !isReadonly && isOptional ? AddOptionalDeferred(type) : type
+    [key2]: isReadonly && isOptional ? AddReadonlyDeferred(AddOptionalDeferred(type)) : isReadonly && !isOptional ? AddReadonlyDeferred(type) : !isReadonly && isOptional ? AddOptionalDeferred(type) : type
   };
 }
 function PropertyDelimiterMapping(input) {
@@ -22625,8 +22625,8 @@ function ExtendsProperty(inferred, left, right) {
   );
 }
 function ExtractInferredProperties(keys, properties) {
-  return keys.reduce((result2, key) => {
-    return key in properties ? IsExtendsTrueLike(properties[key]) ? { ...result2, ...properties[key].inferred } : Unreachable() : Unreachable();
+  return keys.reduce((result2, key2) => {
+    return key2 in properties ? IsExtendsTrueLike(properties[key2]) ? { ...result2, ...properties[key2].inferred } : Unreachable() : Unreachable();
   }, {});
 }
 function ExtendsPropertiesComparer(inferred, left, right) {
@@ -22646,10 +22646,10 @@ function ExtendsObjectToObject(inferred, left, right) {
   return ExtendsProperties(inferred, left, right);
 }
 function RecordMergeInferred(left, right) {
-  return guard_exports.Keys(right).reduce((result2, key) => {
+  return guard_exports.Keys(right).reduce((result2, key2) => {
     return {
       ...result2,
-      [key]: guard_exports.HasPropertyKey(left, key) ? IsUnion(result2[key]) ? Union([...result2[key].anyOf, right[key]]) : Union([left[key], right[key]]) : right[key]
+      [key2]: guard_exports.HasPropertyKey(left, key2) ? IsUnion(result2[key2]) ? Union([...result2[key2].anyOf, right[key2]]) : Union([left[key2], right[key2]]) : right[key2]
     };
   }, left);
 }
@@ -22879,8 +22879,8 @@ function FromTypes3(context, types, result2) {
 function FromType4(context, type, result2) {
   return IsRef(type) ? FromRef2(context, type.$ref, result2) : IsArray2(type) ? FromType4(context, type.items, result2) : IsConstructor2(type) ? FromTypes3(context, [...type.parameters, type.instanceType], result2) : IsFunction2(type) ? FromTypes3(context, [...type.parameters, type.returnType], result2) : IsInterfaceDeferred(type) ? FromProperties2(context, type.parameters[1], result2) : IsIntersect(type) ? FromTypes3(context, type.allOf, result2) : IsObject2(type) ? FromProperties2(context, type.properties, result2) : IsUnion(type) ? FromTypes3(context, type.anyOf, result2) : IsTuple(type) ? FromTypes3(context, type.items, result2) : IsRecord(type) ? FromType4(context, RecordValue(type), result2) : result2;
 }
-function CyclicDependencies(context, key, type) {
-  const result2 = FromType4(context, type, [key]);
+function CyclicDependencies(context, key2, type) {
+  const result2 = FromType4(context, type, [key2]);
   return result2;
 }
 
@@ -22889,8 +22889,8 @@ function FromRef3(_ref) {
   return Any();
 }
 function FromProperties3(properties) {
-  return guard_exports.Keys(properties).reduce((result2, key) => {
-    return { ...result2, [key]: FromType5(properties[key]) };
+  return guard_exports.Keys(properties).reduce((result2, key2) => {
+    return { ...result2, [key2]: FromType5(properties[key2]) };
   }, {});
 }
 function FromTypes4(types) {
@@ -22916,11 +22916,11 @@ function CyclicInterface(context, heritage, properties) {
   return evaluatedInterface;
 }
 function CyclicDefinitions(context, dependencies) {
-  const keys = guard_exports.Keys(context).filter((key) => dependencies.includes(key));
-  return keys.reduce((result2, key) => {
-    const type = context[key];
+  const keys = guard_exports.Keys(context).filter((key2) => dependencies.includes(key2));
+  return keys.reduce((result2, key2) => {
+    const type = context[key2];
     const instantiatedType = IsInterfaceDeferred(type) ? CyclicInterface(context, type.parameters[0], type.parameters[1]) : type;
-    return { ...result2, [key]: instantiatedType };
+    return { ...result2, [key2]: instantiatedType };
   }, {});
 }
 function InstantiateCyclic(context, ref, type) {
@@ -23403,12 +23403,12 @@ function FromDependent(if_, then_, else_) {
 
 // node_modules/typebox/build/type/engine/object/from_intersect.mjs
 function CollapseIntersectProperties(left, right) {
-  const leftKeys = guard_exports.Keys(left).filter((key) => !guard_exports.HasPropertyKey(right, key));
-  const rightKeys = guard_exports.Keys(right).filter((key) => !guard_exports.HasPropertyKey(left, key));
-  const sharedKeys = guard_exports.Keys(left).filter((key) => guard_exports.HasPropertyKey(right, key));
-  const leftProperties = leftKeys.reduce((result2, key) => ({ ...result2, [key]: left[key] }), {});
-  const rightProperties = rightKeys.reduce((result2, key) => ({ ...result2, [key]: right[key] }), {});
-  const sharedProperties = sharedKeys.reduce((result2, key) => ({ ...result2, [key]: EvaluateIntersect([left[key], right[key]]) }), {});
+  const leftKeys = guard_exports.Keys(left).filter((key2) => !guard_exports.HasPropertyKey(right, key2));
+  const rightKeys = guard_exports.Keys(right).filter((key2) => !guard_exports.HasPropertyKey(left, key2));
+  const sharedKeys = guard_exports.Keys(left).filter((key2) => guard_exports.HasPropertyKey(right, key2));
+  const leftProperties = leftKeys.reduce((result2, key2) => ({ ...result2, [key2]: left[key2] }), {});
+  const rightProperties = rightKeys.reduce((result2, key2) => ({ ...result2, [key2]: right[key2] }), {});
+  const sharedProperties = sharedKeys.reduce((result2, key2) => ({ ...result2, [key2]: EvaluateIntersect([left[key2], right[key2]]) }), {});
   const unique = memory_exports.Assign(leftProperties, rightProperties);
   const shared = memory_exports.Assign(unique, sharedProperties);
   return shared;
@@ -23433,9 +23433,9 @@ function FromTuple(types) {
 
 // node_modules/typebox/build/type/engine/object/from_union.mjs
 function CollapseUnionProperties(left, right) {
-  const sharedKeys = guard_exports.Keys(left).filter((key) => key in right);
-  const result2 = sharedKeys.reduce((result3, key) => {
-    return { ...result3, [key]: EvaluateUnion([left[key], right[key]]) };
+  const sharedKeys = guard_exports.Keys(left).filter((key2) => key2 in right);
+  const result2 = sharedKeys.reduce((result3, key2) => {
+    return { ...result3, [key2]: EvaluateUnion([left[key2], right[key2]]) };
   }, {});
   return result2;
 }
@@ -23557,8 +23557,8 @@ function ExpandThis(properties, type) {
 }
 
 // node_modules/typebox/build/type/engine/indexed/from_object.mjs
-function IndexProperty(properties, key) {
-  const selectedType = key in properties ? properties[key] : Never();
+function IndexProperty(properties, key2) {
+  const selectedType = key2 in properties ? properties[key2] : Never();
   const result2 = ExpandThis(properties, selectedType);
   return result2;
 }
@@ -23575,7 +23575,7 @@ function FromIndexer(properties, indexer) {
 }
 var NumericKeyPattern = new RegExp(IntegerKey);
 function NumericKeys(keys) {
-  const result2 = keys.filter((key) => NumericKeyPattern.test(key));
+  const result2 = keys.filter((key2) => NumericKeyPattern.test(key2));
   return result2;
 }
 function FromIndexerNumber(properties) {
@@ -23805,16 +23805,16 @@ function MappedInstantiate(context, state, identifier, type, as, property, optio
 // node_modules/typebox/build/type/engine/module/instantiate.mjs
 function InstantiateCyclics(context, declarations, cyclicKeys) {
   const declarationContext = memory_exports.Assign(context, declarations);
-  const declarationKeys = guard_exports.Keys(declarations).filter((key) => cyclicKeys.includes(key));
-  return declarationKeys.reduce((result2, key) => {
-    return { ...result2, [key]: InstantiateCyclic(declarationContext, key, declarations[key]) };
+  const declarationKeys = guard_exports.Keys(declarations).filter((key2) => cyclicKeys.includes(key2));
+  return declarationKeys.reduce((result2, key2) => {
+    return { ...result2, [key2]: InstantiateCyclic(declarationContext, key2, declarations[key2]) };
   }, {});
 }
 function InstantiateNonCyclics(context, declarations, cyclicKeys) {
   const declarationContext = memory_exports.Assign(context, declarations);
-  const declarationKeys = guard_exports.Keys(declarations).filter((key) => !cyclicKeys.includes(key));
-  return declarationKeys.reduce((result2, key) => {
-    return { ...result2, [key]: InstantiateType(declarationContext, State([], []), declarations[key]) };
+  const declarationKeys = guard_exports.Keys(declarations).filter((key2) => !cyclicKeys.includes(key2));
+  return declarationKeys.reduce((result2, key2) => {
+    return { ...result2, [key2]: InstantiateType(declarationContext, State([], []), declarations[key2]) };
   }, {});
 }
 function InstantiateModule(context, declarations, options) {
@@ -23869,8 +23869,8 @@ function ToIndexable(type) {
 
 // node_modules/typebox/build/type/engine/omit/from_type.mjs
 function FromKeys(properties, keys) {
-  const result2 = guard_exports.Keys(properties).reduce((result3, key) => {
-    return keys.includes(key) ? result3 : { ...result3, [key]: properties[key] };
+  const result2 = guard_exports.Keys(properties).reduce((result3, key2) => {
+    return keys.includes(key2) ? result3 : { ...result3, [key2]: properties[key2] };
   }, {});
   return result2;
 }
@@ -23988,8 +23988,8 @@ function Pick(type, indexer_or_keys, options = {}) {
 
 // node_modules/typebox/build/type/engine/pick/from_type.mjs
 function FromKeys2(properties, keys) {
-  const result2 = guard_exports.Keys(properties).reduce((result3, key) => {
-    return keys.includes(key) ? memory_exports.Assign(result3, { [key]: properties[key] }) : result3;
+  const result2 = guard_exports.Keys(properties).reduce((result3, key2) => {
+    return keys.includes(key2) ? memory_exports.Assign(result3, { [key2]: properties[key2] }) : result3;
   }, {});
   return result2;
 }
@@ -24209,8 +24209,8 @@ function CanInstantiate(types) {
   return guard_exports.ShiftLeft(types, (left, right) => IsRef(left) ? false : CanInstantiate(right), () => true);
 }
 function InstantiateProperties(context, state, properties) {
-  return guard_exports.Keys(properties).reduce((result2, key) => {
-    return { ...result2, [key]: InstantiateType(context, state, properties[key]) };
+  return guard_exports.Keys(properties).reduce((result2, key2) => {
+    return { ...result2, [key2]: InstantiateType(context, state, properties[key2]) };
   }, {});
 }
 function InstantiateElements(context, state, types) {
@@ -24737,8 +24737,8 @@ var CheckContext = class {
     this.GetIndices().add(index);
     return true;
   }
-  AddKey(key) {
-    this.GetKeys().add(key);
+  AddKey(key2) {
+    this.GetKeys().add(key2);
     return true;
   }
   GetIndices() {
@@ -24831,7 +24831,7 @@ function RegisterResourceAnchors(anchors, schema, isRoot = true) {
   if (!isRoot && IsId(schema))
     return anchors;
   const next = !isRoot && IsDynamicAnchor(schema) ? [...anchors, schema] : anchors;
-  return Object.keys(schema).reduce((result2, key) => RegisterResourceAnchors(result2, schema[key], false), next);
+  return Object.keys(schema).reduce((result2, key2) => RegisterResourceAnchors(result2, schema[key2], false), next);
 }
 function ResourceEntry(stack, schema) {
   return stack.resourceEntries.get(schema);
@@ -24934,8 +24934,8 @@ function UnicodeRegExp(pattern) {
 }
 
 // node_modules/typebox/build/schema/engine/additionalProperties.mjs
-function GetPropertyKeyAsPattern(key) {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function GetPropertyKeyAsPattern(key2) {
+  const escaped = key2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return `^${escaped}$`;
 }
 function GetPropertiesPattern(schema) {
@@ -24948,20 +24948,20 @@ function GetPropertiesPattern(schema) {
 }
 function CheckAdditionalProperties(stack, context, schema, value) {
   const regexp = UnicodeRegExp(GetPropertiesPattern(schema));
-  const isAdditionalProperties = guard_exports.Every(guard_exports.Keys(value), 0, (key, _index) => {
-    return regexp.test(key) || CheckSchemaPushStack(stack, context, schema.additionalProperties, value[key]) && context.AddKey(key);
+  const isAdditionalProperties = guard_exports.Every(guard_exports.Keys(value), 0, (key2, _index) => {
+    return regexp.test(key2) || CheckSchemaPushStack(stack, context, schema.additionalProperties, value[key2]) && context.AddKey(key2);
   });
   return isAdditionalProperties;
 }
 function ErrorAdditionalProperties(stack, context, schemaPath, instancePath, schema, value) {
   const regexp = UnicodeRegExp(GetPropertiesPattern(schema));
   const additionalProperties = [];
-  const isAdditionalProperties = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key, _index) => {
+  const isAdditionalProperties = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key2, _index) => {
     const nextSchemaPath = `${schemaPath}/additionalProperties`;
-    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
-    const isAdditionalProperty = regexp.test(key) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema.additionalProperties, value[key]) && context.AddKey(key);
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key2)}`;
+    const isAdditionalProperty = regexp.test(key2) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema.additionalProperties, value[key2]) && context.AddKey(key2);
     if (!isAdditionalProperty)
-      additionalProperties.push(key);
+      additionalProperties.push(key2);
     return isAdditionalProperty;
   });
   return isAdditionalProperties || context.AddError("additionalProperties", schemaPath, instancePath, { additionalProperties });
@@ -25049,16 +25049,16 @@ function ErrorContains(stack, context, schemaPath, instancePath, schema, value) 
 // node_modules/typebox/build/schema/engine/dependencies.mjs
 function CheckDependencies(stack, context, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependencies), 0, ([key, schema2]) => {
-    return !guard_exports.HasPropertyKey(value, key) || (guard_exports.IsArray(schema2) ? schema2.every((key2) => guard_exports.HasPropertyKey(value, key2)) : CheckSchema(stack, context, schema2, value));
+  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependencies), 0, ([key2, schema2]) => {
+    return !guard_exports.HasPropertyKey(value, key2) || (guard_exports.IsArray(schema2) ? schema2.every((key3) => guard_exports.HasPropertyKey(value, key3)) : CheckSchema(stack, context, schema2, value));
   });
   return isLength || isEvery;
 }
 function ErrorDependencies(stack, context, schemaPath, instancePath, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependencies), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/dependencies/${EncodeFragment(key)}`;
-    return !guard_exports.HasPropertyKey(value, key) || (guard_exports.IsArray(schema2) ? schema2.every((dependency) => guard_exports.HasPropertyKey(value, dependency) || context.AddError("dependencies", schemaPath, instancePath, { property: key, dependencies: schema2 })) : ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value));
+  const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependencies), 0, ([key2, schema2]) => {
+    const nextSchemaPath = `${schemaPath}/dependencies/${EncodeFragment(key2)}`;
+    return !guard_exports.HasPropertyKey(value, key2) || (guard_exports.IsArray(schema2) ? schema2.every((dependency) => guard_exports.HasPropertyKey(value, dependency) || context.AddError("dependencies", schemaPath, instancePath, { property: key2, dependencies: schema2 })) : ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value));
   });
   return isLength || isEvery;
 }
@@ -25066,15 +25066,15 @@ function ErrorDependencies(stack, context, schemaPath, instancePath, schema, val
 // node_modules/typebox/build/schema/engine/dependentRequired.mjs
 function CheckDependentRequired(_stack, _context, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependentRequired), 0, ([key, keys]) => {
-    return !guard_exports.HasPropertyKey(value, key) || keys.every((key2) => guard_exports.HasPropertyKey(value, key2));
+  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependentRequired), 0, ([key2, keys]) => {
+    return !guard_exports.HasPropertyKey(value, key2) || keys.every((key3) => guard_exports.HasPropertyKey(value, key3));
   });
   return isLength || isEvery;
 }
 function ErrorDependentRequired(_stack, context, schemaPath, instancePath, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEveryEntry = guard_exports.EveryAll(guard_exports.Entries(schema.dependentRequired), 0, ([key, keys]) => {
-    return !guard_exports.HasPropertyKey(value, key) || guard_exports.EveryAll(keys, 0, (dependency) => guard_exports.HasPropertyKey(value, dependency) || context.AddError("dependentRequired", schemaPath, instancePath, { property: key, dependencies: keys }));
+  const isEveryEntry = guard_exports.EveryAll(guard_exports.Entries(schema.dependentRequired), 0, ([key2, keys]) => {
+    return !guard_exports.HasPropertyKey(value, key2) || guard_exports.EveryAll(keys, 0, (dependency) => guard_exports.HasPropertyKey(value, dependency) || context.AddError("dependentRequired", schemaPath, instancePath, { property: key2, dependencies: keys }));
   });
   return isLength || isEveryEntry;
 }
@@ -25082,16 +25082,16 @@ function ErrorDependentRequired(_stack, context, schemaPath, instancePath, schem
 // node_modules/typebox/build/schema/engine/dependentSchemas.mjs
 function CheckDependentSchemas(stack, context, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependentSchemas), 0, ([key, schema2]) => {
-    return !guard_exports.HasPropertyKey(value, key) || CheckSchema(stack, context, schema2, value);
+  const isEvery = guard_exports.Every(guard_exports.Entries(schema.dependentSchemas), 0, ([key2, schema2]) => {
+    return !guard_exports.HasPropertyKey(value, key2) || CheckSchema(stack, context, schema2, value);
   });
   return isLength || isEvery;
 }
 function ErrorDependentSchemas(stack, context, schemaPath, instancePath, schema, value) {
   const isLength = guard_exports.IsEqual(guard_exports.Keys(value).length, 0);
-  const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependentSchemas), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/dependentSchemas/${EncodeFragment(key)}`;
-    return !guard_exports.HasPropertyKey(value, key) || ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value);
+  const isEvery = guard_exports.EveryAll(guard_exports.Entries(schema.dependentSchemas), 0, ([key2, schema2]) => {
+    const nextSchemaPath = `${schemaPath}/dependentSchemas/${EncodeFragment(key2)}`;
+    return !guard_exports.HasPropertyKey(value, key2) || ErrorSchema(stack, context, nextSchemaPath, instancePath, schema2, value);
   });
   return isLength || isEvery;
 }
@@ -25203,8 +25203,8 @@ function SearchDynamicAnchor(schema, name) {
     return schema;
   }
   if (guard_exports.IsObject(schema)) {
-    for (const key of guard_exports.Keys(schema)) {
-      const result2 = SearchDynamicAnchor(schema[key], name);
+    for (const key2 of guard_exports.Keys(schema)) {
+      const result2 = SearchDynamicAnchor(schema[key2], name);
       if (result2)
         return result2;
     }
@@ -25222,8 +25222,8 @@ function SearchBase(schema, base, target) {
         return result2;
     }
   } else if (guard_exports.IsObject(schema)) {
-    for (const key of guard_exports.Keys(schema)) {
-      const result2 = SearchBase(schema[key], nextBase, target);
+    for (const key2 of guard_exports.Keys(schema)) {
+      const result2 = SearchBase(schema[key2], nextBase, target);
       if (!guard_exports.IsUndefined(result2))
         return result2;
     }
@@ -25281,10 +25281,10 @@ function MatchFromArray(schema, base, ref) {
 function MatchFromObject(schema, base, ref) {
   if (!guard_exports.IsObject(schema))
     return void 0;
-  return guard_exports.Keys(schema).reduce((result2, key) => {
-    if (guard_exports.IsEqual(key, "const") || guard_exports.IsEqual(key, "enum"))
+  return guard_exports.Keys(schema).reduce((result2, key2) => {
+    if (guard_exports.IsEqual(key2, "const") || guard_exports.IsEqual(key2, "enum"))
       return result2;
-    const match = Match4(schema[key], base, ref);
+    const match = Match4(schema[key2], base, ref);
     return !guard_exports.IsUndefined(match) ? match : result2;
   }, void 0);
 }
@@ -26235,8 +26235,8 @@ function ErrorPattern(stack, context, schemaPath, instancePath, schema, value) {
 function CheckPatternProperties(stack, context, schema, value) {
   return guard_exports.Every(guard_exports.Entries(schema.patternProperties), 0, ([pattern, schema2]) => {
     const regexp = UnicodeRegExp(pattern);
-    return guard_exports.Every(guard_exports.Entries(value), 0, ([key, prop]) => {
-      return !regexp.test(key) || CheckSchemaPushStack(stack, context, schema2, prop) && context.AddKey(key);
+    return guard_exports.Every(guard_exports.Entries(value), 0, ([key2, prop]) => {
+      return !regexp.test(key2) || CheckSchemaPushStack(stack, context, schema2, prop) && context.AddKey(key2);
     });
   });
 }
@@ -26244,10 +26244,10 @@ function ErrorPatternProperties(stack, context, schemaPath, instancePath, schema
   return guard_exports.EveryAll(guard_exports.Entries(schema.patternProperties), 0, ([pattern, schema2]) => {
     const nextSchemaPath = `${schemaPath}/patternProperties/${EncodeFragment(pattern)}`;
     const regexp = UnicodeRegExp(pattern);
-    return guard_exports.EveryAll(guard_exports.Entries(value), 0, ([key, value2]) => {
-      const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
-      const notKey = !regexp.test(key);
-      return notKey || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value2) && context.AddKey(key);
+    return guard_exports.EveryAll(guard_exports.Entries(value), 0, ([key2, value2]) => {
+      const nextInstancePath = `${instancePath}/${EncodeFragment(key2)}`;
+      const notKey = !regexp.test(key2);
+      return notKey || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value2) && context.AddKey(key2);
     });
   });
 }
@@ -26267,45 +26267,45 @@ function ErrorPrefixItems(stack, context, schemaPath, instancePath, schema, valu
 }
 
 // node_modules/typebox/build/schema/engine/_exact_optional.mjs
-function IsExactOptional(required2, key) {
-  return required2.includes(key) || settings_exports.Get().exactOptionalPropertyTypes;
+function IsExactOptional(required2, key2) {
+  return required2.includes(key2) || settings_exports.Get().exactOptionalPropertyTypes;
 }
-function InexactOptionalCheck(value, key) {
-  return guard_exports.IsUndefined(value[key]);
+function InexactOptionalCheck(value, key2) {
+  return guard_exports.IsUndefined(value[key2]);
 }
 
 // node_modules/typebox/build/schema/engine/properties.mjs
 function CheckProperties(stack, context, schema, value) {
   const required2 = IsRequired(schema) ? schema.required : [];
-  const isProperties = guard_exports.Every(guard_exports.Entries(schema.properties), 0, ([key, schema2]) => {
-    const isProperty = !guard_exports.HasPropertyKey(value, key) || CheckSchemaPushStack(stack, context, schema2, value[key]) && context.AddKey(key);
-    return IsExactOptional(required2, key) ? isProperty : InexactOptionalCheck(value, key) || isProperty;
+  const isProperties = guard_exports.Every(guard_exports.Entries(schema.properties), 0, ([key2, schema2]) => {
+    const isProperty = !guard_exports.HasPropertyKey(value, key2) || CheckSchemaPushStack(stack, context, schema2, value[key2]) && context.AddKey(key2);
+    return IsExactOptional(required2, key2) ? isProperty : InexactOptionalCheck(value, key2) || isProperty;
   });
   return isProperties;
 }
 function ErrorProperties(stack, context, schemaPath, instancePath, schema, value) {
   const required2 = IsRequired(schema) ? schema.required : [];
-  const isProperties = guard_exports.EveryAll(guard_exports.Entries(schema.properties), 0, ([key, schema2]) => {
-    const nextSchemaPath = `${schemaPath}/properties/${EncodeFragment(key)}`;
-    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
-    const isProperty = () => !guard_exports.HasPropertyKey(value, key) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value[key]) && context.AddKey(key);
-    return IsExactOptional(required2, key) ? isProperty() : InexactOptionalCheck(value, key) || isProperty();
+  const isProperties = guard_exports.EveryAll(guard_exports.Entries(schema.properties), 0, ([key2, schema2]) => {
+    const nextSchemaPath = `${schemaPath}/properties/${EncodeFragment(key2)}`;
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key2)}`;
+    const isProperty = () => !guard_exports.HasPropertyKey(value, key2) || ErrorSchemaPushStack(stack, context, nextSchemaPath, nextInstancePath, schema2, value[key2]) && context.AddKey(key2);
+    return IsExactOptional(required2, key2) ? isProperty() : InexactOptionalCheck(value, key2) || isProperty();
   });
   return isProperties;
 }
 
 // node_modules/typebox/build/schema/engine/propertyNames.mjs
 function CheckPropertyNames(stack, context, schema, value) {
-  return guard_exports.Every(guard_exports.Keys(value), 0, (key, _index) => CheckSchema(stack, context, schema.propertyNames, key));
+  return guard_exports.Every(guard_exports.Keys(value), 0, (key2, _index) => CheckSchema(stack, context, schema.propertyNames, key2));
 }
 function ErrorPropertyNames(stack, context, schemaPath, instancePath, schema, value) {
   const propertyNames = [];
-  const isPropertyNames = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key, _index) => {
-    const nextInstancePath = `${instancePath}/${EncodeFragment(key)}`;
+  const isPropertyNames = guard_exports.EveryAll(guard_exports.Keys(value), 0, (key2, _index) => {
+    const nextInstancePath = `${instancePath}/${EncodeFragment(key2)}`;
     const nextSchemaPath = `${schemaPath}/propertyNames`;
-    const isPropertyName = ErrorSchema(stack, context, nextSchemaPath, nextInstancePath, schema.propertyNames, key);
+    const isPropertyName = ErrorSchema(stack, context, nextSchemaPath, nextInstancePath, schema.propertyNames, key2);
     if (!isPropertyName)
-      propertyNames.push(key);
+      propertyNames.push(key2);
     return isPropertyName;
   });
   return isPropertyNames || context.AddError("propertyNames", schemaPath, instancePath, { propertyNames });
@@ -26347,14 +26347,14 @@ function ErrorRef(stack, context, schemaPath, instancePath, schema, value) {
 
 // node_modules/typebox/build/schema/engine/required.mjs
 function CheckRequired(_stack, _context, schema, value) {
-  return guard_exports.Every(schema.required, 0, (key) => guard_exports.HasPropertyKey(value, key));
+  return guard_exports.Every(schema.required, 0, (key2) => guard_exports.HasPropertyKey(value, key2));
 }
 function ErrorRequired(_stack, context, schemaPath, instancePath, schema, value) {
   const requiredProperties = [];
-  const isRequired = guard_exports.EveryAll(schema.required, 0, (key) => {
-    const hasKey = guard_exports.HasPropertyKey(value, key);
+  const isRequired = guard_exports.EveryAll(schema.required, 0, (key2) => {
+    const hasKey = guard_exports.HasPropertyKey(value, key2);
     if (!hasKey)
-      requiredProperties.push(key);
+      requiredProperties.push(key2);
     return hasKey;
   });
   return isRequired || context.AddError("required", schemaPath, instancePath, { requiredProperties });
@@ -26404,18 +26404,18 @@ function ErrorUnevaluatedItems(stack, context, schemaPath, instancePath, schema,
 // node_modules/typebox/build/schema/engine/unevaluatedProperties.mjs
 function CheckUnevaluatedProperties(stack, context, schema, value) {
   const keys = context.GetKeys();
-  return guard_exports.Every(guard_exports.Entries(value), 0, ([key, prop]) => {
-    return keys.has(key) || CheckSchema(stack, context, schema.unevaluatedProperties, prop) && context.AddKey(key);
+  return guard_exports.Every(guard_exports.Entries(value), 0, ([key2, prop]) => {
+    return keys.has(key2) || CheckSchema(stack, context, schema.unevaluatedProperties, prop) && context.AddKey(key2);
   });
 }
 function ErrorUnevaluatedProperties(stack, context, schemaPath, instancePath, schema, value) {
   const keys = context.GetKeys();
   const unevaluatedProperties = [];
-  const isUnevaluatedProperties = guard_exports.EveryAll(guard_exports.Entries(value), 0, ([key, prop]) => {
+  const isUnevaluatedProperties = guard_exports.EveryAll(guard_exports.Entries(value), 0, ([key2, prop]) => {
     const nextContext = new ErrorContext();
-    const isEvaluatedProperty = keys.has(key) || ErrorSchema(stack, nextContext, schemaPath, instancePath, schema.unevaluatedProperties, prop) && context.AddKey(key);
+    const isEvaluatedProperty = keys.has(key2) || ErrorSchema(stack, nextContext, schemaPath, instancePath, schema.unevaluatedProperties, prop) && context.AddKey(key2);
     if (!isEvaluatedProperty)
-      unevaluatedProperties.push(key);
+      unevaluatedProperties.push(key2);
     return isEvaluatedProperty;
   });
   return isUnevaluatedProperties || context.AddError("unevaluatedProperties", schemaPath, instancePath, { unevaluatedProperties });
@@ -26572,20 +26572,20 @@ function FromObject10(context, type, value) {
   if (!guard_exports.IsObject(value) || guard_exports.IsArray(value))
     return value;
   const additionalProperties = GetAdditionalProperties(type);
-  for (const key of guard_exports.Keys(value)) {
-    if (guard_exports.HasPropertyKey(type.properties, key) && IsSchema(type.properties[key])) {
-      value[key] = FromType19(context, type.properties[key], value[key]);
+  for (const key2 of guard_exports.Keys(value)) {
+    if (guard_exports.HasPropertyKey(type.properties, key2) && IsSchema(type.properties[key2])) {
+      value[key2] = FromType19(context, type.properties[key2], value[key2]);
       continue;
     }
     const unknownCheck = (
       // 1. additionalProperties: true
-      guard_exports.IsBoolean(additionalProperties) && guard_exports.IsEqual(additionalProperties, true) || IsSchema(additionalProperties) && Check2(context, additionalProperties, value[key])
+      guard_exports.IsBoolean(additionalProperties) && guard_exports.IsEqual(additionalProperties, true) || IsSchema(additionalProperties) && Check2(context, additionalProperties, value[key2])
     );
     if (unknownCheck) {
-      value[key] = FromType19(context, additionalProperties, value[key]);
+      value[key2] = FromType19(context, additionalProperties, value[key2]);
       continue;
     }
-    delete value[key];
+    delete value[key2];
   }
   return value;
 }
@@ -26596,20 +26596,20 @@ function FromRecord3(context, type, value) {
     return value;
   const additionalProperties = GetAdditionalProperties(type);
   const [recordPattern, recordValue] = [new RegExp(RecordPattern(type)), RecordValue(type)];
-  for (const key of guard_exports.Keys(value)) {
-    if (recordPattern.test(key)) {
-      value[key] = FromType19(context, recordValue, value[key]);
+  for (const key2 of guard_exports.Keys(value)) {
+    if (recordPattern.test(key2)) {
+      value[key2] = FromType19(context, recordValue, value[key2]);
       continue;
     }
     const unknownCheck = (
       // 1. additionalProperties: true
-      guard_exports.IsBoolean(additionalProperties) && guard_exports.IsEqual(additionalProperties, true) || IsSchema(additionalProperties) && Check2(context, additionalProperties, value[key])
+      guard_exports.IsBoolean(additionalProperties) && guard_exports.IsEqual(additionalProperties, true) || IsSchema(additionalProperties) && Check2(context, additionalProperties, value[key2])
     );
     if (unknownCheck) {
-      value[key] = FromType19(context, additionalProperties, value[key]);
+      value[key2] = FromType19(context, additionalProperties, value[key2]);
       continue;
     }
-    delete value[key];
+    delete value[key2];
   }
   return value;
 }
@@ -26652,17 +26652,17 @@ function FromType19(context, type, value) {
 
 // node_modules/typebox/build/value/shared/union_priority_sort.mjs
 function Modifiers(type, next) {
-  for (const key of guard_default.Keys(type)) {
-    if (guard_default.HasPropertyKey(next, key))
+  for (const key2 of guard_default.Keys(type)) {
+    if (guard_default.HasPropertyKey(next, key2))
       continue;
-    next[key] = type[key];
+    next[key2] = type[key2];
   }
   return next;
 }
 function FromProperties4(properties) {
   const result2 = {};
-  for (const key of guard_default.Keys(properties))
-    result2[key] = FromType20(properties[key]);
+  for (const key2 of guard_default.Keys(properties))
+    result2[key2] = FromType20(properties[key2]);
   return result2;
 }
 function FromRecordKey(type) {
@@ -26912,9 +26912,9 @@ function FromNumber5(_context, _type, value) {
 function FromAdditionalProperties(context, entries, additionalProperties, value) {
   const keys = guard_exports.Keys(value);
   for (const [regexp, _] of entries) {
-    for (const key of keys) {
-      if (!regexp.test(key)) {
-        value[key] = FromType21(context, additionalProperties, value[key]);
+    for (const key2 of keys) {
+      if (!regexp.test(key2)) {
+        value[key2] = FromType21(context, additionalProperties, value[key2]);
       }
     }
   }
@@ -26922,8 +26922,8 @@ function FromAdditionalProperties(context, entries, additionalProperties, value)
 }
 
 // node_modules/typebox/build/value/shared/optional_undefined.mjs
-function IsOptionalUndefined(property, key, value) {
-  return IsOptional(property) && guard_exports.IsUndefined(value[key]);
+function IsOptionalUndefined(property, key2, value) {
+  return IsOptional(property) && guard_exports.IsUndefined(value[key2]);
 }
 
 // node_modules/typebox/build/value/convert/from_object.mjs
@@ -26931,10 +26931,10 @@ function FromProperties5(context, type, value) {
   const entries = guard_exports.EntriesRegExp(type.properties);
   const keys = guard_exports.Keys(value);
   for (const [regexp, property] of entries) {
-    for (const key of keys) {
-      if (!regexp.test(key) || IsOptionalUndefined(property, key, value))
+    for (const key2 of keys) {
+      if (!regexp.test(key2) || IsOptionalUndefined(property, key2, value))
         continue;
-      value[key] = FromType21(context, property, value[key]);
+      value[key2] = FromType21(context, property, value[key2]);
     }
   }
   return guard_exports.HasPropertyKey(type, "additionalProperties") && guard_exports.IsObject(type.additionalProperties) ? FromAdditionalProperties(context, entries, type.additionalProperties, value) : value;
@@ -26948,9 +26948,9 @@ function FromPatternProperties(context, type, value) {
   const entries = guard_exports.EntriesRegExp(type.patternProperties);
   const keys = guard_exports.Keys(value);
   for (const [regexp, schema] of entries) {
-    for (const key of keys) {
-      if (regexp.test(key)) {
-        value[key] = FromType21(context, schema, value[key]);
+    for (const key2 of keys) {
+      if (regexp.test(key2)) {
+        value[key2] = FromType21(context, schema, value[key2]);
       }
     }
   }
@@ -26997,8 +26997,8 @@ function FromUnion10(context, type, value) {
   const matched = type.anyOf.some((type2) => Check2(context, type2, value));
   if (matched)
     return value;
-  const candidates = type.anyOf.map((type2) => FromType21(context, type2, Clone2(value)));
-  const selected = candidates.find((value2) => Check2(context, type, value2));
+  const candidates2 = type.anyOf.map((type2) => FromType21(context, type2, Clone2(value)));
+  const selected = candidates2.find((value2) => Check2(context, type, value2));
   return guard_exports.IsUndefined(selected) ? value : selected;
 }
 
@@ -27056,19 +27056,19 @@ function FromObject12(context, type, value) {
   if (!guard_exports.IsObject(value))
     return value;
   const knownPropertyKeys = guard_exports.Keys(type.properties);
-  for (const key of knownPropertyKeys) {
-    const propertyValue = FromType22(context, type.properties[key], value[key]);
-    const isUnassignableUndefined = guard_exports.IsUndefined(propertyValue) && (IsOptional(type.properties[key]) || !guard_exports.HasPropertyKey(type.properties[key], "default"));
+  for (const key2 of knownPropertyKeys) {
+    const propertyValue = FromType22(context, type.properties[key2], value[key2]);
+    const isUnassignableUndefined = guard_exports.IsUndefined(propertyValue) && (IsOptional(type.properties[key2]) || !guard_exports.HasPropertyKey(type.properties[key2], "default"));
     if (isUnassignableUndefined)
       continue;
-    value[key] = propertyValue;
+    value[key2] = propertyValue;
   }
   if (!IsAdditionalProperties(type) || guard_exports.IsBoolean(type.additionalProperties))
     return value;
-  for (const key of guard_exports.Keys(value)) {
-    if (knownPropertyKeys.includes(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (knownPropertyKeys.includes(key2))
       continue;
-    value[key] = FromType22(context, type.additionalProperties, value[key]);
+    value[key2] = FromType22(context, type.additionalProperties, value[key2]);
   }
   return value;
 }
@@ -27078,17 +27078,17 @@ function FromRecord5(context, type, value) {
   if (!guard_exports.IsObject(value))
     return value;
   const [recordKey, recordValue] = [new RegExp(RecordPattern(type)), RecordValue(type)];
-  for (const key of guard_exports.Keys(value)) {
-    if (!(recordKey.test(key) && IsDefault(recordValue)))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (!(recordKey.test(key2) && IsDefault(recordValue)))
       continue;
-    value[key] = FromType22(context, recordValue, value[key]);
+    value[key2] = FromType22(context, recordValue, value[key2]);
   }
   if (!IsAdditionalProperties(type))
     return value;
-  for (const key of guard_exports.Keys(value)) {
-    if (recordKey.test(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (recordKey.test(key2))
       continue;
-    value[key] = FromType22(context, type.additionalProperties, value[key]);
+    value[key2] = FromType22(context, type.additionalProperties, value[key2]);
   }
   return value;
 }
@@ -27224,10 +27224,10 @@ function FromIntersect9(direction, context, type, value) {
 function Decode6(direction, context, type, value) {
   if (!guard_exports.IsObjectNotArray(value))
     return value;
-  for (const key of guard_exports.Keys(type.properties)) {
-    if (!guard_exports.HasPropertyKey(value, key) || IsOptionalUndefined(type.properties[key], key, value))
+  for (const key2 of guard_exports.Keys(type.properties)) {
+    if (!guard_exports.HasPropertyKey(value, key2) || IsOptionalUndefined(type.properties[key2], key2, value))
       continue;
-    value[key] = FromType23(direction, context, type.properties[key], value[key]);
+    value[key2] = FromType23(direction, context, type.properties[key2], value[key2]);
   }
   return Callback(direction, context, type, value);
 }
@@ -27235,10 +27235,10 @@ function Encode6(direction, context, type, value) {
   const exterior = Callback(direction, context, type, value);
   if (!guard_exports.IsObjectNotArray(exterior))
     return exterior;
-  for (const key of guard_exports.Keys(type.properties)) {
-    if (!guard_exports.HasPropertyKey(exterior, key) || IsOptionalUndefined(type.properties[key], key, exterior))
+  for (const key2 of guard_exports.Keys(type.properties)) {
+    if (!guard_exports.HasPropertyKey(exterior, key2) || IsOptionalUndefined(type.properties[key2], key2, exterior))
       continue;
-    exterior[key] = FromType23(direction, context, type.properties[key], exterior[key]);
+    exterior[key2] = FromType23(direction, context, type.properties[key2], exterior[key2]);
   }
   return exterior;
 }
@@ -27251,10 +27251,10 @@ function Decode7(direction, context, type, value) {
   if (!guard_exports.IsObjectNotArray(value))
     return value;
   const regexp = new RegExp(RecordPattern(type));
-  for (const key of guard_exports.Keys(value)) {
-    if (!regexp.test(key))
+  for (const key2 of guard_exports.Keys(value)) {
+    if (!regexp.test(key2))
       continue;
-    value[key] = FromType23(direction, context, RecordValue(type), value[key]);
+    value[key2] = FromType23(direction, context, RecordValue(type), value[key2]);
   }
   return Callback(direction, context, type, value);
 }
@@ -27263,10 +27263,10 @@ function Encode7(direction, context, type, value) {
   if (!guard_exports.IsObjectNotArray(exterior))
     return exterior;
   const regexp = new RegExp(RecordPattern(type));
-  for (const key of guard_exports.Keys(exterior)) {
-    if (!regexp.test(key))
+  for (const key2 of guard_exports.Keys(exterior)) {
+    if (!regexp.test(key2))
       continue;
-    exterior[key] = FromType23(direction, context, RecordValue(type), exterior[key]);
+    exterior[key2] = FromType23(direction, context, RecordValue(type), exterior[key2]);
   }
   return exterior;
 }
@@ -27633,13 +27633,13 @@ function consoleStatus(value) {
     session_binding: token(v.session_binding) ?? "unknown",
     readiness_scope: token(v.readiness_scope) ?? "unknown"
   };
-  for (const key of ["vm", "lease_id", "console_id", "backend", "source"]) {
-    const s = token(v[key]);
-    if (s) result2[key] = s;
+  for (const key2 of ["vm", "lease_id", "console_id", "backend", "source"]) {
+    const s = token(v[key2]);
+    if (s) result2[key2] = s;
   }
   if (v.environment_fingerprint === null) result2.environment_fingerprint = null;
   else if (token(v.environment_fingerprint)) result2.environment_fingerprint = token(v.environment_fingerprint);
-  for (const key of ["observed_at", "access_expires_at"]) if (typeof v[key] === "number" && Number.isFinite(v[key])) result2[key] = v[key];
+  for (const key2 of ["observed_at", "access_expires_at"]) if (typeof v[key2] === "number" && Number.isFinite(v[key2])) result2[key2] = v[key2];
   if (v.attempt !== void 0) {
     const a = object4(v.attempt);
     result2.attempt = {
@@ -27907,7 +27907,7 @@ function decodePng(bytes, size) {
   };
   const rawSample = (row, index) => depth === 16 ? scan[row * stride + index * 2] << 8 | scan[row * stride + index * 2 + 1] : sample(row, index);
   const scale = depth < 8 ? 255 / max : 1;
-  const key = trns && (colorType === 0 || colorType === 2) ? Array.from({ length: channels }, (_, i) => trns.readUInt16BE(i * 2)) : void 0;
+  const key2 = trns && (colorType === 0 || colorType === 2) ? Array.from({ length: channels }, (_, i) => trns.readUInt16BE(i * 2)) : void 0;
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const o = (y * width + x) * 4, i = x * channels;
     if (colorType === 3) {
@@ -27919,7 +27919,7 @@ function decodePng(bytes, size) {
       rgba[o + 3] = trns && sample(y, x) < trns.length ? trns[sample(y, x)] : 255;
       continue;
     }
-    const keyed = key !== void 0 && key.every((value, c) => rawSample(y, i + c) === value);
+    const keyed = key2 !== void 0 && key2.every((value, c) => rawSample(y, i + c) === value);
     if (colorType === 0 || colorType === 4) {
       const g = Math.round(sample(y, i) * scale);
       rgba[o] = g;
@@ -28143,7 +28143,7 @@ function imageFailure(error2) {
   return { status: code && known.has(code) ? code : "transfer-failed", diagnostic: error2 instanceof ImageError ? error2.message : code && known.has(code) ? `Image operation failed: ${code}` : "Image delivery could not complete; execution was not replayed." };
 }
 function canonical(value) {
-  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key2) => [key2, item[key2]])) : item);
 }
 function guard(signal) {
   if (signal?.aborted) fail("transfer-failed", "Image delivery cancelled or deadline exceeded.");
@@ -28541,8 +28541,8 @@ var ImageStore = class {
     for (const name of names.filter((n) => n.endsWith(".json"))) {
       const record3 = await this.load(name.slice(0, -5)).catch(() => void 0);
       if (!record3 || record3.recording !== recordingRoot || record3.descriptor.source !== "display") continue;
-      const key = `${record3.descriptor.sha256}:${record3.descriptor.bytes}`;
-      held.set(key, [...held.get(key) ?? [], record3.local]);
+      const key2 = `${record3.descriptor.sha256}:${record3.descriptor.bytes}`;
+      held.set(key2, [...held.get(key2) ?? [], record3.local]);
     }
     return held;
   }
@@ -28666,7 +28666,7 @@ var DownloadQueue = class {
     }
   }
   /** Shutdown: nothing more starts or is written; the download in flight is aborted. `wait` waits for it to stop. */
-  async close(wait) {
+  async close(wait2) {
     this.state = "closed";
     for (const job of this.queued.splice(0)) {
       job.end = "cancelled";
@@ -28674,7 +28674,7 @@ var DownloadQueue = class {
     }
     const current = this.current;
     current?.controller.abort(new Error("The relay is shutting down"));
-    if (wait) await current?.done;
+    if (wait2) await current?.done;
   }
   kick() {
     if (this.current || this.state === "closed" || !this.queued.length || this.paused && !this.queued[0].promoted) return;
@@ -28828,7 +28828,130 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
   if (archived) await copy(archived, retained);
 }
 
+// src/mdns.ts
+import { createSocket } from "node:dgram";
+var TYPE = { A: 1, PTR: 12, TXT: 16, SRV: 33 };
+var GROUP = "224.0.0.251";
+var PORT = 5353;
+var key = (name) => name.replace(/\.$/, "").toLowerCase();
+function encodeName(name) {
+  const parts = name.replace(/\.$/, "").split(".").map((label) => Buffer.from(label, "utf8"));
+  if (parts.some((part) => part.length === 0 || part.length > 63)) throw new Error(`Invalid DNS name ${name}`);
+  return Buffer.concat([...parts.flatMap((part) => [Buffer.from([part.length]), part]), Buffer.from([0])]);
+}
+function encodeQuery(questions) {
+  const header2 = Buffer.alloc(12);
+  header2.writeUInt16BE(questions.length, 4);
+  return Buffer.concat([header2, ...questions.flatMap((q) => {
+    const tail = Buffer.alloc(4);
+    tail.writeUInt16BE(q.type, 0);
+    tail.writeUInt16BE(1, 2);
+    return [encodeName(q.name), tail];
+  })]);
+}
+function readName(message3, offset) {
+  const labels = [];
+  let at = offset, end = -1, jumps = 0;
+  for (; ; ) {
+    if (at >= message3.length) throw new Error("DNS name runs past the message");
+    const length = message3[at];
+    if (length === 0) {
+      at += 1;
+      break;
+    }
+    if ((length & 192) === 192) {
+      if (at + 1 >= message3.length || ++jumps > 32) throw new Error("Invalid DNS name pointer");
+      if (end < 0) end = at + 2;
+      at = (length & 63) << 8 | message3[at + 1];
+      continue;
+    }
+    if (at + 1 + length > message3.length) throw new Error("DNS label runs past the message");
+    labels.push(message3.toString("utf8", at + 1, at + 1 + length));
+    at += 1 + length;
+  }
+  return [labels.join("."), end < 0 ? at : end];
+}
+function parseRecords(message3) {
+  const records = [];
+  try {
+    if (message3.length < 12 || !(message3[2] & 128)) return records;
+    const questions = message3.readUInt16BE(4), total = message3.readUInt16BE(6) + message3.readUInt16BE(8) + message3.readUInt16BE(10);
+    let at = 12;
+    for (let i = 0; i < questions; i++) at = readName(message3, at)[1] + 4;
+    for (let i = 0; i < total; i++) {
+      const [name, next] = readName(message3, at);
+      const type = message3.readUInt16BE(next), length = message3.readUInt16BE(next + 8), start = next + 10;
+      if (start + length > message3.length) break;
+      records.push({ name, type, data: message3.subarray(start, start + length), message: message3, offset: start });
+      at = start + length;
+    }
+  } catch {
+  }
+  return records;
+}
+function txtOf(data) {
+  const txt = {};
+  for (let at = 0; at < data.length; ) {
+    const length = data[at];
+    if (at + 1 + length > data.length) break;
+    const pair = data.toString("utf8", at + 1, at + 1 + length);
+    at += 1 + length;
+    if (!pair) continue;
+    const split = pair.indexOf("=");
+    txt[(split < 0 ? pair : pair.slice(0, split)).toLowerCase()] = split < 0 ? "" : pair.slice(split + 1);
+  }
+  return txt;
+}
+function assemble(service, records) {
+  const by = (type, name) => records.filter((r) => r.type === type && key(r.name) === key(name));
+  const names = new Set(by(TYPE.PTR, service).map((r) => readName(r.message, r.offset)[0]));
+  const found = [];
+  for (const full of names) {
+    const srv = by(TYPE.SRV, full)[0];
+    if (!srv || srv.data.length < 7) continue;
+    const port = srv.data.readUInt16BE(4), host = readName(srv.message, srv.offset + 6)[0];
+    const txt = Object.assign({}, ...by(TYPE.TXT, full).map((r) => txtOf(r.data)));
+    const a = by(TYPE.A, host).find((r) => r.data.length === 4);
+    const name = full.slice(0, full.length - service.length - 1);
+    found.push({ name, instance: txt.instance || name, host: host.replace(/\.$/, ""), ...a ? { address: [...a.data].join(".") } : {}, port, txt });
+  }
+  return found.sort((x, y) => x.name.localeCompare(y.name));
+}
+var udpTransport = (receive) => new Promise((resolve11, reject) => {
+  const socket = createSocket({ type: "udp4", reuseAddr: true });
+  socket.on("message", (message3) => receive(message3));
+  socket.once("error", reject);
+  socket.bind(0, () => {
+    socket.setMulticastTTL(255);
+    resolve11({ send: (query) => socket.send(query, PORT, GROUP), close: () => socket.close() });
+  });
+});
+var wait = (ms) => new Promise((done) => setTimeout(done, ms));
+async function browse(service, windowMs = 2e3, followUpMs = 1e3, open9 = udpTransport) {
+  const records = [];
+  const transport = await open9((message3) => records.push(...parseRecords(message3)));
+  try {
+    transport.send(encodeQuery([{ name: service, type: TYPE.PTR }]));
+    await wait(windowMs);
+    const missing = [...new Set(records.filter((r) => r.type === TYPE.PTR && key(r.name) === key(service)).map((r) => readName(r.message, r.offset)[0]))].filter((full) => !assemble(service, records).some((found) => key(`${found.name}.${service}`) === key(full) && found.address));
+    if (missing.length) {
+      const hosts = records.filter((r) => r.type === TYPE.SRV).map((r) => readName(r.message, r.offset + 6)[0]);
+      transport.send(encodeQuery([...missing.flatMap((name) => [{ name, type: TYPE.SRV }, { name, type: TYPE.TXT }]), ...hosts.map((name) => ({ name, type: TYPE.A }))]));
+      await wait(followUpMs);
+    }
+    return assemble(service, records);
+  } finally {
+    transport.close();
+  }
+}
+
 // src/discovery.ts
+var SERVICE_TYPE = "_machine-service._tcp.local";
+function discoveryMode(value = process.env.MACHINE_SERVICE_DISCOVERY) {
+  if (!value || value === "bonjour") return "bonjour";
+  if (value === "consul") return "consul";
+  throw new Error(`MACHINE_SERVICE_DISCOVERY must be one of bonjour, consul; got ${JSON.stringify(value)}`);
+}
 var TIMEOUT_MS = 5e3;
 function consulAddress(value = process.env.CONSUL_HTTP_ADDR) {
   const address = value?.trim() || "http://127.0.0.1:8500";
@@ -28850,31 +28973,58 @@ function parseRegistrations(answer) {
     return [{ node: text3(node2?.Node), origin: new URL(`http://${host.includes(":") ? `[${host}]` : host}:${port}`).origin, ...text3(meta2.instance) ? { instance: text3(meta2.instance) } : {}, loopbackOnly: meta2.loopback_only === "true" }];
   });
 }
-async function findDurableOwner(machine, options) {
-  const consul = options.consul ?? consulAddress();
-  const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
-  const candidates = [{ origin: new URL(options.local.baseUrl).origin, backend: options.local }];
-  let consulError;
-  try {
-    for (const registration of parseRegistrations(await (options.fetchJson ?? fetchJson)(`${consul}/v1/health/service/machine-service`))) {
-      if (registration.loopbackOnly || candidates.some((candidate) => candidate.origin === registration.origin)) continue;
-      candidates.push({ origin: registration.origin, backend: make(registration.origin) });
-    }
-  } catch (error2) {
-    consulError = `the Consul agent at ${consul} did not answer (${error2 instanceof Error ? error2.message : String(error2)})`;
-  }
-  const owners = [];
-  await Promise.all(candidates.map(async ({ origin, backend }) => {
+async function candidates(options, mode) {
+  if (mode === "bonjour") {
     try {
-      const list = await backend.list({ timeoutMs: TIMEOUT_MS });
-      const record3 = list.machines[machine];
+      const advertised = await (options.browse ?? (() => browse(SERVICE_TYPE)))();
+      return { found: advertised.map((a) => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance })) };
+    } catch (error2) {
+      return { found: [], error: `the Bonjour browse failed (${error2 instanceof Error ? error2.message : String(error2)})` };
+    }
+  }
+  const consul = options.consul ?? consulAddress();
+  try {
+    const rows = parseRegistrations(await (options.fetchJson ?? fetchJson)(`${consul}/v1/health/service/machine-service`));
+    return { found: rows.filter((row) => !row.loopbackOnly).map((row) => ({ origin: row.origin, ...row.instance ? { expected: row.instance } : {} })) };
+  } catch (error2) {
+    return { found: [], error: `the Consul agent at ${consul} did not answer (${error2 instanceof Error ? error2.message : String(error2)})` };
+  }
+}
+async function confirmed(backend, expected) {
+  const health = await backend.health({ timeoutMs: TIMEOUT_MS });
+  if (health.service !== void 0 && health.service !== "machine-service") return `it answers as ${String(health.service)}, not machine-service`;
+  if (health.instance !== expected) return `it was found as ${expected}, but its /health answers ${String(health.instance ?? "no instance")}`;
+  return void 0;
+}
+async function findDurableOwner(machine, options) {
+  const mode = options.mode ?? discoveryMode();
+  const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
+  const localOrigin = new URL(options.local.baseUrl).origin;
+  const { found, error: discoveryError } = await candidates(options, mode);
+  const asked = [{ origin: localOrigin, backend: options.local }];
+  for (const candidate of found) if (!asked.some((a) => a.origin === candidate.origin)) asked.push({ ...candidate, backend: make(candidate.origin) });
+  const owners = [];
+  const refused = [];
+  await Promise.all(asked.map(async ({ origin, backend, expected }) => {
+    try {
+      if (expected) {
+        const why = await confirmed(backend, expected);
+        if (why) {
+          refused.push(`${origin}: ${why}`);
+          return;
+        }
+      }
+      const record3 = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines[machine];
       if (record3?.kind === "durable") owners.push({ backend, origin, instance: record3.instance ?? machine });
     } catch {
     }
   }));
-  if (owners.length === 1) return owners[0];
-  if (owners.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${owners.map((owner) => owner.origin).join(", ")}); nothing was acquired`);
-  throw new Error(`No machine-service instance lists a durable machine named ${machine}${consulError ? `, and ${consulError}` : ""}; nothing was acquired. Check the name with \`machctl list\`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.`);
+  owners.sort((a, b) => Number(b.origin === localOrigin) - Number(a.origin === localOrigin));
+  const distinct = owners.filter((owner, index) => owners.findIndex((other) => other.instance === owner.instance) === index);
+  if (distinct.length === 1) return distinct[0];
+  if (distinct.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${distinct.map((owner) => owner.origin).join(", ")}); nothing was acquired`);
+  const hint = mode === "bonjour" ? "Check the name with `machctl list`; the Mac's machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent." : "Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.";
+  throw new Error(`No machine-service instance lists a durable machine named ${machine}${discoveryError ? `, and ${discoveryError}` : ""}${refused.length ? `; unconfirmed: ${refused.join("; ")}` : ""}; nothing was acquired. ${hint}`);
 }
 
 // src/capture-gate.ts
@@ -28962,7 +29112,7 @@ var RelayManager = class {
   shuttingDown = false;
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
   durableOwner(machine) {
-    return findDurableOwner(machine, { local: this.vm, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
+    return findDurableOwner(machine, { local: this.vm, ...this.options.discovery ? { mode: this.options.discovery } : {}, ...this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
   }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
@@ -29092,7 +29242,7 @@ var RelayManager = class {
     if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
     if (e.backend) {
       const expected = this.binding();
-      return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => e.backend[key] === value);
+      return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key2, value]) => e.backend[key2] === value);
     }
     return !this.environment && new URL(this.vm.baseUrl).origin === "http://localhost:6240" && this.tartHome === canonicalPath(join13(process.env.HOME ?? homedir4(), ".tart"));
   }
@@ -30205,9 +30355,9 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       } catch (error2) {
         const transient2 = !bounded3.aborted && transientTransfer(error2);
         if (attempt >= 3 || !transient2) return { status: transient2 || bounded3.aborted ? "transfer-failed" : "integrity-failed", diagnostic: `Step evidence download failed: ${String(error2)}` };
-        const wait = retryDelaysMs[attempt - 1] ?? 0;
+        const wait2 = retryDelaysMs[attempt - 1] ?? 0;
         await new Promise((done) => {
-          const timer = setTimeout(done, wait);
+          const timer = setTimeout(done, wait2);
           bounded3.addEventListener("abort", () => {
             clearTimeout(timer);
             done();
@@ -30244,8 +30394,8 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         } catch {
           continue;
         }
-        const key = `${file.sha256}:${file.bytes}`;
-        copies.set(key, [...copies.get(key) ?? [], path]);
+        const key2 = `${file.sha256}:${file.bytes}`;
+        copies.set(key2, [...copies.get(key2) ?? [], path]);
       }
     }
     return copies;
@@ -30254,8 +30404,8 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   async localState(recording) {
     const held = await this.imageStore().heldOriginals(recording), steps = await this.stepCopies(recording, "state/");
     return { root: recording, candidates: (file) => {
-      const key = `${file.sha256}:${file.bytes}`, receipt = /^receiver\/receipts\/([^/]+\.json)$/.exec(file.path)?.[1];
-      return [join13(recording, "state", file.path), ...steps.get(key) ?? [], ...receipt ? [join13(recording, "host", "receiver-receipts", receipt)] : [], ...held.get(key) ?? []];
+      const key2 = `${file.sha256}:${file.bytes}`, receipt = /^receiver\/receipts\/([^/]+\.json)$/.exec(file.path)?.[1];
+      return [join13(recording, "state", file.path), ...steps.get(key2) ?? [], ...receipt ? [join13(recording, "host", "receiver-receipts", receipt)] : [], ...held.get(key2) ?? []];
     } };
   }
   /** AD-7: the step folders are a staging area; once their files are in the recording's state they go. */
@@ -30672,10 +30822,10 @@ var relayContract = typebox_exports.Union([
 ]);
 var projected = {};
 for (const branch of relayContract.anyOf) {
-  for (const [key, schema] of Object.entries(branch.properties)) {
-    if (key === "action") continue;
-    const previous = projected[key];
-    projected[key] = previous && JSON.stringify(previous) !== JSON.stringify(schema) ? typebox_exports.Optional(typebox_exports.Union([previous, schema])) : typebox_exports.Optional(schema);
+  for (const [key2, schema] of Object.entries(branch.properties)) {
+    if (key2 === "action") continue;
+    const previous = projected[key2];
+    projected[key2] = previous && JSON.stringify(previous) !== JSON.stringify(schema) ? typebox_exports.Optional(typebox_exports.Union([previous, schema])) : typebox_exports.Optional(schema);
   }
 }
 var parameterObject = typebox_exports.Object({
@@ -30691,7 +30841,7 @@ function branchFor(action) {
 function toolInputSchema(action) {
   const raw = JSON.parse(JSON.stringify(branchFor(action)));
   const { action: _action, ...properties } = raw.properties;
-  const required2 = (raw.required ?? []).filter((key) => key !== "action");
+  const required2 = (raw.required ?? []).filter((key2) => key2 !== "action");
   return { type: raw.type, properties, ...required2.length ? { required: required2 } : {}, additionalProperties: raw.additionalProperties ?? false };
 }
 function validateRelayInput(value) {

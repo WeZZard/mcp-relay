@@ -308,10 +308,11 @@ a real Mac that machine-service exposes, such as `Build-Mac-1`. Every other
 tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md)).
 
 - The relay finds the instance that owns the machine as `machctl list` does:
-  the loopback instance, then every `machine-service` registration of the
-  Consul agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`). A Mac
-  without its own Consul agent points `CONSUL_HTTP_ADDR` at one, for example
-  through an SSH tunnel.
+  the loopback instance, then every instance that advertises
+  `_machine-service._tcp` with Bonjour on the network, so a Mac needs nothing
+  else installed. With `MACHINE_SERVICE_DISCOVERY=consul` it asks the Consul
+  agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`) instead. Each
+  instance found is used only once its `/health` confirms its ID.
 - Every call carries the lease's `lease_id`, files go as bytes, and the relay
   stages under the lease's workspace, which machine-service removes at release.
 - Runs take snapshots only while the Mac's cua-driver daemon (`CuaDriver.app`,
@@ -371,8 +372,9 @@ keeps the VM for a retry after space is freed.
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
-- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when Consul lists it.
-- `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, for durable machines; default `http://127.0.0.1:8500`.
+- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when discovery finds it.
+- `MACHINE_SERVICE_DISCOVERY`: how durable machines' instances are found, `bonjour` (the default) or `consul`, as for machine-service and machctl.
+- `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, in Consul mode; default `http://127.0.0.1:8500`.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.
 - `MCP_RELAY_CAPACITY_WAIT`: how many seconds `relay_acquire` waits when the host is at capacity, such as at machine-service's limit of two running macOS VMs, asking again every 15 s; default 1800, and 0 for not at all. Any other value stops the server at startup.

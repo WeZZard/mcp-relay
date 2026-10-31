@@ -11,7 +11,8 @@ import { RelayManager, type AcquireInput, type ManagerOptions } from '../src/man
 import { Registry } from '../src/registry.js';
 import { MachineService, MachineServiceError, capacityRefusal } from '../src/machine-service.js';
 import { durableCapture } from '../src/capture-gate.js';
-import { consulAddress, findDurableOwner, parseRegistrations } from '../src/discovery.js';
+import { consulAddress, discoveryMode, findDurableOwner, parseRegistrations } from '../src/discovery.js';
+import { assemble, browse as mdnsBrowse, encodeQuery, parseRecords, type Advertised } from '../src/mdns.js';
 import { validateRelayInput } from '../src/schema.js';
 
 /**
@@ -68,8 +69,8 @@ test('a leased or unavailable durable machine is a capacity refusal; other 409s 
   assert.equal(capacityRefusal(refusal('lease abc is not the current lease of durable machine Build-Mac-1')), false);
 });
 
-test('a non-loopback origin is accepted only when Consul listed it', () => {
-  assert.throws(() => new MachineService('http://192.0.2.4:6240'), /loopback HTTP\(S\) origin, or one Consul lists/);
+test('a non-loopback origin is accepted only when discovery found it', () => {
+  assert.throws(() => new MachineService('http://192.0.2.4:6240'), /loopback HTTP\(S\) origin, or one discovery found/);
   assert.equal(new MachineService({ baseUrl: 'http://192.0.2.4:6240', listed: true }).baseUrl, 'http://192.0.2.4:6240');
   assert.throws(() => new MachineService({ baseUrl: 'http://user:pw@192.0.2.4:6240', listed: true }), /without credentials/);
 });
@@ -145,7 +146,7 @@ test('Consul registrations: service address, node fallback, instance and loopbac
 
 test('the owner of a durable machine is the one instance that lists it; others are skipped or refused', async () => {
   const list = (machines: Record<string, unknown>) => ({ machines, limits: { max_macos_running: 2, grace_hours: 6 }, pilot_repo: '', port: 6240 });
-  const backend = (origin: string, machines: Record<string, unknown> | 'down') => ({ baseUrl: origin, list: async () => { if (machines === 'down') throw new Error('unreachable'); return list(machines); } }) as any;
+  const backend = (origin: string, machines: Record<string, unknown> | 'down', instance = MACHINE) => ({ baseUrl: origin, health: async () => ({ ok: true, service: 'machine-service', instance }), list: async () => { if (machines === 'down') throw new Error('unreachable'); return list(machines); } }) as any;
   const durable = { kind: 'durable', name: MACHINE, instance: MACHINE, state: 'available' };
   const local = backend('http://localhost:6240', { vm1: { kind: 'virtual', vm: 'vm1' } });
   const consul = [
@@ -155,16 +156,83 @@ test('the owner of a durable machine is the one instance that lists it; others a
   ];
   const remotes: Record<string, any> = { 'http://192.0.2.4:6240': backend('http://192.0.2.4:6240', { [MACHINE]: durable }), 'http://192.0.2.5:6240': backend('http://192.0.2.5:6240', 'down') };
   const asked: string[] = [];
-  const owner = await findDurableOwner(MACHINE, { local, fetchJson: async () => consul, backend: origin => { asked.push(origin); return remotes[origin]; } });
+  const owner = await findDurableOwner(MACHINE, { local, mode: 'consul', fetchJson: async () => consul, backend: origin => { asked.push(origin); return remotes[origin]; } });
   assert.deepEqual([owner.origin, owner.instance], ['http://192.0.2.4:6240', MACHINE]);
   assert.deepEqual(asked.sort(), ['http://192.0.2.4:6240', 'http://192.0.2.5:6240'], 'a loopback_only registration on another Mac is never asked');
-  await assert.rejects(findDurableOwner('Mac-other', { local, fetchJson: async () => consul, backend: origin => remotes[origin] }), /No machine-service instance lists a durable machine named Mac-other/);
-  remotes['http://192.0.2.5:6240'] = backend('http://192.0.2.5:6240', { [MACHINE]: durable });
-  await assert.rejects(findDurableOwner(MACHINE, { local, fetchJson: async () => consul, backend: origin => remotes[origin] }), /listed by more than one instance/);
+  await assert.rejects(findDurableOwner('Mac-other', { local, mode: 'consul', fetchJson: async () => consul, backend: origin => remotes[origin] }), /No machine-service instance lists a durable machine named Mac-other/);
+  // Two instances that both list a machine of that name are ambiguous; one instance reached twice is not.
+  remotes['http://192.0.2.5:6240'] = backend('http://192.0.2.5:6240', { [MACHINE]: { ...durable, instance: 'Other-Mac' } }, 'Other-Mac');
+  await assert.rejects(findDurableOwner(MACHINE, { local, mode: 'consul', fetchJson: async () => consul, backend: origin => remotes[origin] }), /listed by more than one instance/);
   // Without Consul, the loopback instance alone may own it.
-  const localOwner = await findDurableOwner(MACHINE, { local: backend('http://localhost:6240', { [MACHINE]: durable }), fetchJson: async () => { throw new Error('ECONNREFUSED'); } });
+  const localOwner = await findDurableOwner(MACHINE, { local: backend('http://localhost:6240', { [MACHINE]: durable }), mode: 'consul', fetchJson: async () => { throw new Error('ECONNREFUSED'); } });
   assert.equal(localOwner.origin, 'http://localhost:6240');
-  await assert.rejects(findDurableOwner(MACHINE, { local, fetchJson: async () => { throw new Error('ECONNREFUSED'); } }), /Consul agent at http:\/\/127\.0\.0\.1:8500 did not answer/);
+  await assert.rejects(findDurableOwner(MACHINE, { local, mode: 'consul', fetchJson: async () => { throw new Error('ECONNREFUSED'); } }), /Consul agent at http:\/\/127\.0\.0\.1:8500 did not answer/);
+});
+
+test('Bonjour mode: the owner is found by its advertisement, confirmed by /health, and counted once with the loopback instance (DC-35)', async () => {
+  const list = (machines: Record<string, unknown>) => ({ machines, limits: { max_macos_running: 2, grace_hours: 6 }, pilot_repo: '', port: 6240 });
+  const backend = (origin: string, machines: Record<string, unknown>, instance: string) => ({ baseUrl: origin, health: async () => ({ ok: true, service: 'machine-service', instance }), list: async () => list(machines) }) as any;
+  const durable = (instance: string) => ({ kind: 'durable', name: instance, instance, state: 'available' });
+  const advertised = (instance: string, address: string): Advertised => ({ name: instance, instance, host: `${instance}.local`, address, port: 6240, txt: { txtvers: '1', instance, kinds: 'durable' } });
+  const remotes: Record<string, any> = { 'http://192.0.2.4:6240': backend('http://192.0.2.4:6240', { [MACHINE]: durable(MACHINE) }, MACHINE) };
+  const local = backend('http://localhost:6240', {}, 'This-Mac');
+  let consulAsked = false;
+  const owner = await findDurableOwner(MACHINE, { local, mode: 'bonjour', browse: async () => [advertised(MACHINE, '192.0.2.4')], backend: origin => remotes[origin], fetchJson: async () => { consulAsked = true; return []; } });
+  assert.deepEqual([owner.origin, owner.instance], ['http://192.0.2.4:6240', MACHINE]);
+  assert.equal(consulAsked, false, 'Bonjour mode never asks Consul');
+  // This Mac's own instance, asked on loopback and found again by its advertisement, is one owner.
+  const self = backend('http://localhost:6240', { [MACHINE]: durable(MACHINE) }, MACHINE);
+  remotes['http://192.0.2.9:6240'] = backend('http://192.0.2.9:6240', { [MACHINE]: durable(MACHINE) }, MACHINE);
+  const mine = await findDurableOwner(MACHINE, { local: self, mode: 'bonjour', browse: async () => [advertised(MACHINE, '192.0.2.9')], backend: origin => remotes[origin] });
+  assert.equal(mine.origin, 'http://localhost:6240');
+  // An advertisement whose /health answers another ID is never used, and the refusal says so.
+  remotes['http://192.0.2.4:6240'] = backend('http://192.0.2.4:6240', { [MACHINE]: durable(MACHINE) }, 'Someone-Else');
+  await assert.rejects(findDurableOwner(MACHINE, { local, mode: 'bonjour', browse: async () => [advertised(MACHINE, '192.0.2.4')], backend: origin => remotes[origin] }), new RegExp(`unconfirmed: http://192\\.0\\.2\\.4:6240: it was found as ${MACHINE}, but its /health answers Someone-Else`));
+  await assert.rejects(findDurableOwner(MACHINE, { local, mode: 'bonjour', browse: async () => { throw new Error('EHOSTUNREACH'); } }), /the Bonjour browse failed \(EHOSTUNREACH\)/);
+  assert.equal(discoveryMode(undefined), 'bonjour');
+  assert.equal(discoveryMode('consul'), 'consul');
+  assert.throws(() => discoveryMode('mdns'), /MACHINE_SERVICE_DISCOVERY must be one of bonjour, consul/);
+});
+
+/** A DNS response: the given records in the answer section, names written out, with one compression pointer for the PTR target. */
+function response(records: Array<{ name: string; type: number; data: Buffer }>): Buffer {
+  const name = (n: string) => Buffer.concat([...n.split('.').flatMap(label => [Buffer.from([label.length]), Buffer.from(label)]), Buffer.from([0])]);
+  const header = Buffer.alloc(12); header.writeUInt16BE(0x8400, 2); header.writeUInt16BE(records.length, 6);
+  const body = records.map(r => { const fixed = Buffer.alloc(10); fixed.writeUInt16BE(r.type, 0); fixed.writeUInt16BE(1, 2); fixed.writeUInt32BE(120, 4); fixed.writeUInt16BE(r.data.length, 8); return Buffer.concat([name(r.name), fixed, r.data]); });
+  return Buffer.concat([header, ...body]);
+}
+const dnsName = (n: string) => Buffer.concat([...n.split('.').flatMap(label => [Buffer.from([label.length]), Buffer.from(label)]), Buffer.from([0])]);
+
+test('the one-shot Multicast DNS query asks for the service and assembles PTR, SRV, TXT and A answers', async () => {
+  const service = '_machine-service._tcp.local';
+  const query = encodeQuery([{ name: service, type: 12 }]);
+  assert.equal(query.readUInt16BE(4), 1, 'one question');
+  assert.ok(query.includes(Buffer.from('_machine-service')), 'the question names the service');
+  const srv = Buffer.alloc(6); srv.writeUInt16BE(6240, 4);
+  const txt = Buffer.concat(['txtvers=1', 'instance=Build-Mac-1', 'kinds=durable'].map(pair => Buffer.concat([Buffer.from([pair.length]), Buffer.from(pair)])));
+  const answer = response([
+    { name: service, type: 12, data: dnsName(`Build-Mac-1.${service}`) },
+    { name: `Build-Mac-1.${service}`, type: 33, data: Buffer.concat([srv, dnsName('Build-Mac-1.local')]) },
+    { name: `Build-Mac-1.${service}`, type: 16, data: txt },
+    { name: 'Build-Mac-1.local', type: 1, data: Buffer.from([192, 0, 2, 4]) },
+  ]);
+  const expected = [{ name: 'Build-Mac-1', instance: 'Build-Mac-1', host: 'Build-Mac-1.local', address: '192.0.2.4', port: 6240, txt: { txtvers: '1', instance: 'Build-Mac-1', kinds: 'durable' } }];
+  assert.deepEqual(assemble(service, parseRecords(answer)), expected);
+  // Responders compress names: here the SRV and TXT owners point at the PTR answer's target.
+  const ptrData = 12 + dnsName(service).length + 10;
+  const pointer = Buffer.from([0xc0 | (ptrData >> 8), ptrData & 0xff]);
+  const record = (type: number, data: Buffer) => { const fixed = Buffer.alloc(10); fixed.writeUInt16BE(type, 0); fixed.writeUInt16BE(1, 2); fixed.writeUInt32BE(120, 4); fixed.writeUInt16BE(data.length, 8); return Buffer.concat([pointer, fixed, data]); };
+  const ptrEnd = ptrData + dnsName(`Build-Mac-1.${service}`).length;
+  const compressed = Buffer.concat([answer.subarray(0, ptrEnd), record(33, Buffer.concat([srv, dnsName('Build-Mac-1.local')])), record(16, txt), answer.subarray(answer.length - (dnsName('Build-Mac-1.local').length + 10 + 4))]);
+  assert.deepEqual(assemble(service, parseRecords(compressed)), expected);
+  // A message cut short keeps the records that parsed before the cut.
+  assert.equal(parseRecords(answer.subarray(0, answer.length - 3)).length, 3);
+  // browse() sends the query and reads the answers for its window, through any transport.
+  const sent: Buffer[] = [];
+  const found = await mdnsBrowse(service, 50, 50, async receive => ({ send: q => { sent.push(q); if (sent.length === 1) receive(answer); }, close: () => {} }));
+  assert.deepEqual(found, expected);
+  assert.equal(sent.length, 1, 'no follow-up when the first answers were complete');
+  assert.deepEqual(parseRecords(Buffer.from('not dns')), []);
 });
 
 const bundle = fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
@@ -264,7 +332,7 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   await setPermissions({ code: 0, stdout: daemon() });
   await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');const [a,b,c]=process.argv.slice(2);if(a==='permissions'&&b==='status'&&c==='--json'){const p=JSON.parse(fs.readFileSync(${JSON.stringify(permissions)},'utf8'));process.stdout.write(p.stdout);process.exit(p.code);}if(a!=='call'||b!=='get_desktop_state'||c!=='--json')process.exit(99);const o=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(o)+'\\n');fs.writeFileSync(o.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:o.screenshot_out_file}));`);
   await chmod(driver, 0o700);
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(origin).port), Meta: { instance: MACHINE } } }], ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, discovery: 'consul', consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(origin).port), Meta: { instance: MACHINE } } }], ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { await manager.release().catch(() => {}); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const acquire = (patch: Partial<AcquireInput> = {}) => manager.acquire({ machine: MACHINE, task: 'durable', extractions: [{ name: 'artifact', path: 'artifact.txt' }], ttlHours: 0.5, ...patch });
