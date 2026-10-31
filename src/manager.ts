@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, cp, access, statfs, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
@@ -141,8 +141,6 @@ export const DEFAULT_AFTER_INTERVAL_MS = 500;
 export const CAPTURE_SOFTWARE: readonly string[] = ['bundle:com.trycua.driver', 'dpkg:cua-driver'];
 /** A durable guest's root, under its lease's workspace, which machine-service removes at release (DC-31). */
 export const durableRoot = (workspace: string, purpose: string) => join(workspace, 'work', `mcp-relay-${purpose}`);
-/** The most bytes one pull over the byte-carrying endpoint may bring back; relay evidence is otherwise unbounded, so this only bounds memory. */
-const PULL_MAX_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 /** Background step downloads a run may leave queued before it waits for the oldest (DC-4). */
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
@@ -594,9 +592,9 @@ class Guest {
       pull: async (name, remote_path, local_path, options) => {
         if (!durable) return this.vm.pull(name, { remote_path, local_path, ...identity() }, options);
         if (!this.vm.pullBytes) throw new Error('Backend lacks byte transfers; upgrade machine-service');
-        const bytes = await this.vm.pullBytes(name, { remote_path, maxBytes: PULL_MAX_BYTES, ...identity() }, options);
         // As machine-service's path-based pull does, a pull replaces the file in place.
-        await rm(local_path, { force: true }); await writeFile(local_path, bytes, { flag: 'wx', mode: 0o600 });
+        await rm(local_path, { force: true });
+        await this.vm.pullBytes(name, { remote_path, to: local_path, ...identity() }, options);
         return { vm: name, pulled: remote_path, to: local_path };
       },
     };
