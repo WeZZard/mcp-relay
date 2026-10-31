@@ -55,7 +55,7 @@ or execute work locally on the agent's behalf.
 - Caller-controlled result limits, pagination or cached search sessions.
 - Automatic image selection, acquisition or software installation during search.
 - Search does not introduce a verification badge or run acceptance tests. Image acceptance uses each application's test plan, while inventory extraction describes installed software.
-- Local CUA execution, physical-machine targets, programmatic subagent spawning,
+- Local CUA execution, programmatic subagent spawning,
   CDP attachment or video recording by the extension.
 
 ## 4. Experience principles
