@@ -13,6 +13,7 @@ export interface VmLease {
   vm: string;
   kind?: "virtual" | "durable";
   instance?: string;
+  machine_id?: string;
   lease_id?: string;
   console?: import('./console.js').ConsoleStatus;
   purpose: string;
@@ -187,7 +188,7 @@ export class MachineService {
     this.maxResponseBytes = positive(options.maxResponseBytes ?? 4 * 1024 * 1024, "maxResponseBytes");
   }
 
-  health(options: RequestOptions = {}): Promise<{ ok: boolean; service: string; environment?: EnvironmentIdentity }> {
+  health(options: RequestOptions = {}): Promise<{ ok: boolean; service: string; instance?: string; machine_id?: string; environment?: EnvironmentIdentity }> {
     return this.request("/health", undefined, options);
   }
   async list(options: RequestOptions = {}): Promise<MachineList> {

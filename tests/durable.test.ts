@@ -246,21 +246,27 @@ class DurableService {
   lease?: { lease_id: string; purpose: string; workspace: string; created_at: number; ttl_hours: number; ttl_expires_at: number };
   /** Someone else holds the machine for this many acquisitions (DC-34). */
   leasedByOthers = 0;
+  recordNotFound = false;
+  releaseNotFound = 0;
+  name = MACHINE;
+  machineId?: string;
+  grantedName = MACHINE;
+  origin = '';
   software: Record<string, unknown> | null = { ...installed };
   readonly server = createServer((req, res) => { void this.handle(req, res).catch(error => this.respond(res, 500, { error: String(error) })); });
   constructor(readonly root: string) {}
   async start() {
     await new Promise<void>(resolve => this.server.listen(0, '127.0.0.1', resolve));
     const addr = this.server.address(); assert.ok(addr && typeof addr !== 'string');
-    return `http://127.0.0.1:${addr.port}`;
+    return this.origin = `http://127.0.0.1:${addr.port}`;
   }
   respond(res: ServerResponse, status: number, value: unknown) { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); }
   record() {
     const l = this.lease;
-    return { name: MACHINE, kind: 'durable', instance: MACHINE, state: l ? 'leased' : 'available', lease_id: l?.lease_id ?? null, purpose: l?.purpose ?? null, image: null, image_kind: null, created_at: l?.created_at ?? null, ttl_hours: l?.ttl_hours ?? null, ttl_expires_at: l?.ttl_expires_at ?? null, grace_until: null, warned: false, env: l ? 'none' : null, ip: null, cpu: 10, memory_mb: 16384, disk_gb: 256, configuration: null, workspace: l?.workspace ?? null, warnings: [], capabilities: { schema_version: 1, software: this.software, permissions: { screen_recording: 'denied', accessibility: 'denied', post_event: 'denied' } } };
+    return { name: this.name, kind: 'durable', instance: this.name, ...(this.machineId ? { machine_id: this.machineId } : {}), state: l ? 'leased' : 'available', lease_id: l?.lease_id ?? null, purpose: l?.purpose ?? null, image: null, image_kind: null, created_at: l?.created_at ?? null, ttl_hours: l?.ttl_hours ?? null, ttl_expires_at: l?.ttl_expires_at ?? null, grace_until: null, warned: false, env: l ? 'none' : null, ip: null, cpu: 10, memory_mb: 16384, disk_gb: 256, configuration: null, workspace: l?.workspace ?? null, warnings: [], capabilities: { schema_version: 1, software: this.software, permissions: { screen_recording: 'denied', accessibility: 'denied', post_event: 'denied' } } };
   }
   current(name: string, id: unknown) {
-    if (name !== MACHINE) return { status: 404, error: `unknown machine: ${name}` };
+    if (name !== this.name && !(name === this.grantedName && id === this.lease?.lease_id)) return { status: 404, error: `unknown machine: ${name}` };
     if (typeof id !== 'string') return { status: 409, error: `lease_id is required for an operation on durable machine ${name}` };
     if (!this.lease || this.lease.lease_id !== id) return { status: 409, error: `lease ${id} is not the current lease of durable machine ${name}` };
   }
@@ -270,20 +276,21 @@ class DurableService {
     const raw = Buffer.concat(chunks), url = new URL(req.url!, 'http://fixture');
     const body = req.headers['content-type'] === 'application/json' && raw.length ? JSON.parse(raw.toString()) : undefined;
     this.requests.push({ method: req.method!, path: url.pathname + url.search, body });
-    if (url.pathname === '/health') return this.respond(res, 200, { ok: true, service: 'machine-service', instance: MACHINE, kinds: ['durable'] });
-    if (url.pathname === '/machines') return this.respond(res, 200, { machines: { [MACHINE]: this.record() }, offers: [], limits: { max_macos_running: 0, grace_hours: 6 }, pilot_repo: '', port: 0 });
+    if (url.pathname === '/health') return this.respond(res, 200, { ok: true, service: 'machine-service', instance: this.name, ...(this.machineId ? { machine_id: this.machineId } : {}), kinds: ['durable'] });
+    if (url.pathname === '/machines') return this.respond(res, 200, { machines: { [this.name]: this.record() }, offers: [], limits: { max_macos_running: 0, grace_hours: 6 }, pilot_repo: '', port: 0 });
     if (url.pathname === '/acquire') {
       for (const field of ['image', 'network', 'vnc', 'wait', 'cpu', 'memory_mb', 'disk_gb']) if (body[field] !== undefined) return this.respond(res, 400, { error: `${field} does not apply to a durable machine` });
       if (this.leasedByOthers-- > 0 || this.lease) return this.respond(res, 409, { error: `durable machine leased: ${MACHINE} (purpose other, until later)` });
       const lease_id = randomUUID().replaceAll('-', ''), workspace = join(this.root, 'leases', lease_id), now = Date.now() / 1000;
       for (const folder of ['work', 'tmp']) await mkdir(join(workspace, folder), { recursive: true });
+      this.grantedName = this.name;
       this.lease = { lease_id, purpose: body.purpose, workspace, created_at: now, ttl_hours: body.ttl_hours, ttl_expires_at: now + body.ttl_hours * 3600 };
       return this.respond(res, 200, this.record());
     }
     const match = /^\/machines\/([^/]+)(?:\/(exec|push|pull|heartbeat|release|files))?$/.exec(url.pathname);
     if (!match) return this.respond(res, 404, { error: 'not found' });
     const [, name, action] = match;
-    if (!action) return name === MACHINE ? this.respond(res, 200, this.record()) : this.respond(res, 404, { error: 'not found' });
+    if (!action) return !this.recordNotFound && (name === this.name || (name === this.grantedName && url.searchParams.get('lease_id') === this.lease?.lease_id)) ? this.respond(res, 200, this.record()) : this.respond(res, 404, { error: 'not found' });
     const refused = this.current(name, action === 'files' ? url.searchParams.get('lease_id') ?? undefined : body?.lease_id);
     if (refused) return this.respond(res, refused.status, { error: refused.error });
     if (action === 'push' || action === 'pull') return this.respond(res, 409, { error: 'path-based push and pull need a loopback client; a host path means nothing on another Mac (use PUT or GET /machines/<name>/files)' });
@@ -301,6 +308,7 @@ class DurableService {
     }
     if (action === 'heartbeat') { this.lease!.ttl_expires_at = Date.now() / 1000 + body.ttl_hours * 3600; return this.respond(res, 200, this.record()); }
     if (action === 'release') {
+      if (this.releaseNotFound-- > 0) return this.respond(res, 404, { error: 'not found' });
       const { lease_id, workspace } = this.lease!; this.lease = undefined;
       await rm(workspace, { recursive: true, force: true });
       return this.respond(res, 200, { name, lease_id, released: true, reason: body.reason, hygiene: { lease_id, name, stopped: [], swept: [], failures: [], workspace: { path: workspace, kept: false, removed: true } } });
@@ -332,7 +340,7 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   await setPermissions({ code: 0, stdout: daemon() });
   await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');const [a,b,c]=process.argv.slice(2);if(a==='permissions'&&b==='status'&&c==='--json'){const p=JSON.parse(fs.readFileSync(${JSON.stringify(permissions)},'utf8'));process.stdout.write(p.stdout);process.exit(p.code);}if(a!=='call'||b!=='get_desktop_state'||c!=='--json')process.exit(99);const o=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(o)+'\\n');fs.writeFileSync(o.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:o.screenshot_out_file}));`);
   await chmod(driver, 0o700);
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, discovery: 'consul', consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(origin).port), Meta: { instance: MACHINE } } }], ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, discovery: 'consul', consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(service.origin).port), Meta: { instance: service.name, ...(service.machineId ? { machine_id: service.machineId } : {}) } } }], ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { await manager.release().catch(() => {}); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const acquire = (patch: Partial<AcquireInput> = {}) => manager.acquire({ machine: MACHINE, task: 'durable', extractions: [{ name: 'artifact', path: 'artifact.txt' }], ttlHours: 0.5, ...patch });
@@ -425,4 +433,58 @@ test('a durable guest restored in a new process finds its owner again and releas
   assert.equal(again.guestStatus().vm, MACHINE);
   await again.release();
   assert.equal(f.service.lease, undefined);
+});
+
+
+test('a durable 404 reconciles through the owner record without consulting Tart (DC-36)', async t => {
+  let tartChecks = 0;
+  const f = await fixture(t, { verifyDestroyed: async () => { tartChecks++; return true; } });
+  const acquired = await f.acquire({ extractions: [] });
+  await f.manager.cleanup('simulated restart');
+  f.service.recordNotFound = true;
+  const again = new RelayManager(f.manager.options);
+  t.after(() => again.cleanup('test teardown'));
+  await again.initialize();
+  assert.equal(tartChecks, 0, 'a durable machine is never checked against Tart');
+  assert.equal(again.guestStatus().lease_id, acquired.lease_id);
+  assert.equal(again.guestStatus().guestState, 'leased');
+  f.service.recordNotFound = false;
+  await again.release();
+});
+
+test('an unreachable durable owner keeps the saved lease with unknown guest state (DC-36)', async t => {
+  let tartChecks = 0;
+  const f = await fixture(t, { verifyDestroyed: async () => { tartChecks++; return true; } });
+  const acquired = await f.acquire({ extractions: [] });
+  await f.manager.cleanup('simulated restart');
+  const again = new RelayManager({ ...f.manager.options, consulFetch: async () => [] });
+  t.after(() => again.cleanup('test teardown'));
+  await assert.rejects(again.initialize(), /ownership retained.*guest state unknown/);
+  const saved = JSON.parse(await readFile(join(again.root, 'guests', acquired.guest!, 'lease.json'), 'utf8'));
+  assert.equal(saved.lease.lease_id, acquired.lease_id);
+  assert.equal(saved.guestState, 'unknown');
+  assert.equal(tartChecks, 0);
+});
+
+test('a durable release verifies a 404 through the owner record (DC-36)', async t => {
+  let tartChecks = 0;
+  const f = await fixture(t, { verifyDestroyed: async () => { tartChecks++; return true; } });
+  await f.acquire({ extractions: [] });
+  f.service.recordNotFound = true;
+  await f.manager.release();
+  assert.equal(f.service.lease, undefined);
+  assert.equal(f.manager.status().guests.length, 0);
+  assert.equal(tartChecks, 0);
+  assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+});
+
+
+test('a durable release 404 retries while the owner record still names the lease (DC-36)', async t => {
+  const f = await fixture(t);
+  await f.acquire({ extractions: [] });
+  f.service.recordNotFound = true;
+  f.service.releaseNotFound = 1;
+  await f.manager.release();
+  assert.equal(f.service.lease, undefined);
+  assert.equal(f.service.requests.filter(r => r.path.endsWith('/release')).length, 2);
 });

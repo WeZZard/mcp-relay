@@ -28913,7 +28913,7 @@ function assemble(service, records) {
     const txt = Object.assign({}, ...by(TYPE.TXT, full).map((r) => txtOf(r.data)));
     const a = by(TYPE.A, host).find((r) => r.data.length === 4);
     const name = full.slice(0, full.length - service.length - 1);
-    found.push({ name, instance: txt.instance || name, host: host.replace(/\.$/, ""), ...a ? { address: [...a.data].join(".") } : {}, port, txt });
+    found.push({ name, instance: txt.instance || name, ...txt.machine_id ? { machine_id: txt.machine_id } : {}, host: host.replace(/\.$/, ""), ...a ? { address: [...a.data].join(".") } : {}, port, txt });
   }
   return found.sort((x, y) => x.name.localeCompare(y.name));
 }
@@ -28970,14 +28970,14 @@ function parseRegistrations(answer) {
     const host = text3(service?.Address) || text3(node2?.Address);
     if (!host || !Number.isSafeInteger(port)) return [];
     const meta2 = service?.Meta ?? {};
-    return [{ node: text3(node2?.Node), origin: new URL(`http://${host.includes(":") ? `[${host}]` : host}:${port}`).origin, ...text3(meta2.instance) ? { instance: text3(meta2.instance) } : {}, loopbackOnly: meta2.loopback_only === "true" }];
+    return [{ node: text3(node2?.Node), origin: new URL(`http://${host.includes(":") ? `[${host}]` : host}:${port}`).origin, ...text3(meta2.instance) ? { instance: text3(meta2.instance) } : {}, ...text3(meta2.machine_id) ? { machine_id: text3(meta2.machine_id) } : {}, loopbackOnly: meta2.loopback_only === "true" }];
   });
 }
 async function candidates(options, mode) {
   if (mode === "bonjour") {
     try {
       const advertised = await (options.browse ?? (() => browse(SERVICE_TYPE)))();
-      return { found: advertised.map((a) => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance })) };
+      return { found: advertised.map((a) => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance, ...a.machine_id || a.txt.machine_id ? { machine_id: a.machine_id || a.txt.machine_id } : {} })) };
     } catch (error2) {
       return { found: [], error: `the Bonjour browse failed (${error2 instanceof Error ? error2.message : String(error2)})` };
     }
@@ -28985,18 +28985,22 @@ async function candidates(options, mode) {
   const consul = options.consul ?? consulAddress();
   try {
     const rows = parseRegistrations(await (options.fetchJson ?? fetchJson)(`${consul}/v1/health/service/machine-service`));
-    return { found: rows.filter((row) => !row.loopbackOnly).map((row) => ({ origin: row.origin, ...row.instance ? { expected: row.instance } : {} })) };
+    return { found: rows.filter((row) => !row.loopbackOnly).map((row) => ({ origin: row.origin, ...row.instance ? { expected: row.instance } : {}, ...row.machine_id ? { machine_id: row.machine_id } : {} })) };
   } catch (error2) {
     return { found: [], error: `the Consul agent at ${consul} did not answer (${error2 instanceof Error ? error2.message : String(error2)})` };
   }
 }
-async function confirmed(backend, expected) {
-  const health = await backend.health({ timeoutMs: TIMEOUT_MS });
+function confirmed(health, expected, machine_id) {
   if (health.service !== void 0 && health.service !== "machine-service") return `it answers as ${String(health.service)}, not machine-service`;
-  if (health.instance !== expected) return `it was found as ${expected}, but its /health answers ${String(health.instance ?? "no instance")}`;
+  if (machine_id) return health.machine_id === machine_id ? void 0 : `it was found with machine_id ${machine_id}, but its /health answers machine_id ${String(health.machine_id ?? "none")}`;
+  if (expected && health.instance !== expected) return `it was found as ${expected}, but its /health answers ${String(health.instance ?? "no instance")}`;
   return void 0;
 }
-async function findDurableOwner(machine, options) {
+function findDurableOwner(machine, options) {
+  return findOwner({ name: machine }, options);
+}
+async function findOwner(target, options) {
+  const machine = target.name ?? `with machine_id ${target.machine_id}`;
   const mode = options.mode ?? discoveryMode();
   const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
   const localOrigin = new URL(options.local.baseUrl).origin;
@@ -29005,26 +29009,41 @@ async function findDurableOwner(machine, options) {
   for (const candidate of found) if (!asked.some((a) => a.origin === candidate.origin)) asked.push({ ...candidate, backend: make(candidate.origin) });
   const owners = [];
   const refused = [];
-  await Promise.all(asked.map(async ({ origin, backend, expected }) => {
+  await Promise.all(asked.map(async ({ origin, backend, expected, machine_id: advertisedId }) => {
     try {
-      if (expected) {
-        const why = await confirmed(backend, expected);
+      const health = await backend.health({ timeoutMs: TIMEOUT_MS }).catch((error2) => {
+        if (expected || advertisedId || target.machine_id) throw error2;
+        return {};
+      });
+      if (expected || advertisedId || target.machine_id) {
+        const why = confirmed(health, expected, advertisedId || target.machine_id);
         if (why) {
           refused.push(`${origin}: ${why}`);
           return;
         }
       }
-      const record3 = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines[machine];
-      if (record3?.kind === "durable") owners.push({ backend, origin, instance: record3.instance ?? machine });
+      if (target.machine_id && health.machine_id !== target.machine_id) return;
+      const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
+      const record3 = target.name ? machines[target.name] : Object.values(machines).find((record4) => record4.kind === "durable" && (!record4.machine_id || record4.machine_id === target.machine_id));
+      if (record3?.kind === "durable") {
+        const recordId = text3(record3.machine_id), healthId = text3(health.machine_id);
+        if (recordId && healthId && recordId !== healthId) {
+          refused.push(`${origin}: its durable record machine_id ${recordId} differs from /health machine_id ${healthId}`);
+          return;
+        }
+        const machine_id = healthId || recordId;
+        owners.push({ backend, origin, instance: machine_id && text3(health.instance) || record3.instance || machine, ...machine_id ? { machine_id } : {} });
+      }
     } catch {
     }
   }));
   owners.sort((a, b) => Number(b.origin === localOrigin) - Number(a.origin === localOrigin));
-  const distinct = owners.filter((owner, index) => owners.findIndex((other) => other.instance === owner.instance) === index);
+  const identity = (owner) => owner.machine_id ? `${owner.machine_id}:${new URL(owner.origin).port || (new URL(owner.origin).protocol === "https:" ? "443" : "80")}` : owner.instance;
+  const distinct = owners.filter((owner, index) => owners.findIndex((other) => identity(other) === identity(owner)) === index);
   if (distinct.length === 1) return distinct[0];
   if (distinct.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${distinct.map((owner) => owner.origin).join(", ")}); nothing was acquired`);
   const hint = mode === "bonjour" ? "Check the name with `machctl list`; the Mac's machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent." : "Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.";
-  throw new Error(`No machine-service instance lists a durable machine named ${machine}${discoveryError ? `, and ${discoveryError}` : ""}${refused.length ? `; unconfirmed: ${refused.join("; ")}` : ""}; nothing was acquired. ${hint}`);
+  throw new Error(`No machine-service instance lists a durable machine ${target.name ? `named ${target.name}` : machine}${discoveryError ? `, and ${discoveryError}` : ""}${refused.length ? `; unconfirmed: ${refused.join("; ")}` : ""}; nothing was acquired. ${hint}`);
 }
 
 // src/capture-gate.ts
@@ -29598,11 +29617,34 @@ var Guest = class {
     };
   }
   /** Find a durable machine's owner again, and refuse when its origin or instance changed (DC-29). */
-  async findOwner(e) {
-    if (!e.machine || this.owner) return;
-    const owner = await this.m.durableOwner(e.machine);
-    if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
-    this.owner = owner.backend;
+  async findOwner(e, force = false) {
+    if (!e.machine || this.owner && !force) return;
+    try {
+      const owner = await this.m.durableOwner(e.machine);
+      if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
+      this.owner = owner.backend;
+    } catch (error2) {
+      await this.unknownOwner(e, error2);
+    }
+  }
+  async unknownOwner(e, cause) {
+    e.guestState = "unknown";
+    const error2 = new Error(`Cannot confirm durable machine ${e.machine}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
+    e.lastError = error2.message;
+    await this.save();
+    throw error2;
+  }
+  /** A durable 404 proves nothing: rediscover and inspect the owner's inventory (DC-36). */
+  async leaseRecord(e) {
+    try {
+      return await this.vm.get(e.machine ?? e.lease.vm, { timeoutMs: 1e4 });
+    } catch (error2) {
+      if (!e.machine || !(error2 instanceof MachineServiceError) || error2.status !== 404) throw error2;
+      await this.findOwner(e, true);
+      const record3 = (await this.vm.list({ timeoutMs: 1e4 })).machines[e.machine];
+      if (record3?.kind !== "durable") throw new Error(`Cannot read the record of durable machine ${e.machine}; ownership retained, guest state unknown`);
+      return record3;
+    }
   }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
@@ -29666,7 +29708,7 @@ var Guest = class {
       if (e.machine && e.lease.workspace) e.guestRoot = durableRoot(e.lease.workspace, e.purpose);
     }
     try {
-      const lease = await this.vm.get(e.lease.vm, { timeoutMs: 1e4 });
+      const lease = await this.leaseRecord(e);
       if (e.machine && lease.lease_id !== e.lease.lease_id) {
         await this.m.registry.remove(e.row);
         await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, machine: e.machine, released: true, reason: "the durable machine no longer names this lease", finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
@@ -29691,7 +29733,7 @@ var Guest = class {
       await this.save();
     } catch (error2) {
       e.guestState = "unknown";
-      if (error2 instanceof MachineServiceError && error2.status === 404 && await this.destroyed(e.lease.vm)) {
+      if (!e.machine && error2 instanceof MachineServiceError && error2.status === 404 && await this.destroyed(e.lease.vm)) {
         await this.m.registry.remove(e.row);
         await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease.vm, released: true, reason: "backend lease absent and destruction verified", finishedAt: (/* @__PURE__ */ new Date()).toISOString() });
         this.enclosure = void 0;
@@ -30677,16 +30719,20 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           } catch (error2) {
             await this.log("release-error", void 0, { vm: e.lease.vm, cause: reason2, attempt: attempt + 1, error: String(error2) }).catch(() => {
             });
-            try {
-              const record3 = await this.vm.get(e.lease.vm, { timeoutMs: 5e3 });
-              if (e.machine && record3.lease_id !== e.lease.lease_id) {
+            if (e.machine) {
+              if (error2 instanceof MachineServiceError && error2.status === 404) await this.findOwner(e, true);
+              if (await this.durableReleased(e)) {
                 released = true;
                 break;
               }
-            } catch (getError) {
-              if (getError instanceof MachineServiceError && getError.status === 404) {
-                released = true;
-                break;
+            } else {
+              try {
+                await this.vm.get(e.lease.vm, { timeoutMs: 5e3 });
+              } catch (getError) {
+                if (getError instanceof MachineServiceError && getError.status === 404) {
+                  released = true;
+                  break;
+                }
               }
             }
             if (attempt === attempts - 1) throw error2;
@@ -30713,7 +30759,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   /** A durable release is verified when the machine no longer names the lease (DC-33). */
   async durableReleased(e) {
-    return (await this.vm.get(e.lease.vm, { timeoutMs: 1e4 })).lease_id !== e.lease.lease_id;
+    return (await this.leaseRecord(e)).lease_id !== e.lease.lease_id;
   }
   async destroyed(vm) {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
