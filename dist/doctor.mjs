@@ -161,7 +161,8 @@ var MachineService = class {
     }
   }
   async get(vm, options = {}) {
-    return named(await this.request(this.path(vm), void 0, options));
+    const path = this.path(vm) + (options.lease_id ? `?${new URLSearchParams({ lease_id: options.lease_id })}` : "");
+    return named(await this.request(path, void 0, options));
   }
   /**
    * Cancellation before dispatch prevents allocation. Once dispatched we deliberately
@@ -276,7 +277,7 @@ var MachineService = class {
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`));
+    const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {

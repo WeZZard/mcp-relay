@@ -128,7 +128,8 @@ async function findOwner(target: { name?: string; machine_id?: string }, options
   await Promise.all(asked.map(async ({ origin, backend, expected, machine_id: advertisedId }) => {
     try {
       const health = await backend.health({ timeoutMs: TIMEOUT_MS }).catch(error => { if (expected || advertisedId || target.machine_id) throw error; return {}; }) as Health;
-      if (expected || advertisedId || target.machine_id) { const why = confirmed(health, expected, advertisedId || target.machine_id); if (why) { refused.push(`${origin}: ${why}`); return; } }
+      const why = confirmed(health, expected, advertisedId || target.machine_id);
+      if (why) { refused.push(`${origin}: ${why}`); return; }
       if (target.machine_id && health.machine_id !== target.machine_id) return;
       const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
       const record = target.name ? machines[target.name] : Object.values(machines).find(record => record.kind === 'durable' && (!(record as { machine_id?: string }).machine_id || (record as { machine_id?: string }).machine_id === target.machine_id));

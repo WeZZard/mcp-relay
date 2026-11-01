@@ -304,7 +304,7 @@ installation or platform acceptance is claimed here.
 ## Durable machines
 
 `relay_acquire` takes `machine` in place of `image` to lease a durable machine,
-a real Mac that machine-service exposes, such as `Build-Mac-1`. Every other
+a real Mac that machine-service exposes, such as `Mac-A`. Every other
 tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md)).
 
 - The relay finds the instance that owns the machine as `machctl list` does:
@@ -315,6 +315,13 @@ tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md
   instance found is used only once its `/health` confirms its ID.
 - Every call carries the lease's `lease_id`, files go as bytes, and the relay
   stages under the lease's workspace, which machine-service removes at release.
+- When machine-service reports `machine_id`, the relay saves it and can resume
+  the same lease after the Mac is renamed or its address changes. Requests keep
+  using the name the lease was granted under. Older services keep the existing
+  name and origin checks.
+- A durable 404 never proves release. The relay finds the owner again and
+  verifies that its machine record no longer names the lease. An unreachable
+  owner leaves the lease retained with guest state `unknown`.
 - Runs take snapshots only while the Mac's cua-driver daemon (`CuaDriver.app`,
   `com.trycua.driver`) holds Screen Recording, read with
   `cua-driver permissions status --json` in the lease. machine-service's own

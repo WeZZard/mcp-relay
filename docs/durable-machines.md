@@ -1,6 +1,6 @@
 # Durable machines
 
-This document is the design for DC-28 to DC-37 in [decisions.md](decisions.md#durable-machines). It is the relay's half of machine-service's [CN-1](../../vm-service/docs/arch/consumers.md#cn-1-mcp-relay).
+This document is the design for DC-28 to DC-38 in [decisions.md](decisions.md#durable-machines). It is the relay's half of machine-service's [CN-1](../../vm-service/docs/arch/consumers.md#cn-1-mcp-relay).
 
 ## 1. Context
 
@@ -18,18 +18,18 @@ flowchart LR
   M --> D[cua-driver daemon: Screen Recording, Accessibility]
 ```
 
-## 2. Choosing a machine (DC-29, DC-35)
+## 2. Choosing a machine (DC-29, DC-35, DC-37)
 
-- `relay_acquire` takes exactly one of `image` and `machine`. `machine` is the durable machine's name as `machctl list` shows it, such as `Build-Mac-1`.
+- `relay_acquire` takes exactly one of `image` and `machine`. `machine` is the durable machine's name as `machctl list` shows it, such as `Mac-A`.
 - The relay finds the instance that owns the machine, as machctl does ([FD-2](../../vm-service/docs/arch/federation.md#fd-2-discovery)):
-  1. It asks the loopback instance at `MCP_RELAY_URL` (default `http://localhost:6240`) for `GET /machines`.
+  1. It asks the loopback instance at `MCP_RELAY_URL` (default `http://localhost:6240`) for `/health` and `GET /machines`.
   2. It finds the other instances in the mode `MACHINE_SERVICE_DISCOVERY` chooses, as machine-service and machctl do (machine-service DC-84):
-     - `bonjour`, the default: a one-shot Multicast DNS query for `_machine-service._tcp.local` (RFC 6762 §5.1), sent to 224.0.0.251:5353 from an ephemeral port, whose answers are read for 2 seconds, with one follow-up query for any SRV, TXT or A record the first answers left out. Each instance's TXT record states its `instance`. Node.js has no DNS-SD API, so the relay builds and reads the messages itself, with no dependency.
+     - `bonjour`, the default: a one-shot Multicast DNS query for `_machine-service._tcp.local` (RFC 6762 §5.1), sent to 224.0.0.251:5353 from an ephemeral port, whose answers are read for 2 seconds, with one follow-up query for any SRV, TXT or A record the first answers left out. Each instance's TXT record states its `instance` and, when supported, its `machine_id`, still at `txtvers=1`. Node.js has no DNS-SD API, so the relay builds and reads the messages itself, with no dependency.
      - `consul`: the Consul agent at `CONSUL_HTTP_ADDR` (default `http://127.0.0.1:8500`), `GET /v1/health/service/machine-service`. A registration published as `loopback_only` on another Mac is skipped.
-  3. It asks each instance found that way for its `/health`, and uses it only when it answers machine-service with the ID it was found under; a registration that states no ID is not confirmed (DC-35). Then it asks for `GET /machines`.
-  4. The owner is the instance whose list holds a record of `kind: "durable"` with that name. The same instance reached twice, such as the loopback instance and its own advertisement, counts once, by its instance ID. No owner, or two instances, refuses the acquisition before anything is reserved.
+  3. It asks each instance found that way for its `/health`. When the advertisement or registration states `machine_id`, that ID must match; the instance's name may have changed. Older registrations are confirmed by their `instance` name as before, and a registration that states neither has no advertised identity to confirm. Then it asks for `GET /machines`.
+  4. The owner is the instance whose list holds a record of `kind: "durable"` with that name. The same instance reached twice, such as the loopback instance and its own advertisement, counts once by `machine_id` and port, or by instance name when no machine ID is available. No owner, or two instances, refuses the acquisition before anything is reserved.
 - The relay talks to a non-loopback origin only when discovery found it. The agent cannot name an address. Redirects and credentials in a URL stay refused.
-- The guest's record keeps the owner's origin and instance ID. A restored guest finds its owner again, and refuses to act when the owner's origin or instance ID has changed.
+- The guest's record keeps the owner's origin, instance name and `machine_id` when available. A restored guest follows that machine ID across a changed name or origin, as §8 describes. Without a saved machine ID, it still requires the original name, origin and instance name.
 - A durable acquisition sends `machine`, `purpose`, `ttl_hours` and `env`. It sends none of `image`, `network`, `vnc` or `wait`, which machine-service refuses for a durable machine, so `vnc` is refused before anything is asked.
 
 ## 3. Lease operations (DC-30, DC-34)
@@ -67,7 +67,7 @@ flowchart LR
 ## 6. Release (DC-33)
 
 - relay_finish and relay_release end the session with `POST /machines/<name>/release`, after the relay has extracted its evidence. machine-service stops the lease's processes, sweeps leftovers and removes the workspace.
-- A durable release is verified when `GET /machines/<name>` no longer names the lease. There is no Tart list to read.
+- A durable release is verified when the record read through `GET /machines/<granted-name>?lease_id=<id>` no longer names the lease. A 404 requires the inventory check in §8. There is no Tart list to read.
 - The release's hygiene record is kept in the guest's `<evidence>.lifecycle.json`.
 
 ## 7. What a durable machine is not
@@ -80,9 +80,11 @@ flowchart LR
 ## 8. A renamed Mac (DC-36, DC-37)
 
 - A Mac's owner may rename it at any time. machine-service follows the rename live and keeps a held lease answering to the name it was granted under, and a Mac's permanent identity is its machine ID, the hardware UUID (machine-service DC-86 to DC-90, [MI](../../vm-service/docs/arch/identity.md)). The relay builds on that:
-  - **At acquisition** it saves the owner's `machine_id` beside its origin, its instance name and the lease's granted name.
-  - **During the session** it keeps addressing the lease by the granted name, at the saved origin. A rename changes neither, and a running operation is not interrupted, because its connection is to an address.
-  - **After its own restart** it finds the owner again and accepts it when the `machine_id` matches, whatever the instance is called now. A different `machine_id` is still refused, and nothing is sent.
-  - **When the saved origin stops answering**, it finds the owner again by `machine_id`, so a Mac whose address changed is followed too.
-- **A 404 is not a release (DC-36).** A durable machine outlives its leases, so "not found" from its owner proves nothing about the lease: the machine may have been renamed, or its owner may have restarted under a new name. The relay never checks a durable lease against the local Tart list, which never contains a durable machine. On a 404 it finds the owner again by `machine_id` and asks for the machine's record; the lease is over only when that record names another lease or none (DC-33). When the owner cannot be found, the relay keeps the lease and reports the guest's state as unknown.
+  - **At acquisition** it saves the owner's `machine_id` from `/health` or the durable record beside its origin, its instance name and the lease's granted name. Discovery also carries the ID from Bonjour TXT or Consul metadata and confirms it through `/health` when advertised.
+  - **During the session** it keeps addressing every lease request by the granted name, at the saved origin. Record reads carry the lease ID as `GET /machines/<granted-name>?lease_id=<id>`, so machine-service can resolve that name after a rename. A rename does not interrupt an open connection.
+  - **After its own restart** it finds the owner again by `machine_id` and confirms that ID through `/health`. A matching ID is accepted even when the instance name or origin changed, and the saved name and origin are updated. A different `machine_id` is refused before a lease operation is sent.
+  - **When the saved origin stops answering** with a connection failure or timeout, it finds the owner again by `machine_id` once and retries the request once at the confirmed origin. If the owner cannot be confirmed or the retry cannot reach it, the relay retains ownership and reports the guest's state as unknown. This recovery never replays acquisition.
+  - **Saved images** stay bound to the machine ID, relay session and enclosure, so a changed name or address does not invalidate evidence or block finish (DC-38).
+- **A 404 is not a release (DC-36).** A durable machine outlives its leases, so "not found" from its owner proves nothing about the lease: the machine may have been renamed, or its owner may have restarted under a new name. The relay never checks a durable lease against the local Tart list, which never contains a durable machine. On a 404 during reconciliation or release verification, it finds the owner again by the saved `machine_id`, or by the granted name when no ID was saved, and reads the durable record from `/machines`. The lease is over only when that record names another lease or none (DC-33). When the owner cannot be found or its record cannot be read, the relay keeps the lease, saves the guest's state as unknown and reports an error.
+- **Older services remain supported.** When no `machine_id` was saved, discovery still uses the machine name and a restored guest still requires the saved origin and instance name. Such a guest gains the durable 404 verification above, but cannot follow a changed name or origin by machine ID.
 - A virtual machine is leased from the relay's own instance and addressed by its own name, so a rename of that Mac changes nothing for it.
