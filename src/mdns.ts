@@ -1,4 +1,6 @@
+import { spawn } from 'node:child_process';
 import { createSocket, type Socket } from 'node:dgram';
+import { lookup } from 'node:dns/promises';
 
 /**
  * A one-shot Multicast DNS query for DNS-SD instances (RFC 6762 §5.1, RFC
@@ -157,4 +159,58 @@ export async function browse(service: string, windowMs = 2000, followUpMs = 1000
     }
     return assemble(service, records);
   } finally { transport.close(); }
+}
+
+/** Undo DNS-SD's presentation escapes: `\DDD` (decimal byte) and `\c`. */
+const unescape = (text: string) => Buffer.from(text.replace(/\\(\d{3})|\\(.)/g, (_, code: string | undefined, char: string | undefined) => code ? String.fromCharCode(Number(code)) : char!), 'latin1').toString('utf8');
+
+/**
+ * Parse `dns-sd -Z <type> local.` output: PTR, SRV and TXT lines in zone-file
+ * form. An instance is kept once its SRV has arrived; its address is left for
+ * the system resolver.
+ */
+export function parseZone(zone: string): Advertised[] {
+  const lines = zone.split('\n').map(line => line.replace(/\s;.*$/, '').trim()).filter(line => line && !line.startsWith(';'));
+  const field = (line: string) => line.match(/^(\S+)\s+(PTR|SRV|TXT)\s+(.*)$/);
+  const order: string[] = [], srv = new Map<string, { port: number; host: string }>(), txt = new Map<string, Record<string, string>>();
+  for (const line of lines) {
+    const match = field(line); if (!match) continue;
+    const [, owner, type, rest] = match as unknown as [string, string, string, string];
+    if (type === 'PTR') { const full = rest.trim(); if (!order.includes(full)) order.push(full); }
+    else if (type === 'SRV') { const [, , port, host] = rest.trim().split(/\s+/); if (port && host) srv.set(owner, { port: Number(port), host: host.replace(/\.$/, '') }); }
+    else txt.set(owner, Object.fromEntries([...rest.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, pair]) => unescape(pair!)).filter(pair => pair).map(pair => { const at = pair.indexOf('='); return at < 0 ? [pair.toLowerCase(), ''] : [pair.slice(0, at).toLowerCase(), pair.slice(at + 1)]; })));
+  }
+  return order.flatMap(full => {
+    const target = srv.get(full); if (!target) return [];
+    const name = unescape(full.split(/(?<!\\)\./)[0]!);
+    const record = txt.get(full) ?? {};
+    return [{ name, instance: record.instance || name, ...(record.machine_id ? { machine_id: record.machine_id } : {}), host: target.host, port: target.port, txt: record }];
+  });
+}
+
+/** How the system browser runs `dns-sd` and resolves a host; seams for tests. */
+export interface SystemTools { run(argv: string[], ms: number): Promise<string>; lookup(host: string): Promise<string | undefined> }
+const systemTools: SystemTools = {
+  run: (argv, ms) => new Promise(resolve => {
+    const child = spawn(argv[0]!, argv.slice(1), { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = ''; child.stdout.setEncoding('utf8').on('data', chunk => { out += chunk; });
+    const timer = setTimeout(() => child.kill('SIGTERM'), ms);
+    child.on('close', () => { clearTimeout(timer); resolve(out); });
+    child.on('error', () => { clearTimeout(timer); resolve(out); });
+  }),
+  lookup: host => lookup(host, { family: 4 }).then(found => found.address, () => undefined),
+};
+
+/** Where macOS's DNS-SD command lives; the system browser is used when it exists. */
+export const DNS_SD = '/usr/bin/dns-sd';
+
+/**
+ * Browse through the system's DNS-SD service (mDNSResponder), as machctl does,
+ * by reading `dns-sd -Z` for `windowMs`: the service keeps a live, cached view
+ * of the network, so one lost multicast answer does not hide an instance.
+ */
+export async function systemBrowse(service: string, windowMs = 1500, tools: SystemTools = systemTools): Promise<Advertised[]> {
+  const type = service.replace(/\.local\.?$/, '');
+  const found = parseZone(await tools.run([DNS_SD, '-Z', type, 'local.'], windowMs));
+  return Promise.all(found.map(async advert => { const address = await tools.lookup(advert.host); return address ? { ...advert, address } : advert; }));
 }

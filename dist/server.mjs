@@ -28829,8 +28829,13 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
   if (archived) await copy(archived, retained);
 }
 
+// src/discovery.ts
+import { existsSync } from "node:fs";
+
 // src/mdns.ts
+import { spawn as spawn5 } from "node:child_process";
 import { createSocket } from "node:dgram";
+import { lookup } from "node:dns/promises";
 var TYPE = { A: 1, PTR: 12, TXT: 16, SRV: 33 };
 var GROUP = "224.0.0.251";
 var PORT = 5353;
@@ -28948,6 +28953,62 @@ async function browse(service, windowMs = 2e3, followUpMs = 1e3, open9 = udpTran
     transport.close();
   }
 }
+var unescape2 = (text5) => Buffer.from(text5.replace(/\\(\d{3})|\\(.)/g, (_, code, char) => code ? String.fromCharCode(Number(code)) : char), "latin1").toString("utf8");
+function parseZone(zone) {
+  const lines = zone.split("\n").map((line) => line.replace(/\s;.*$/, "").trim()).filter((line) => line && !line.startsWith(";"));
+  const field = (line) => line.match(/^(\S+)\s+(PTR|SRV|TXT)\s+(.*)$/);
+  const order = [], srv = /* @__PURE__ */ new Map(), txt = /* @__PURE__ */ new Map();
+  for (const line of lines) {
+    const match = field(line);
+    if (!match) continue;
+    const [, owner, type, rest] = match;
+    if (type === "PTR") {
+      const full = rest.trim();
+      if (!order.includes(full)) order.push(full);
+    } else if (type === "SRV") {
+      const [, , port, host] = rest.trim().split(/\s+/);
+      if (port && host) srv.set(owner, { port: Number(port), host: host.replace(/\.$/, "") });
+    } else txt.set(owner, Object.fromEntries([...rest.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, pair]) => unescape2(pair)).filter((pair) => pair).map((pair) => {
+      const at = pair.indexOf("=");
+      return at < 0 ? [pair.toLowerCase(), ""] : [pair.slice(0, at).toLowerCase(), pair.slice(at + 1)];
+    })));
+  }
+  return order.flatMap((full) => {
+    const target = srv.get(full);
+    if (!target) return [];
+    const name = unescape2(full.split(/(?<!\\)\./)[0]);
+    const record3 = txt.get(full) ?? {};
+    return [{ name, instance: record3.instance || name, ...record3.machine_id ? { machine_id: record3.machine_id } : {}, host: target.host, port: target.port, txt: record3 }];
+  });
+}
+var systemTools = {
+  run: (argv, ms) => new Promise((resolve11) => {
+    const child = spawn5(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => {
+      out += chunk;
+    });
+    const timer = setTimeout(() => child.kill("SIGTERM"), ms);
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve11(out);
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve11(out);
+    });
+  }),
+  lookup: (host) => lookup(host, { family: 4 }).then((found) => found.address, () => void 0)
+};
+var DNS_SD = "/usr/bin/dns-sd";
+async function systemBrowse(service, windowMs = 1500, tools = systemTools) {
+  const type = service.replace(/\.local\.?$/, "");
+  const found = parseZone(await tools.run([DNS_SD, "-Z", type, "local."], windowMs));
+  return Promise.all(found.map(async (advert) => {
+    const address = await tools.lookup(advert.host);
+    return address ? { ...advert, address } : advert;
+  }));
+}
 
 // src/discovery.ts
 var SERVICE_TYPE = "_machine-service._tcp.local";
@@ -28980,7 +29041,7 @@ function parseRegistrations(answer) {
 async function candidates(options, mode) {
   if (mode === "bonjour") {
     try {
-      const advertised = await (options.browse ?? (() => browse(SERVICE_TYPE)))();
+      const advertised = await (options.browse ?? (() => existsSync(DNS_SD) ? systemBrowse(SERVICE_TYPE) : browse(SERVICE_TYPE)))();
       return { found: advertised.map((a) => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance, ...a.machine_id || a.txt.machine_id ? { machine_id: a.machine_id || a.txt.machine_id } : {} })) };
     } catch (error2) {
       return { found: [], error: `the Bonjour browse failed (${error2 instanceof Error ? error2.message : String(error2)})` };
