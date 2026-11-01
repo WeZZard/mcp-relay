@@ -41,6 +41,8 @@ export interface DiscoveryOptions {
   backend?: (origin: string) => VmBackend;
   /** Test seam: Consul's answer. */
   fetchJson?: (url: string) => Promise<unknown>;
+  /** Test seam: the pause before Bonjour's second look; default 2000 ms (MI-5). */
+  secondLookMs?: number;
 }
 
 const TIMEOUT_MS = 5000;
@@ -120,6 +122,7 @@ async function findOwner(target: { name?: string; machine_id?: string }, options
   const mode = options.mode ?? discoveryMode();
   const make = options.backend ?? (origin => new MachineService({ baseUrl: origin, listed: true }));
   const localOrigin = new URL(options.local.baseUrl).origin;
+  const look = async () => {
   const { found, error: discoveryError } = await candidates(options, mode);
   const asked: Array<{ origin: string; backend: VmBackend; expected?: string; machine_id?: string }> = [{ origin: localOrigin, backend: options.local }];
   for (const candidate of found) if (!asked.some(a => a.origin === candidate.origin)) asked.push({ ...candidate, backend: make(candidate.origin) });
@@ -128,7 +131,9 @@ async function findOwner(target: { name?: string; machine_id?: string }, options
   await Promise.all(asked.map(async ({ origin, backend, expected, machine_id: advertisedId }) => {
     try {
       const health = await backend.health({ timeoutMs: TIMEOUT_MS }).catch(error => { if (expected || advertisedId || target.machine_id) throw error; return {}; }) as Health;
-      const why = confirmed(health, expected, advertisedId || target.machine_id);
+      // A candidate is confirmed by what it advertised, never by the ID being sought:
+      // an older instance that advertises no machine_id is confirmed by its name.
+      const why = confirmed(health, expected, advertisedId);
       if (why) { refused.push(`${origin}: ${why}`); return; }
       if (target.machine_id && health.machine_id !== target.machine_id) return;
       const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
@@ -145,6 +150,15 @@ async function findOwner(target: { name?: string; machine_id?: string }, options
   owners.sort((a, b) => Number(b.origin === localOrigin) - Number(a.origin === localOrigin));
   const identity = (owner: DurableOwner) => owner.machine_id ? `${owner.machine_id}:${new URL(owner.origin).port || (new URL(owner.origin).protocol === 'https:' ? '443' : '80')}` : owner.instance;
   const distinct = owners.filter((owner, index) => owners.findIndex(other => identity(other) === identity(owner)) === index);
+  return { distinct, refused, discoveryError };
+  };
+  let { distinct, refused, discoveryError } = await look();
+  // MI-5: a Bonjour answer can be lost, or fall between a renamed Mac's goodbye
+  // and its new advertisement, so look once more before reporting it missing.
+  if (!distinct.length && mode === 'bonjour') {
+    await new Promise(resolve => setTimeout(resolve, options.secondLookMs ?? 2000));
+    ({ distinct, refused, discoveryError } = await look());
+  }
   if (distinct.length === 1) return distinct[0]!;
   if (distinct.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${distinct.map(owner => owner.origin).join(', ')}); nothing was acquired`);
   const hint = mode === 'bonjour' ? 'Check the name with `machctl list`; the Mac\'s machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent.' : 'Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.';

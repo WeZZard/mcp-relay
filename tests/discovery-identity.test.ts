@@ -111,3 +111,30 @@ test('name discovery refuses an explicit wrong service on local and unlabelled C
   await assert.rejects(findDurableOwner('Mac-A', { local: wrongService('http://localhost:6240'), mode: 'bonjour', browse: async () => [] }), /unconfirmed:.*answers as other-service/);
   await assert.rejects(findDurableOwner('Mac-A', { local: local(), mode: 'consul', fetchJson: async () => [{ Node: { Node: 'node-a' }, Service: { Address: '192.0.2.4', Port: 6240 } }], backend: () => wrongService(origin) }), /unconfirmed:.*answers as other-service/);
 });
+
+test('looking up by machine_id confirms an unlabelled candidate by its own name, never by the target ID (DC-37)', async () => {
+  const legacy = { ...advertised('Mac-L'), address: '192.0.2.7' };
+  const target = { ...advertised('Mac-B', ID), address: '192.0.2.4' };
+  const backends: Record<string, VmBackend> = {
+    'http://192.0.2.7:6240': backend('http://192.0.2.7:6240', 'Mac-L', { 'Mac-L': record('Mac-L') }),
+    [origin]: backend(origin, 'Mac-B', { 'Mac-B': record('Mac-B', ID) }, ID),
+  };
+  const owner = await discovery.findDurableOwnerById(ID, { local: local(), mode: 'bonjour', browse: async () => [legacy, target], backend: o => backends[o]! });
+  assert.equal(owner.origin, origin);
+  const missing = await discovery.findDurableOwnerById(OTHER_ID, { local: local(), mode: 'bonjour', browse: async () => [legacy], backend: o => backends[o]!, secondLookMs: 0 }).catch((error: Error) => error.message);
+  assert.doesNotMatch(String(missing), /found with machine_id/, 'an instance that advertised no machine_id is not reported as contradicting one');
+});
+
+test('Bonjour looks a second time before reporting a durable machine missing (MI-5, DC-37)', async () => {
+  for (const find of [(o: discovery.DiscoveryOptions) => findDurableOwner('Mac-B', o), (o: discovery.DiscoveryOptions) => discovery.findDurableOwnerById(ID, o)]) {
+    let browses = 0;
+    const remote = backend(origin, 'Mac-B', { 'Mac-B': record('Mac-B', ID) }, ID);
+    const owner = await find({ local: local(), mode: 'bonjour', secondLookMs: 0, browse: async () => (++browses === 1 ? [] : [advertised('Mac-B', ID)]), backend: () => remote });
+    assert.equal(owner.backend, remote, 'the second browse finds the owner the first one missed');
+    assert.equal(browses, 2);
+  }
+  let consulAsks = 0;
+  await assert.rejects(findDurableOwner('Mac-B', { local: local(), mode: 'consul', secondLookMs: 0, fetchJson: async () => { consulAsks++; return []; } }), /No machine-service instance/);
+  assert.equal(consulAsks, 1, 'Consul answers from its catalog, so it is asked once');
+});
+

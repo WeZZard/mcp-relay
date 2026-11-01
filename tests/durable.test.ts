@@ -231,7 +231,12 @@ test('the one-shot Multicast DNS query asks for the service and assembles PTR, S
   const sent: Buffer[] = [];
   const found = await mdnsBrowse(service, 50, 50, async receive => ({ send: q => { sent.push(q); if (sent.length === 1) receive(answer); }, close: () => {} }));
   assert.deepEqual(found, expected);
-  assert.equal(sent.length, 1, 'no follow-up when the first answers were complete');
+  assert.equal(sent.length, 2, 'the question is asked twice in the window (RFC 6762 §5.2), and no follow-up when the answers were complete');
+  assert.deepEqual(sent[1], sent[0], 'the repeat is the same PTR question');
+  // An answer lost the first time is caught by the repeated question.
+  const late: Buffer[] = [];
+  const caught = await mdnsBrowse(service, 50, 50, async receive => ({ send: q => { late.push(q); if (late.length === 2) receive(answer); }, close: () => {} }));
+  assert.deepEqual(caught, expected, 'a responder that answers only the repeated question is found');
   assert.deepEqual(parseRecords(Buffer.from('not dns')), []);
 });
 
