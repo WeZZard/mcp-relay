@@ -55,7 +55,7 @@
     "build": "node scripts/build.mjs",
     "setup:dev": "node scripts/setup-dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts scripts/selected-image-x11.test.ts",
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts scripts/selected-image-x11.test.ts",
     "check": "npm run build && npm run typecheck && npm test",
     "test:e2e": "tsx --test tests/e2e/headless.test.ts",
     "verify:package": "node scripts/verify-package.mjs"
