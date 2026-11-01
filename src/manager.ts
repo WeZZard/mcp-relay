@@ -48,7 +48,7 @@ export interface RunInput extends GuestSelector { because?: string; timeoutMs?: 
 /** The file name extension of a script file the relay uploads, by language. */
 const SCRIPT_EXTENSIONS = { shell: 'sh', javascript: 'js', typescript: 'ts', python: 'py' } as const;
 /** The backend a guest's lease lives on: the loopback instance and its Tart store, or for a durable machine the owner's origin and instance ID (DC-29). */
-interface BackendBinding { endpoint: string; tartHome?: string; environmentFingerprint?: string; instance?: string }
+interface BackendBinding { machine_id?: string; endpoint: string; tartHome?: string; environmentFingerprint?: string; instance?: string }
 /** One guest's durable ownership record, `guests/<guest>/lease.json` in the session's state directory. */
 interface Enclosure {
   backend?: BackendBinding;
@@ -605,11 +605,29 @@ class Guest {
     };
   }
   /** Find a durable machine's owner again, and refuse when its origin or instance changed (DC-29). */
-  private async findOwner(e: Enclosure) {
-    if (!e.machine || this.owner) return;
+  private async findOwner(e: Enclosure, force = false) {
+    if (!e.machine || (this.owner && !force)) return;
+    try {
     const owner = await this.m.durableOwner(e.machine);
     if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
     this.owner = owner.backend;
+    } catch (error) { await this.unknownOwner(e, error); }
+  }
+  private async unknownOwner(e: Enclosure, cause: unknown): Promise<never> {
+    e.guestState = 'unknown';
+    const error = new Error(`Cannot confirm durable machine ${e.machine}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
+    e.lastError = error.message; await this.save(); throw error;
+  }
+  /** A durable 404 proves nothing: rediscover and inspect the owner's inventory (DC-36). */
+  private async leaseRecord(e: Enclosure) {
+    try { return await this.vm.get(e.machine ?? e.lease!.vm, { timeoutMs: 10000 }); }
+    catch (error) {
+      if (!e.machine || !(error instanceof MachineServiceError) || error.status !== 404) throw error;
+      await this.findOwner(e, true);
+      const record = (await this.vm.list({ timeoutMs: 10000 })).machines[e.machine];
+      if (record?.kind !== 'durable') throw new Error(`Cannot read the record of durable machine ${e.machine}; ownership retained, guest state unknown`);
+      return record;
+    }
   }
   constructor(readonly m: RelayManager, readonly name: string, record?: Enclosure) {
     this.dir = join(m.root, 'guests', name);
@@ -658,7 +676,7 @@ class Guest {
       if (e.machine && e.lease.workspace) e.guestRoot = durableRoot(e.lease.workspace, e.purpose);
     }
     try {
-      const lease = await this.vm.get(e.lease.vm, { timeoutMs: 10000 });
+      const lease = await this.leaseRecord(e);
       // A durable machine outlives its leases: a record that names another lease, or none, means ours has ended (DC-33).
       if (e.machine && lease.lease_id !== e.lease.lease_id) {
         await this.m.registry.remove(e.row);
@@ -676,7 +694,7 @@ class Guest {
       await this.save();
     } catch (error) {
       e.guestState = 'unknown';
-      if (error instanceof MachineServiceError && error.status === 404 && await this.destroyed(e.lease.vm)) {
+      if (!e.machine && error instanceof MachineServiceError && error.status === 404 && await this.destroyed(e.lease.vm)) {
         await this.m.registry.remove(e.row);
         await jsonFile(`${e.hostRoot}.lifecycle.json`, { purpose: e.purpose, vm: e.lease.vm, released: true, reason: 'backend lease absent and destruction verified', finishedAt: new Date().toISOString() });
         this.enclosure = undefined; await this.save(); await this.m.forget(this); return;
@@ -1482,8 +1500,13 @@ class Guest {
             released = true; break;
           } catch (error) {
             await this.log('release-error', undefined, { vm: e.lease.vm, cause: reason, attempt: attempt + 1, error: String(error) }).catch(() => {});
-            try { const record = await this.vm.get(e.lease.vm, { timeoutMs: 5000 }); if (e.machine && record.lease_id !== e.lease.lease_id) { released = true; break; } }
-            catch (getError) { if (getError instanceof MachineServiceError && getError.status === 404) { released = true; break; } }
+            if (e.machine) {
+              if (error instanceof MachineServiceError && error.status === 404) await this.findOwner(e, true);
+              if (await this.durableReleased(e)) { released = true; break; }
+            } else {
+              try { await this.vm.get(e.lease.vm, { timeoutMs: 5000 }); }
+              catch (getError) { if (getError instanceof MachineServiceError && getError.status === 404) { released = true; break; } }
+            }
             if (attempt === attempts - 1) throw error;
           }
         }
@@ -1501,7 +1524,7 @@ class Guest {
   }
   /** A durable release is verified when the machine no longer names the lease (DC-33). */
   private async durableReleased(e: Enclosure): Promise<boolean> {
-    return (await this.vm.get(e.lease!.vm, { timeoutMs: 10000 })).lease_id !== e.lease!.lease_id;
+    return (await this.leaseRecord(e)).lease_id !== e.lease!.lease_id;
   }
   private async destroyed(vm: string): Promise<boolean> {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);

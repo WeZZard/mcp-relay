@@ -14,6 +14,8 @@ export interface Advertised {
   name: string;
   /** The instance ID its TXT record states, else its name. */
   instance: string;
+  /** The permanent identity its TXT record states, when supported. */
+  machine_id?: string;
   /** The host its SRV record names, such as `Mac-A.local`. */
   host: string;
   /** An IPv4 address of that host, when one was answered. */
@@ -108,7 +110,7 @@ export function assemble(service: string, records: Record_[]): Advertised[] {
     const txt = Object.assign({}, ...by(TYPE.TXT, full).map(r => txtOf(r.data)));
     const a = by(TYPE.A, host).find(r => r.data.length === 4);
     const name = full.slice(0, full.length - service.length - 1);
-    found.push({ name, instance: txt.instance || name, host: host.replace(/\.$/, ''), ...(a ? { address: [...a.data].join('.') } : {}), port, txt });
+    found.push({ name, instance: txt.instance || name, ...(txt.machine_id ? { machine_id: txt.machine_id } : {}), host: host.replace(/\.$/, ''), ...(a ? { address: [...a.data].join('.') } : {}), port, txt });
   }
   return found.sort((x, y) => x.name.localeCompare(y.name));
 }
