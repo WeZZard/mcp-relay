@@ -1,6 +1,6 @@
 # Durable machines
 
-This document is the design for DC-28 to DC-34 in [decisions.md](decisions.md#durable-machines). It is the relay's half of machine-service's [CN-1](../../vm-service/docs/arch/consumers.md#cn-1-mcp-relay).
+This document is the design for DC-28 to DC-37 in [decisions.md](decisions.md#durable-machines). It is the relay's half of machine-service's [CN-1](../../vm-service/docs/arch/consumers.md#cn-1-mcp-relay).
 
 ## 1. Context
 
@@ -76,3 +76,13 @@ flowchart LR
 - Its desktop may be shared with a CI job ([HY-5](../../vm-service/docs/arch/hygiene.md#hy-5-coexistence-with-the-ci-runner)).
 - It has no console operations.
 - The relay's instructions and relay_acquire's description say so.
+
+## 8. A renamed Mac (DC-36, DC-37)
+
+- A Mac's owner may rename it at any time. machine-service follows the rename live and keeps a held lease answering to the name it was granted under, and a Mac's permanent identity is its machine ID, the hardware UUID (machine-service DC-86 to DC-90, [MI](../../vm-service/docs/arch/identity.md)). The relay builds on that:
+  - **At acquisition** it saves the owner's `machine_id` beside its origin, its instance name and the lease's granted name.
+  - **During the session** it keeps addressing the lease by the granted name, at the saved origin. A rename changes neither, and a running operation is not interrupted, because its connection is to an address.
+  - **After its own restart** it finds the owner again and accepts it when the `machine_id` matches, whatever the instance is called now. A different `machine_id` is still refused, and nothing is sent.
+  - **When the saved origin stops answering**, it finds the owner again by `machine_id`, so a Mac whose address changed is followed too.
+- **A 404 is not a release (DC-36).** A durable machine outlives its leases, so "not found" from its owner proves nothing about the lease: the machine may have been renamed, or its owner may have restarted under a new name. The relay never checks a durable lease against the local Tart list, which never contains a durable machine. On a 404 it finds the owner again by `machine_id` and asks for the machine's record; the lease is over only when that record names another lease or none (DC-33). When the owner cannot be found, the relay keeps the lease and reports the guest's state as unknown.
+- A virtual machine is leased from the relay's own instance and addressed by its own name, so a rename of that Mac changes nothing for it.
