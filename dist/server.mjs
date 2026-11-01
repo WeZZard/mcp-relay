@@ -28932,8 +28932,11 @@ async function browse(service, windowMs = 2e3, followUpMs = 1e3, open9 = udpTran
   const records = [];
   const transport = await open9((message3) => records.push(...parseRecords(message3)));
   try {
-    transport.send(encodeQuery([{ name: service, type: TYPE.PTR }]));
-    await wait(windowMs);
+    const question = encodeQuery([{ name: service, type: TYPE.PTR }]);
+    transport.send(question);
+    await wait(windowMs / 2);
+    transport.send(question);
+    await wait(windowMs / 2);
     const missing = [...new Set(records.filter((r) => r.type === TYPE.PTR && key(r.name) === key(service)).map((r) => readName(r.message, r.offset)[0]))].filter((full) => !assemble(service, records).some((found) => key(`${found.name}.${service}`) === key(full) && found.address));
     if (missing.length) {
       const hosts = records.filter((r) => r.type === TYPE.SRV).map((r) => readName(r.message, r.offset + 6)[0]);
@@ -29008,40 +29011,48 @@ async function findOwner(target, options) {
   const mode = options.mode ?? discoveryMode();
   const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
   const localOrigin = new URL(options.local.baseUrl).origin;
-  const { found, error: discoveryError } = await candidates(options, mode);
-  const asked = [{ origin: localOrigin, backend: options.local }];
-  for (const candidate of found) if (!asked.some((a) => a.origin === candidate.origin)) asked.push({ ...candidate, backend: make(candidate.origin) });
-  const owners = [];
-  const refused = [];
-  await Promise.all(asked.map(async ({ origin, backend, expected, machine_id: advertisedId }) => {
-    try {
-      const health = await backend.health({ timeoutMs: TIMEOUT_MS }).catch((error2) => {
-        if (expected || advertisedId || target.machine_id) throw error2;
-        return {};
-      });
-      const why = confirmed(health, expected, advertisedId || target.machine_id);
-      if (why) {
-        refused.push(`${origin}: ${why}`);
-        return;
-      }
-      if (target.machine_id && health.machine_id !== target.machine_id) return;
-      const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
-      const record3 = target.name ? machines[target.name] : Object.values(machines).find((record4) => record4.kind === "durable" && (!record4.machine_id || record4.machine_id === target.machine_id));
-      if (record3?.kind === "durable") {
-        const recordId = text3(record3.machine_id), healthId = text3(health.machine_id);
-        if (recordId && healthId && recordId !== healthId) {
-          refused.push(`${origin}: its durable record machine_id ${recordId} differs from /health machine_id ${healthId}`);
+  const look = async () => {
+    const { found, error: discoveryError2 } = await candidates(options, mode);
+    const asked = [{ origin: localOrigin, backend: options.local }];
+    for (const candidate of found) if (!asked.some((a) => a.origin === candidate.origin)) asked.push({ ...candidate, backend: make(candidate.origin) });
+    const owners = [];
+    const refused2 = [];
+    await Promise.all(asked.map(async ({ origin, backend, expected, machine_id: advertisedId }) => {
+      try {
+        const health = await backend.health({ timeoutMs: TIMEOUT_MS }).catch((error2) => {
+          if (expected || advertisedId || target.machine_id) throw error2;
+          return {};
+        });
+        const why = confirmed(health, expected, advertisedId);
+        if (why) {
+          refused2.push(`${origin}: ${why}`);
           return;
         }
-        const machine_id = healthId || recordId;
-        owners.push({ backend, origin, instance: machine_id && text3(health.instance) || record3.instance || machine, ...machine_id ? { machine_id } : {} });
+        if (target.machine_id && health.machine_id !== target.machine_id) return;
+        const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
+        const record3 = target.name ? machines[target.name] : Object.values(machines).find((record4) => record4.kind === "durable" && (!record4.machine_id || record4.machine_id === target.machine_id));
+        if (record3?.kind === "durable") {
+          const recordId = text3(record3.machine_id), healthId = text3(health.machine_id);
+          if (recordId && healthId && recordId !== healthId) {
+            refused2.push(`${origin}: its durable record machine_id ${recordId} differs from /health machine_id ${healthId}`);
+            return;
+          }
+          const machine_id = healthId || recordId;
+          owners.push({ backend, origin, instance: machine_id && text3(health.instance) || record3.instance || machine, ...machine_id ? { machine_id } : {} });
+        }
+      } catch {
       }
-    } catch {
-    }
-  }));
-  owners.sort((a, b) => Number(b.origin === localOrigin) - Number(a.origin === localOrigin));
-  const identity = (owner) => owner.machine_id ? `${owner.machine_id}:${new URL(owner.origin).port || (new URL(owner.origin).protocol === "https:" ? "443" : "80")}` : owner.instance;
-  const distinct = owners.filter((owner, index) => owners.findIndex((other) => identity(other) === identity(owner)) === index);
+    }));
+    owners.sort((a, b) => Number(b.origin === localOrigin) - Number(a.origin === localOrigin));
+    const identity = (owner) => owner.machine_id ? `${owner.machine_id}:${new URL(owner.origin).port || (new URL(owner.origin).protocol === "https:" ? "443" : "80")}` : owner.instance;
+    const distinct2 = owners.filter((owner, index) => owners.findIndex((other) => identity(other) === identity(owner)) === index);
+    return { distinct: distinct2, refused: refused2, discoveryError: discoveryError2 };
+  };
+  let { distinct, refused, discoveryError } = await look();
+  if (!distinct.length && mode === "bonjour") {
+    await new Promise((resolve11) => setTimeout(resolve11, options.secondLookMs ?? 2e3));
+    ({ distinct, refused, discoveryError } = await look());
+  }
   if (distinct.length === 1) return distinct[0];
   if (distinct.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${distinct.map((owner) => owner.origin).join(", ")}); nothing was acquired`);
   const hint = mode === "bonjour" ? "Check the name with `machctl list`; the Mac's machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent." : "Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.";
@@ -29290,6 +29301,17 @@ var RelayManager = class {
     }
   }
   /** Every guest the session holds, with its state; `active` is true while any guest's lease is being renewed. */
+  /**
+   * The status after reading the session's saved guests, host-only, so a
+   * restarted relay reports what it still owns. A session with nothing saved
+   * creates nothing, and a session it cannot load reports what it has in memory.
+   */
+  async loadedStatus() {
+    const saved = await Promise.all([join13(this.root, "guests"), join13(this.root, "lease.json")].map((path) => access(path).then(() => true, () => false)));
+    if (saved.some(Boolean)) await this.load().catch(() => {
+    });
+    return this.status();
+  }
   status() {
     const guests = [...this.guests.values()].map((guest2) => guest2.status());
     return { active: guests.some((guest2) => guest2.active), guests, maxGuests: this.maxGuests };
@@ -31197,10 +31219,11 @@ function createRelayServer(options = {}) {
     }
     return manager;
   });
-  const statusPayload = () => {
+  const statusPayload = async () => {
     const environment = selectedEnvironment();
     const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? "http://localhost:6240";
-    return { ...manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() }, project, service, environment: environment?.identity };
+    const owned = get();
+    return { ...await owned.loadedStatus(), project, service, environment: environment?.identity };
   };
   const shutdownController = new AbortController();
   const server = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} }, instructions });
@@ -31208,7 +31231,7 @@ function createRelayServer(options = {}) {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     try {
-      if (name === STATUS_TOOL) return text4(JSON.stringify(statusPayload(), null, 2));
+      if (name === STATUS_TOOL) return text4(JSON.stringify(await statusPayload(), null, 2));
       if (relayTools.some((tool) => tool.name === name)) return relayContent(await relayCall(get, relayToolInput(name, args ?? {}), { signal: AbortSignal.any([extra.signal, shutdownController.signal]), toolCallId: String(extra.requestId) }));
       throw new Error(`Unknown tool: ${name}`);
     } catch (error2) {
