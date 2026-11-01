@@ -141,8 +141,13 @@ export async function browse(service: string, windowMs = 2000, followUpMs = 1000
   const records: Record_[] = [];
   const transport = await open(message => records.push(...parseRecords(message)));
   try {
-    transport.send(encodeQuery([{ name: service, type: TYPE.PTR }]));
-    await wait(windowMs);
+    // Ask the question twice within the window, as continuous querying does
+    // (RFC 6762 §5.2), so one lost query or answer does not hide an instance.
+    const question = encodeQuery([{ name: service, type: TYPE.PTR }]);
+    transport.send(question);
+    await wait(windowMs / 2);
+    transport.send(question);
+    await wait(windowMs / 2);
     const missing = [...new Set(records.filter(r => r.type === TYPE.PTR && key(r.name) === key(service)).map(r => readName(r.message, r.offset)[0]))]
       .filter(full => !assemble(service, records).some(found => key(`${found.name}.${service}`) === key(full) && found.address));
     if (missing.length) {
