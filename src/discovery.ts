@@ -1,5 +1,6 @@
 import { MachineService, type VmBackend } from './machine-service.js';
-import { browse as mdnsBrowse, type Advertised } from './mdns.js';
+import { existsSync } from 'node:fs';
+import { DNS_SD, browse as mdnsBrowse, systemBrowse, type Advertised } from './mdns.js';
 
 /**
  * Finding the machine-service instance that owns a durable machine, the way
@@ -82,7 +83,9 @@ export function parseRegistrations(answer: unknown): Registration[] {
 async function candidates(options: DiscoveryOptions, mode: DiscoveryMode): Promise<{ found: Array<{ origin: string; expected?: string; machine_id?: string }>; error?: string }> {
   if (mode === 'bonjour') {
     try {
-      const advertised = await (options.browse ?? (() => mdnsBrowse(SERVICE_TYPE)))();
+      // The system's DNS-SD service where there is one (macOS), as machctl uses;
+      // the relay's own one-shot query elsewhere.
+      const advertised = await (options.browse ?? (() => existsSync(DNS_SD) ? systemBrowse(SERVICE_TYPE) : mdnsBrowse(SERVICE_TYPE)))();
       return { found: advertised.map(a => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance, ...(a.machine_id || a.txt.machine_id ? { machine_id: a.machine_id || a.txt.machine_id } : {}) })) };
     } catch (error) { return { found: [], error: `the Bonjour browse failed (${error instanceof Error ? error.message : String(error)})` }; }
   }

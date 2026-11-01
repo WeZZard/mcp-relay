@@ -138,3 +138,23 @@ test('Bonjour looks a second time before reporting a durable machine missing (MI
   assert.equal(consulAsks, 1, 'Consul answers from its catalog, so it is asked once');
 });
 
+
+test('the system browser reads dns-sd zone output, escapes and quoted TXT values included (MI-5)', async () => {
+  const { parseZone, systemBrowse } = await import('../src/mdns.js');
+  const zone = [
+    'Browsing for _machine-service._tcp.local.',
+    '_machine-service._tcp                           PTR     Mac\\032A._machine-service._tcp',
+    'Mac\\032A._machine-service._tcp                 SRV     0 0 6241 Mac-A.local. ; Replace with unicast FQDN of target host',
+    `Mac\\032A._machine-service._tcp                 TXT     "txtvers=1" "instance=Mac A" "machine_id=${ID}" "kinds=durable"`,
+    '_machine-service._tcp                           PTR     Mac-L._machine-service._tcp',
+    'Mac-L._machine-service._tcp                     SRV     0 0 6240 Mac-L.local. ; Replace with unicast FQDN of target host',
+    'Mac-L._machine-service._tcp                     TXT     "txtvers=1" "instance=Mac-L" "kinds=virtual"',
+    '_machine-service._tcp                           PTR     Half._machine-service._tcp',
+  ].join('\n');
+  assert.deepEqual(parseZone(zone), [
+    { name: 'Mac A', instance: 'Mac A', machine_id: ID, host: 'Mac-A.local', port: 6241, txt: { txtvers: '1', instance: 'Mac A', machine_id: ID, kinds: 'durable' } },
+    { name: 'Mac-L', instance: 'Mac-L', host: 'Mac-L.local', port: 6240, txt: { txtvers: '1', instance: 'Mac-L', kinds: 'virtual' } },
+  ], 'an instance whose SRV has not arrived is left out');
+  const found = await systemBrowse('_machine-service._tcp.local', 10, { run: async () => zone, lookup: async host => (host === 'Mac-A.local' ? '192.0.2.4' : undefined) });
+  assert.deepEqual(found.map(a => [a.instance, a.address, a.port]), [['Mac A', '192.0.2.4', 6241], ['Mac-L', undefined, 6240]], 'addresses come from the system resolver');
+});
