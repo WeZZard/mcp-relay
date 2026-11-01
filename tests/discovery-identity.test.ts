@@ -105,3 +105,9 @@ test('legacy discovery without machine_id keeps the record instance and name con
   assert.equal((await findDurableOwner('Mac-A', { local: self, mode: 'bonjour', browse: async () => [] })).instance, 'Mac-A');
   await assert.rejects(findDurableOwner('Mac-A', { local: local(), mode: 'bonjour', browse: async () => [advertised('Mac-A')], backend: () => backend(origin, 'Mac-B', { 'Mac-A': record('Mac-A') }) }), /it was found as Mac-A, but its \/health answers Mac-B/);
 });
+
+test('name discovery refuses an explicit wrong service on local and unlabelled Consul candidates (DC-37)', async () => {
+  const wrongService = (baseUrl: string) => ({ ...backend(baseUrl, 'Mac-A', { 'Mac-A': record('Mac-A', ID) }, ID), health: async () => ({ ok: true, service: 'other-service', instance: 'Mac-A', machine_id: ID }) });
+  await assert.rejects(findDurableOwner('Mac-A', { local: wrongService('http://localhost:6240'), mode: 'bonjour', browse: async () => [] }), /unconfirmed:.*answers as other-service/);
+  await assert.rejects(findDurableOwner('Mac-A', { local: local(), mode: 'consul', fetchJson: async () => [{ Node: { Node: 'node-a' }, Service: { Address: '192.0.2.4', Port: 6240 } }], backend: () => wrongService(origin) }), /unconfirmed:.*answers as other-service/);
+});

@@ -209,8 +209,9 @@ export class MachineService {
       throw new MachineServiceError(`Console API unavailable or request outcome unknown${error instanceof MachineServiceError && error.status ? ` (HTTP ${error.status})` : ''}; resolve before another open`, error instanceof MachineServiceError ? error.status : undefined);
     }
   }
-  async get(vm: string, options: RequestOptions = {}): Promise<VmSnapshot> {
-    return named(await this.request<VmSnapshot>(this.path(vm), undefined, options));
+  async get(vm: string, options: RequestOptions & LeaseIdentity = {}): Promise<VmSnapshot> {
+    const path = this.path(vm) + (options.lease_id ? `?${new URLSearchParams({ lease_id: options.lease_id })}` : "");
+    return named(await this.request<VmSnapshot>(path, undefined, options));
   }
 
   /**
@@ -319,7 +320,7 @@ export class MachineService {
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`));
+    const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {

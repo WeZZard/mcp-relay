@@ -17862,7 +17862,8 @@ var MachineService = class {
     }
   }
   async get(vm, options = {}) {
-    return named(await this.request(this.path(vm), void 0, options));
+    const path = this.path(vm) + (options.lease_id ? `?${new URLSearchParams({ lease_id: options.lease_id })}` : "");
+    return named(await this.request(path, void 0, options));
   }
   /**
    * Cancellation before dispatch prevents allocation. Once dispatched we deliberately
@@ -17977,7 +17978,7 @@ var MachineService = class {
     const controller = new AbortController();
     const abort = () => controller.abort(options.signal?.reason);
     options.signal?.addEventListener("abort", abort, { once: true });
-    const expire = () => controller.abort(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms${stream.idle ? " without a byte" : ""}`));
+    const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs2);
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
@@ -28999,6 +29000,9 @@ function confirmed(health, expected, machine_id) {
 function findDurableOwner(machine, options) {
   return findOwner({ name: machine }, options);
 }
+function findDurableOwnerById(machine_id, options) {
+  return findOwner({ machine_id }, options);
+}
 async function findOwner(target, options) {
   const machine = target.name ?? `with machine_id ${target.machine_id}`;
   const mode = options.mode ?? discoveryMode();
@@ -29015,12 +29019,10 @@ async function findOwner(target, options) {
         if (expected || advertisedId || target.machine_id) throw error2;
         return {};
       });
-      if (expected || advertisedId || target.machine_id) {
-        const why = confirmed(health, expected, advertisedId || target.machine_id);
-        if (why) {
-          refused.push(`${origin}: ${why}`);
-          return;
-        }
+      const why = confirmed(health, expected, advertisedId || target.machine_id);
+      if (why) {
+        refused.push(`${origin}: ${why}`);
+        return;
       }
       if (target.machine_id && health.machine_id !== target.machine_id) return;
       const machines = (await backend.list({ timeoutMs: TIMEOUT_MS })).machines;
@@ -29089,6 +29091,15 @@ async function settleEach(work) {
   const failed = (await Promise.allSettled(work)).find((result2) => result2.status === "rejected");
   if (failed) throw failed.reason;
 }
+function originUnavailable(error2) {
+  if (!(error2 instanceof MachineServiceError) || error2.status !== void 0) return false;
+  const seen = /* @__PURE__ */ new Set();
+  for (let cause = error2; cause instanceof Error && !seen.has(cause); cause = cause.cause) {
+    seen.add(cause);
+    if (["ECONNREFUSED", "ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"].includes(String(cause.code))) return true;
+  }
+  return false;
+}
 var instructions = "This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job may share its desktop, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host's display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
 var RelayManager = class {
@@ -29130,8 +29141,8 @@ var RelayManager = class {
   /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
   shuttingDown = false;
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
-  durableOwner(machine) {
-    return findDurableOwner(machine, { local: this.vm, ...this.options.discovery ? { mode: this.options.discovery } : {}, ...this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
+  durableOwner(machine, machineId) {
+    return (machineId ? findDurableOwnerById : findDurableOwner)(machineId ?? machine, { local: this.vm, ...this.options.discovery ? { mode: this.options.discovery } : {}, ...this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
   }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
@@ -29599,51 +29610,91 @@ var Guest = class {
     const durable = !!this.enclosure?.machine;
     return {
       exec: async (name, argv, timeoutMs2 = 18e4, options) => {
-        const result2 = await this.vm.exec(name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs2 + 3e4, signal: options?.signal });
+        const result2 = await this.withOwner((backend) => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs2 + 3e4, signal: options?.signal }), options);
         return { stdout: result2.output, stderr: result2.output, code: result2.rc };
       },
       push: async (name, local_path, remote_path) => {
         if (!durable) return this.vm.push(name, { local_path, remote_path, ...identity() });
-        if (!this.vm.pushBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
-        return this.vm.pushBytes(name, { remote_path, bytes: await readFile9(local_path), ...identity() });
+        const bytes = await readFile9(local_path);
+        return this.withOwner((backend) => {
+          if (!backend.pushBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
+          return backend.pushBytes(this.enclosure.machine, { remote_path, bytes, ...identity() });
+        });
       },
       pull: async (name, remote_path, local_path, options) => {
         if (!durable) return this.vm.pull(name, { remote_path, local_path, ...identity() }, options);
-        if (!this.vm.pullBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
         await rm5(local_path, { force: true });
-        await this.vm.pullBytes(name, { remote_path, to: local_path, ...identity() }, options);
+        await this.withOwner((backend) => {
+          if (!backend.pullBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
+          return backend.pullBytes(this.enclosure.machine, { remote_path, to: local_path, ...identity() }, options);
+        }, options);
         return { vm: name, pulled: remote_path, to: local_path };
       }
     };
   }
-  /** Find a durable machine's owner again, and refuse when its origin or instance changed (DC-29). */
+  /** A saved machine ID survives renames; legacy ownership still requires its name and origin. */
   async findOwner(e, force = false) {
     if (!e.machine || this.owner && !force) return;
     try {
-      const owner = await this.m.durableOwner(e.machine);
-      if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
+      const owner = await this.m.durableOwner(e.machine, e.backend?.machine_id);
+      if (e.backend?.machine_id) {
+        if (owner.machine_id !== e.backend.machine_id) throw new Error(`Durable owner machine_id mismatch; nothing was sent`);
+      } else if (e.backend?.endpoint && (owner.origin !== e.backend.endpoint || owner.instance !== e.backend.instance)) {
+        throw new Error(`Durable machine ${e.machine} is now listed by ${owner.origin} (${owner.instance}), not by ${e.backend.endpoint} (${e.backend.instance}) where this guest leased it; ownership retained, nothing was sent`);
+      }
       this.owner = owner.backend;
+      e.backend = { ...e.backend, endpoint: owner.origin, instance: owner.instance };
+      await this.save();
     } catch (error2) {
       await this.unknownOwner(e, error2);
     }
   }
   async unknownOwner(e, cause) {
+    this.owner = void 0;
     e.guestState = "unknown";
     const error2 = new Error(`Cannot confirm durable machine ${e.machine}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
     e.lastError = error2.message;
     await this.save();
     throw error2;
   }
-  /** A durable 404 proves nothing: rediscover and inspect the owner's inventory (DC-36). */
-  async leaseRecord(e) {
+  /** Retry a durable request once after discovery confirms the saved machine ID. Acquisition never uses this. */
+  async withOwner(operation, options = {}) {
+    options.signal?.throwIfAborted();
+    if (this.enclosure?.machine && !this.owner) await this.findOwner(this.enclosure);
     try {
-      return await this.vm.get(e.machine ?? e.lease.vm, { timeoutMs: 1e4 });
+      return await operation(this.vm);
     } catch (error2) {
-      if (!e.machine || !(error2 instanceof MachineServiceError) || error2.status !== 404) throw error2;
+      const e = this.enclosure;
+      if (!e?.machine || !e.backend?.machine_id || options.signal?.aborted || !originUnavailable(error2)) throw error2;
       await this.findOwner(e, true);
-      const record3 = (await this.vm.list({ timeoutMs: 1e4 })).machines[e.machine];
-      if (record3?.kind !== "durable") throw new Error(`Cannot read the record of durable machine ${e.machine}; ownership retained, guest state unknown`);
-      return record3;
+      options.signal?.throwIfAborted();
+      try {
+        return await operation(this.vm);
+      } catch (retryError) {
+        if (!options.signal?.aborted && originUnavailable(retryError)) return this.unknownOwner(e, retryError);
+        throw retryError;
+      }
+    }
+  }
+  /** A durable 404 proves nothing: rediscover and inspect the owner's inventory (DC-36). */
+  async leaseRecord(e, options = {}) {
+    const request = { timeoutMs: 1e4, ...options };
+    try {
+      try {
+        const record3 = await this.withOwner((backend) => backend.get(e.machine ?? e.lease.vm, { ...request, ...e.machine ? { lease_id: e.lease?.lease_id } : {} }), request);
+        if (e.machine && e.backend?.machine_id && record3.machine_id && record3.machine_id !== e.backend.machine_id) throw new Error("Durable owner machine_id mismatch");
+        return record3;
+      } catch (error2) {
+        if (!e.machine || !(error2 instanceof MachineServiceError) || error2.status !== 404) throw error2;
+        await this.findOwner(e, true);
+        const records = Object.entries((await this.vm.list(request)).machines).filter(([name, record4]) => record4.kind === "durable" && (e.backend?.machine_id ? !record4.machine_id || record4.machine_id === e.backend.machine_id : name === e.machine));
+        const record3 = records.length === 1 ? records[0][1] : void 0;
+        if (!record3) throw new Error(`Cannot read the record of durable machine ${e.machine}`);
+        return record3;
+      }
+    } catch (error2) {
+      if (e.machine && !options.signal?.aborted) return this.unknownOwner(e, error2);
+      throw error2;
     }
   }
   serialized(fn) {
@@ -29701,7 +29752,7 @@ var Guest = class {
     await this.findOwner(e);
     e.backend ??= this.m.binding();
     if (!e.lease) {
-      const matches = Object.values((await this.vm.list({ timeoutMs: 1e4 })).machines).filter((v) => v.purpose === e.purpose);
+      const matches = Object.values((await this.withOwner((backend) => backend.list({ timeoutMs: 1e4 }))).machines).filter((v) => v.purpose === e.purpose);
       if (matches.length !== 1) throw new Error(`Cannot reconcile acquisition for ${e.purpose}; ownership retained, never automatically reacquire`);
       e.lease = matches[0];
       e.acquisitionInFlight = false;
@@ -29723,7 +29774,7 @@ var Guest = class {
         lease.console = consoleStatus(lease.console);
         if (lease.console.status === "revoked") e.consoleObservation = lease.console;
       }
-      e.lease = lease;
+      e.lease = e.machine ? { ...lease, vm: e.machine } : lease;
       e.guestState = lease.state;
       e.expiresAt = lease.ttl_expires_at;
       if (e.failed) {
@@ -29773,7 +29824,7 @@ var Guest = class {
     const tsx = checks[1], nodeVersion = /^v(\d+)\.(\d+)/.exec(String(checks[0].stdout ?? ""));
     if (!tsx.ready && nodeVersion && (Number(nodeVersion[1]) > 22 || Number(nodeVersion[1]) === 22 && Number(nodeVersion[2]) >= 6)) Object.assign(tsx, { ready: true, runsWith: "Node.js type stripping" });
     let software;
-    if (e.machine) software = { machine: e.machine, software: (await this.vm.get(e.lease.vm, { timeoutMs: 1e4 })).capabilities?.software ?? null };
+    if (e.machine) software = { machine: e.machine, software: (await this.leaseRecord(e)).capabilities?.software ?? null };
     else try {
       const catalog = await this.vm.applications({ timeoutMs: 1e4 });
       validateCatalog(catalog);
@@ -29903,7 +29954,7 @@ var Guest = class {
     const hostRoot = join13(this.m.options.outputRoot ?? resolve9(project, "relay-evidence"), purpose);
     const subject = input.machine ?? input.image;
     const row = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? "macos (durable)" : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
-    const e = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance } : this.m.binding(), purpose, task: input.task, image: subject, ...input.machine ? { machine: input.machine } : {}, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    const e = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance, ...owner.machine_id ? { machine_id: owner.machine_id } : {} } : this.m.binding(), purpose, task: input.task, image: subject, ...input.machine ? { machine: input.machine } : {}, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
     if (owner) this.owner = owner.backend;
     let refused = false;
     try {
@@ -29929,7 +29980,12 @@ var Guest = class {
         try {
           const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5;
           e.lease = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? "none", ttl_hours } : { purpose, image: input.image, env: input.env ?? "none", ttl_hours, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
-          if (e.machine) e.guestRoot = durableRoot(e.lease.workspace, purpose);
+          if (e.machine) {
+            e.lease.vm = e.machine;
+            if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error("Durable owner machine_id mismatch"));
+            e.backend.machine_id ??= e.lease.machine_id;
+            e.guestRoot = durableRoot(e.lease.workspace, purpose);
+          }
           e.acquisitionInFlight = false;
           granted = asked;
           break;
@@ -30060,7 +30116,7 @@ Guest ${this.name} keeps this acquisition's ownership record: name it to reconci
       }
       this.assertBinding();
       await this.m.assertBackend();
-      const renewed = await this.vm.heartbeat(lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 36e5, ...lease.lease_id ? { lease_id: lease.lease_id } : {} }, { timeoutMs: 1e4 });
+      const renewed = await this.withOwner((backend) => backend.heartbeat(e.machine ?? lease.vm, { ttl_hours: Math.min(this.m.renewalWindowMs(), remaining) / 36e5, ...lease.lease_id ? { lease_id: lease.lease_id } : {} }, { timeoutMs: 1e4 }));
       if (this.enclosure !== e || e.released) return;
       e.expiresAt = renewed.ttl_expires_at;
       e.guestState = renewed.state;
@@ -30178,7 +30234,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
    * Recording (DC-32).
    */
   async durableCapture(e, cuaDriver, signal) {
-    const software = (await this.vm.get(e.lease.vm, { timeoutMs: 1e4, signal })).capabilities?.software;
+    const software = (await this.leaseRecord(e, { signal })).capabilities?.software;
     let answer;
     if (software && typeof software === "object" && software.cua_driver) {
       try {
@@ -30289,7 +30345,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     return new ImageStore({
       owner: this.m.options.sessionId,
       enclosure: e.purpose,
-      backend: e.backend,
+      backend: e.machine && e.backend?.machine_id ? { machine_id: e.backend.machine_id } : e.backend,
       catalogRoot: join13(this.m.root, "image-catalog", e.purpose),
       hostRoot: e.hostRoot,
       guestRoot: e.guestRoot,
@@ -30304,7 +30360,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
           if (!health.ok || !matchesEnvironment(health.environment, this.m.environment)) throw Object.assign(new Error("Selected backend identity changed."), { code: "unauthorized-reference" });
         }
         try {
-          const lease = await this.vm.get(e.lease.vm, options);
+          const lease = await this.leaseRecord(e, options);
           if (lease.purpose !== e.purpose || e.lease.lease_id && lease.lease_id !== e.lease.lease_id) throw Object.assign(new Error("Lease ownership identity changed."), { code: "unauthorized-reference" });
         } catch (error2) {
           if (error2 instanceof MachineServiceError && error2.status === 404) throw Object.assign(new Error("Saved image guest is no longer available."), { code: "stale-reference" });
@@ -30695,11 +30751,12 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     this.stopTimer();
     if (!e.released) {
       if (!e.lease) {
-        const list = await this.vm.list({ timeoutMs: 1e4 });
+        const list = await this.withOwner((backend) => backend.list({ timeoutMs: 1e4 }));
         const matches = Object.values(list.machines).filter((lease) => lease.purpose === e.purpose);
         if (matches.length > 1) throw new Error("Ambiguous acquisition; refusing to remove ownership record");
         if (!matches.length && e.acquisitionInFlight) throw new Error(`Acquire outcome still indeterminate for ${e.purpose}; ownership record retained at ${this.dir}. Reconcile before retrying; never blindly acquire again.`);
         e.lease = matches[0];
+        if (e.machine && e.lease) e.lease.vm = e.machine;
         await this.save().catch(() => {
         });
       }
@@ -30707,7 +30764,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         let released = false;
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
-            const response = await this.vm.release(e.lease.vm, { reason: reason2, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: timeoutMs2 });
+            const response = await this.withOwner((backend) => backend.release(e.machine ?? e.lease.vm, { reason: reason2, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: timeoutMs2 }));
             if (!response.released) throw new Error("machine-service did not confirm destruction");
             if (e.machine) {
               e.hygiene = response.hygiene;
@@ -30793,7 +30850,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     const remaining = this.remainingMs(e);
     if (remaining < MIN_RENEWAL_MS) return;
     try {
-      const renewed = await this.vm.heartbeat(e.lease.vm, { ttl_hours: remaining / 36e5, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: 1e4 });
+      const renewed = await this.withOwner((backend) => backend.heartbeat(e.machine ?? e.lease.vm, { ttl_hours: remaining / 36e5, ...e.lease.lease_id ? { lease_id: e.lease.lease_id } : {} }, { timeoutMs: 1e4 }));
       if (this.enclosure === e && !e.released) {
         e.expiresAt = renewed.ttl_expires_at;
         e.guestState = renewed.state;

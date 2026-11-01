@@ -22,14 +22,14 @@ import { validateRelayInput } from '../src/schema.js';
  * requires `lease_id` on every operation and refuses path-based transfers.
  */
 
-const MACHINE = 'Mac-test-1';
+const MACHINE = 'Mac-A';
 const daemon = (fields: Record<string, unknown> = {}) => JSON.stringify({ accessibility: true, screen_recording: true, screen_recording_capturable: null, source: { attribution: 'driver-daemon', bundle_id: 'com.trycua.driver', pid: 1021 }, ...fields });
 const installed = { cua_driver: '0.19.3', node: '22.0.0' };
 
 test('capture gate: granted only when the cua-driver daemon answers with Screen Recording', () => {
   const decision = durableCapture(MACHINE, installed, { code: 0, stdout: daemon() });
   assert.deepEqual([decision.capture, decision.state], [true, 'granted']);
-  assert.match(decision.reason, /daemon on Mac-test-1 holds Screen Recording/);
+  assert.match(decision.reason, /daemon on Mac-A holds Screen Recording/);
 });
 
 test('capture gate: denied when the daemon lacks Screen Recording', () => {
@@ -247,9 +247,12 @@ class DurableService {
   /** Someone else holds the machine for this many acquisitions (DC-34). */
   leasedByOthers = 0;
   recordNotFound = false;
+  stallRecord = false;
   releaseNotFound = 0;
   name = MACHINE;
   machineId?: string;
+  acquireMachineId?: string;
+  loseAcquireResponse = false;
   grantedName = MACHINE;
   origin = '';
   software: Record<string, unknown> | null = { ...installed };
@@ -281,15 +284,18 @@ class DurableService {
     if (url.pathname === '/acquire') {
       for (const field of ['image', 'network', 'vnc', 'wait', 'cpu', 'memory_mb', 'disk_gb']) if (body[field] !== undefined) return this.respond(res, 400, { error: `${field} does not apply to a durable machine` });
       if (this.leasedByOthers-- > 0 || this.lease) return this.respond(res, 409, { error: `durable machine leased: ${MACHINE} (purpose other, until later)` });
+      if (this.acquireMachineId) this.machineId = this.acquireMachineId;
       const lease_id = randomUUID().replaceAll('-', ''), workspace = join(this.root, 'leases', lease_id), now = Date.now() / 1000;
       for (const folder of ['work', 'tmp']) await mkdir(join(workspace, folder), { recursive: true });
       this.grantedName = this.name;
       this.lease = { lease_id, purpose: body.purpose, workspace, created_at: now, ttl_hours: body.ttl_hours, ttl_expires_at: now + body.ttl_hours * 3600 };
+      if (this.loseAcquireResponse) return res.destroy();
       return this.respond(res, 200, this.record());
     }
     const match = /^\/machines\/([^/]+)(?:\/(exec|push|pull|heartbeat|release|files))?$/.exec(url.pathname);
     if (!match) return this.respond(res, 404, { error: 'not found' });
     const [, name, action] = match;
+    if (!action && this.stallRecord) return;
     if (!action) return !this.recordNotFound && (name === this.name || (name === this.grantedName && url.searchParams.get('lease_id') === this.lease?.lease_id)) ? this.respond(res, 200, this.record()) : this.respond(res, 404, { error: 'not found' });
     const refused = this.current(name, action === 'files' ? url.searchParams.get('lease_id') ?? undefined : body?.lease_id);
     if (refused) return this.respond(res, refused.status, { error: refused.error });
@@ -487,4 +493,319 @@ test('a durable release 404 retries while the owner record still names the lease
   await f.manager.release();
   assert.equal(f.service.lease, undefined);
   assert.equal(f.service.requests.filter(r => r.path.endsWith('/release')).length, 2);
+});
+
+
+test('a restarted relay follows the same machine_id after rename and releases by its granted name (DC-37)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  const acquired = await f.acquire({ extractions: [] });
+  assert.equal(acquired.backend?.machine_id, f.service.machineId);
+  await f.manager.cleanup('simulated restart');
+  f.service.name = 'Mac-B';
+  const again = new RelayManager(f.manager.options);
+  t.after(() => again.cleanup('test teardown'));
+  const start = f.service.requests.length;
+  await again.initialize();
+  assert.equal(again.guestStatus().backend?.instance, 'Mac-B');
+  assert.equal(again.guestStatus().vm, MACHINE);
+  await again.release();
+  assert.equal(f.service.lease, undefined);
+  const operations = f.service.requests.slice(start).filter(r => r.path.startsWith('/machines/'));
+  assert.ok(operations.length > 1);
+  for (const r of operations) {
+    assert.equal(r.path.split('/')[2].split('?')[0], MACHINE, 'every request uses the granted name');
+    if (r.method === 'GET') assert.equal(new URL(r.path, 'http://fixture').searchParams.get('lease_id'), acquired.lease_id);
+  }
+});
+
+test('an origin change triggers one machine_id rediscovery and retries the granted-name request (DC-37)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  const acquired = await f.acquire({ extractions: [] });
+  let discoveries = 0;
+  const discover = f.manager.options.consulFetch!;
+  f.manager.options.consulFetch = async url => { discoveries++; return discover(url); };
+  await f.service.close();
+  await f.service.start();
+  f.service.name = 'Mac-B';
+  assert.notEqual(f.service.origin, f.origin);
+  const result = await f.manager.run({ diagnostic: true, language: 'shell', inline: true, code: 'echo recovered' });
+  assert.equal(result.outcome.kind, 'completed');
+  assert.equal(discoveries, 1);
+  assert.equal(f.manager.guestStatus().backend?.endpoint, f.service.origin);
+  assert.equal(f.manager.guestStatus().vm, MACHINE);
+  assert.equal(f.manager.guestStatus().lease_id, acquired.lease_id);
+  await f.manager.release();
+  assert.equal(f.service.lease, undefined);
+});
+
+test('a durable 404 after rename keeps its lease or forgets only a different or empty lease record (DC-36)', async t => {
+  for (const record of ['held', 'another', 'none'] as const) await t.test(record, async t => {
+    let tartChecks = 0;
+    const f = await fixture(t, { verifyDestroyed: async () => { tartChecks++; return true; } });
+    f.service.machineId = '11111111-1111-1111-1111-111111111111';
+    const acquired = await f.acquire({ extractions: [] });
+    await f.manager.cleanup('simulated restart');
+    f.service.name = 'Mac-B';
+    f.service.recordNotFound = true;
+    if (record === 'another') f.service.lease!.lease_id = 'another-lease';
+    if (record === 'none') f.service.lease = undefined;
+    const again = new RelayManager(f.manager.options);
+    t.after(() => again.cleanup('test teardown'));
+    await again.initialize();
+    assert.equal(tartChecks, 0);
+    if (record === 'held') {
+      assert.equal(again.guestStatus().lease_id, acquired.lease_id);
+      assert.equal(again.guestStatus().guestState, 'leased');
+      await again.release();
+    } else {
+      assert.equal(again.status().guests.length, 0);
+      assert.equal(await readFile(f.registryPath, 'utf8'), registryText);
+      assert.equal(f.service.requests.some(r => r.path.endsWith('/release')), false, 'never release somebody else\'s lease');
+    }
+  });
+});
+
+test('a different machine_id is refused after restart without sending any lease operation (DC-37)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  const acquired = await f.acquire({ extractions: [] });
+  await f.manager.cleanup('simulated restart');
+  f.service.machineId = '22222222-2222-2222-2222-222222222222';
+  const start = f.service.requests.length;
+  const again = new RelayManager(f.manager.options);
+  t.after(() => again.cleanup('test teardown'));
+  await assert.rejects(again.initialize(), /machine_id.*ownership retained/);
+  assert.equal(again.guestStatus().lease_id, acquired.lease_id);
+  assert.equal(again.guestStatus().guestState, 'unknown');
+  assert.equal(f.service.requests.slice(start).some(r => r.path.startsWith('/machines/')), false);
+});
+
+test('a saved owner without machine_id keeps the legacy name and origin checks (DC-37)', async t => {
+  const f = await fixture(t);
+  const acquired = await f.acquire({ extractions: [] });
+  assert.equal(acquired.backend?.machine_id, undefined);
+  await f.manager.cleanup('simulated restart');
+  await f.service.close();
+  await f.service.start();
+  const again = new RelayManager(f.manager.options);
+  t.after(() => again.cleanup('test teardown'));
+  await assert.rejects(again.initialize(), /not by .*where this guest leased it/);
+  assert.equal(again.guestStatus().lease_id, acquired.lease_id);
+  assert.equal(again.guestStatus().guestState, 'unknown');
+});
+
+
+test('a timed-out saved origin is rediscovered by machine_id and retried once (DC-37)', async t => {
+  const f = await fixture(t, { durableBackend: origin => {
+    const client = new MachineService(origin), get = client.get.bind(client);
+    client.get = (name, options) => get(name, { ...options, timeoutMs: 50 });
+    return client;
+  } });
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  await f.acquire({ extractions: [] });
+  const replacement = new DurableService(f.root);
+  replacement.machineId = f.service.machineId; replacement.lease = f.service.lease;
+  replacement.grantedName = MACHINE; replacement.name = 'Mac-B';
+  await replacement.start();
+  t.after(() => replacement.close());
+  let discoveries = 0;
+  f.manager.options.consulFetch = async () => {
+    discoveries++;
+    return [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(replacement.origin).port), Meta: { machine_id: replacement.machineId } } }];
+  };
+  f.service.stallRecord = true;
+  const result = await f.manager.run({ diagnostic: true, language: 'shell', inline: true, code: 'echo recovered' });
+  assert.equal(result.outcome.kind, 'completed');
+  assert.equal(discoveries, 1);
+  assert.equal(f.manager.guestStatus().backend?.endpoint, replacement.origin);
+  await f.manager.release();
+  assert.equal(replacement.lease, undefined);
+});
+
+test('durable execution, byte transfers and final renewal recover an origin change at dispatch (DC-37)', { timeout: 60000 }, async t => {
+  for (const operation of ['exec', 'pushBytes', 'pullBytes', 'heartbeat'] as const) await t.test(operation, async t => {
+    let move: string | undefined;
+    let service: DurableService;
+    const f = await fixture(t, { durableBackend: origin => {
+      const client = new MachineService(origin);
+      for (const method of ['exec', 'pushBytes', 'pullBytes', 'heartbeat'] as const) {
+        const call = client[method].bind(client) as (...args: any[]) => Promise<any>;
+        (client as any)[method] = async (...args: any[]) => {
+          if (move === method) { move = undefined; await service.close(); await service.start(); }
+          return call(...args);
+        };
+      }
+      return client;
+    } });
+    service = f.service; service.machineId = '11111111-1111-1111-1111-111111111111';
+    const acquired = await f.acquire();
+    if (operation === 'pullBytes') {
+      await f.stage();
+      await writeFile(join(acquired.guestRoot, 'workspace', 'artifact.txt'), 'artifact');
+    }
+    let discoveries = 0;
+    const discover = f.manager.options.consulFetch!;
+    f.manager.options.consulFetch = async url => { discoveries++; return discover(url); };
+    const start = service.requests.length;
+    move = operation;
+    if (operation === 'exec') assert.equal((await f.manager.run({ diagnostic: true, language: 'shell', inline: true, code: 'echo recovered' })).outcome.kind, 'completed');
+    if (operation === 'pushBytes') assert.equal((await f.stage()).staged, true);
+    if (operation === 'pullBytes') assert.equal((await f.manager.extract(['artifact'])).length, 1);
+    if (operation === 'heartbeat') {
+      await f.manager.cleanup('pause after moving');
+      assert.ok(service.requests.slice(start).some(r => r.path.endsWith('/heartbeat')), 'final renewal reached the new origin');
+    }
+    assert.equal(move, undefined, 'the service moved at the tested operation');
+    assert.equal(discoveries, 1);
+    assert.equal(f.manager.guestStatus().backend?.endpoint, service.origin);
+    await f.manager.release();
+  });
+});
+
+test('durable probe, stage and image reads keep the granted name and lease_id after rename (DC-37)', async t => {
+  for (const operation of ['probe', 'stage', 'image'] as const) await t.test(operation, async t => {
+    const f = await fixture(t);
+    f.service.machineId = '11111111-1111-1111-1111-111111111111';
+    f.service.software = null;
+    const acquired = await f.acquire({ extractions: [{ name: 'picture', path: 'picture.png' }] });
+    if (operation === 'image') {
+      await f.stage();
+      await writeFile(join(acquired.guestRoot, 'workspace', 'picture.png'), Buffer.from(png, 'base64'));
+    }
+    f.service.name = 'Mac-B';
+    const start = f.service.requests.length;
+    if (operation === 'probe') assert.equal((await f.manager.probe('guest')).scope, 'guest');
+    if (operation === 'stage') assert.equal((await f.stage()).staged, true);
+    if (operation === 'image') assert.equal((await f.manager.image({ source: 'application', name: 'picture' })).status, 'attached');
+    for (const r of f.service.requests.slice(start).filter(r => r.method === 'GET' && r.path.startsWith('/machines/'))) {
+      assert.equal(new URL(r.path, 'http://fixture').searchParams.get('lease_id'), acquired.lease_id);
+      assert.equal(r.path.split('/')[2].split('?')[0], MACHINE);
+    }
+    await f.manager.release();
+  });
+});
+
+test('a moved durable owner returning 404 still recovers its held lease from inventory (DC-36)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  const acquired = await f.acquire({ extractions: [] });
+  await f.service.close(); await f.service.start();
+  f.service.name = 'Mac-B'; f.service.recordNotFound = true;
+  const result = await f.manager.run({ diagnostic: true, language: 'shell', inline: true, code: 'echo recovered' });
+  assert.equal(result.outcome.kind, 'completed');
+  assert.equal(f.manager.guestStatus().lease_id, acquired.lease_id);
+  assert.equal(f.manager.guestStatus().guestState, 'leased');
+  await f.manager.release();
+});
+
+test('unreadable durable inventory during release verification saves unknown and retains ownership (DC-36)', async t => {
+  let verifying = false, lists = 0, tartChecks = 0;
+  const f = await fixture(t, { verifyDestroyed: async () => { tartChecks++; return true; }, durableBackend: origin => {
+    const client = new MachineService(origin), list = client.list.bind(client);
+    client.list = options => {
+      if (verifying && ++lists === 2) throw new MachineServiceError('inventory unavailable', 503);
+      return list(options);
+    };
+    return client;
+  } });
+  const acquired = await f.acquire({ extractions: [] });
+  f.service.recordNotFound = true; verifying = true;
+  await assert.rejects(f.manager.release(), /inventory unavailable/);
+  const saved = JSON.parse(await readFile(join(f.manager.root, 'guests', acquired.guest!, 'lease.json'), 'utf8'));
+  assert.equal(saved.lease.lease_id, acquired.lease_id);
+  assert.equal(saved.guestState, 'unknown');
+  assert.equal(tartChecks, 0);
+  verifying = false;
+  await f.manager.release();
+});
+
+test('saved durable images and finish survive restart after owner rename and origin change (DC-37)', { timeout: 60000 }, async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  await f.acquire({ extractions: [] });
+  await f.stage();
+  const run = await f.manager.run({ language: 'shell', inline: true, code: 'echo recorded', snapshots: { afterIntervalMs: 0 } });
+  const selected = await f.manager.image({ source: 'display', sessionId: run.imageDelivery!.image!.sessionId!, executionId: run.executionId!, phase: 'after' });
+  assert.equal(selected.status, 'attached');
+  await f.manager.cleanup('simulated restart');
+  await f.service.close(); await f.service.start(); f.service.name = 'Mac-B';
+  const again = new RelayManager(f.manager.options);
+  t.after(() => again.cleanup('test teardown'));
+  await again.initialize();
+  const restored = await again.image({ source: 'reference', imageId: selected.image!.imageId });
+  assert.equal(restored.status, 'attached');
+  assert.equal(restored.image!.imageId, selected.image!.imageId);
+  f.service.recordNotFound = true;
+  await again.finish();
+  assert.equal(f.service.lease, undefined);
+  assert.equal(again.status().guests.length, 0);
+});
+
+test('a durable record with a conflicting machine_id retains unknown ownership before further work (DC-37)', async t => {
+  for (const phase of ['acquisition', 'reconciliation'] as const) await t.test(phase, async t => {
+    const f = await fixture(t);
+    const original = '11111111-1111-1111-1111-111111111111', other = '22222222-2222-2222-2222-222222222222';
+    f.service.machineId = original;
+    t.after(() => { f.service.machineId = original; });
+    if (phase === 'acquisition') {
+      f.service.acquireMachineId = other;
+      await assert.rejects(f.acquire({ extractions: [] }), /machine_id.*mismatch/);
+    } else {
+      await f.acquire({ extractions: [] });
+      f.service.machineId = other;
+      await assert.rejects(f.manager.run({ diagnostic: true, language: 'shell', inline: true, code: 'echo must-not-run' }), /machine_id.*mismatch/);
+    }
+    const status = f.manager.guestStatus();
+    assert.equal(status.backend?.machine_id, original);
+    assert.equal(status.lease_id, f.service.lease!.lease_id);
+    assert.equal(status.guestState, 'unknown');
+    assert.equal(f.service.requests.some(r => r.path.endsWith('/exec')), false);
+    await assert.rejects(f.manager.release(), /machine_id.*ownership retained/);
+    assert.equal(f.service.requests.some(r => r.path.endsWith('/release')), false, 'a refused identity must be rediscovered before any release');
+    f.service.machineId = original;
+    await f.manager.release();
+  });
+});
+
+test('a direct durable exit release follows an origin change within its single release attempt (DC-37)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  await f.acquire({ extractions: [] });
+  await f.service.close(); await f.service.start(); f.service.name = 'Mac-B';
+  await f.manager.releaseNow('test exit');
+  assert.equal(f.service.lease, undefined);
+});
+
+test('an indeterminate durable acquisition follows its moved owner and releases by the granted name without reacquiring (DC-37)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111';
+  f.service.loseAcquireResponse = true;
+  await assert.rejects(f.acquire({ extractions: [] }), /Acquisition outcome unknown/);
+  assert.ok(f.service.lease);
+  await f.service.close(); await f.service.start();
+  f.service.name = 'Mac-B';
+  await f.manager.release();
+  assert.equal(f.service.requests.filter(r => r.path === '/acquire').length, 1);
+  const releases = f.service.requests.filter(r => r.path.endsWith('/release'));
+  assert.equal(releases.length, 1);
+  assert.equal(releases[0].path, `/machines/${MACHINE}/release`);
+  assert.equal(f.service.lease, undefined);
+});
+
+test('durable image delivery can rediscover its owner after an earlier unknown ownership result (DC-36)', async t => {
+  const f = await fixture(t);
+  f.service.machineId = '11111111-1111-1111-1111-111111111111'; f.service.software = null;
+  const acquired = await f.acquire({ extractions: [{ name: 'picture', path: 'picture.png' }] });
+  await f.stage();
+  await writeFile(join(acquired.guestRoot, 'workspace', 'picture.png'), Buffer.from(png, 'base64'));
+  const discover = f.manager.options.consulFetch!;
+  f.service.recordNotFound = true; f.manager.options.consulFetch = async () => [];
+  assert.equal((await f.manager.image({ source: 'application', name: 'picture' })).status, 'transfer-failed');
+  assert.equal(f.manager.guestStatus().guestState, 'unknown');
+  assert.equal(f.manager.guestStatus().lease_id, acquired.lease_id);
+  f.service.recordNotFound = false; f.manager.options.consulFetch = discover;
+  assert.equal((await f.manager.image({ source: 'application', name: 'picture' })).status, 'attached');
+  await f.manager.release();
 });
