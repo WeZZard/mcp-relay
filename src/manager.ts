@@ -350,6 +350,16 @@ export class RelayManager {
   }
   private async unlock() { if (this.ownerLock) { await this.ownerLock.release(); this.ownerLock = undefined; } }
   /** Every guest the session holds, with its state; `active` is true while any guest's lease is being renewed. */
+  /**
+   * The status after reading the session's saved guests, host-only, so a
+   * restarted relay reports what it still owns. A session with nothing saved
+   * creates nothing, and a session it cannot load reports what it has in memory.
+   */
+  async loadedStatus() {
+    const saved = await Promise.all([join(this.root, 'guests'), join(this.root, 'lease.json')].map(path => access(path).then(() => true, () => false)));
+    if (saved.some(Boolean)) await this.load().catch(() => {});
+    return this.status();
+  }
   status() {
     const guests = [...this.guests.values()].map(guest => guest.status());
     return { active: guests.some(guest => guest.active), guests, maxGuests: this.maxGuests };

@@ -177,6 +177,20 @@ test('R1: closing stdin with an owned lease pauses renewal, retains the VM and e
   assert.equal(f.fake.heartbeats, heartbeats, 'no heartbeat after the session ended');
 });
 
+test('R1: relay_status after a restart lists the guests the session holds, before any other call', { timeout: 30000 }, async t => {
+  const f = await withService(t);
+  const session = `lifecycle-${randomUUID()}`;
+  const first = await f.start(f.fake.url, session);
+  const acquired = await first.call('relay_acquire', acquireArgs);
+  assert.equal(acquired.isError, false, acquired.content[0].text);
+  first.child.stdin.end(); await exitWithin(first, 5000);
+  const second = await f.start(f.fake.url, session);
+  const status = JSON.parse((await second.call('relay_status')).content[0].text);
+  assert.deepEqual(status.guests.map((guest: any) => guest.guest), ['lifecycle-1'], 'the restarted relay reports the guest it still owns');
+  await second.call('relay_release', { guest: 'lifecycle-1' });
+  second.child.stdin.end(); await second.exited;
+});
+
 test('H6: closing stdin sends one final renewal for the lease\'s remaining TTL, after renewing only a short window', { timeout: 30000 }, async t => {
   const f = await withService(t);
   const relay = await f.start(f.fake.url);

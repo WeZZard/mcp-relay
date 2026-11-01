@@ -90,11 +90,16 @@ export function createRelayServer(options: RelayServerOptions = {}) {
     }
     return manager;
   });
-  /** The data relay_status reports, read-only. */
-  const statusPayload = () => {
+  /**
+   * The data relay_status reports, read-only. It reads the session's saved
+   * guests first (host-only, no backend call), so a restarted relay reports the
+   * guests it still owns before any other call.
+   */
+  const statusPayload = async () => {
     const environment = selectedEnvironment();
     const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? 'http://localhost:6240';
-    return { ...(manager ? manager.status() : { active: false, guests: [], maxGuests: maxGuests() }), project, service, environment: environment?.identity };
+    const owned = get();
+    return { ...(await owned.loadedStatus()), project, service, environment: environment?.identity };
   };
   // Cancels every in-flight tool call when shutdown gives up waiting for it.
   // Closing the transport would do the same at once, so shutdown never closes it first.
@@ -104,7 +109,7 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     try {
-      if (name === STATUS_TOOL) return text(JSON.stringify(statusPayload(), null, 2));
+      if (name === STATUS_TOOL) return text(JSON.stringify(await statusPayload(), null, 2));
       if (relayTools.some(tool => tool.name === name)) return relayContent(await relayCall(get, relayToolInput(name, (args ?? {}) as Record<string, unknown>), { signal: AbortSignal.any([extra.signal, shutdownController.signal]), toolCallId: String(extra.requestId) }));
       throw new Error(`Unknown tool: ${name}`);
     } catch (error) { return text(message(error), true); }
