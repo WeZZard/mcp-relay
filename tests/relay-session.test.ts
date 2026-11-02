@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FakeBroker } from './relay-fake-broker.js';
-import { MAX_BODY, ResumableSession, SeqState, SessionRejected, backoffDelay, decodeEnvelope, encodeEnvelope, type SessionEnd, type Timing } from '../src/relay-session.js';
+import { FlowWindow, INITIAL_WINDOW, MAX_BODY, MIN_WINDOW, ResumableSession, SeqState, SessionRejected, backoffDelay, decodeEnvelope, encodeEnvelope, type SessionEnd, type Timing } from '../src/relay-session.js';
 
 const FAST: Partial<Timing> = { heartbeatMs: 40, deadMs: 200, handshakeMs: 500, backoffInitialMs: 5, backoffMaxMs: 40, tickMs: 10, openMs: 1000 };
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
@@ -168,4 +168,92 @@ test('the first connection is retried with backoff while it cannot connect', asy
   assert.equal(broker.refuse, 0);
   s.session.send(Buffer.from('after retries'));
   await until(() => s.bodies.length === 1);
+});
+
+test('SeqState keeps the bytes in flight within the window; one body always goes', () => {
+  const s = new SeqState();
+  for (let i = 0; i < 5; i++) s.push(Buffer.alloc(10));
+  const sent: number[] = [];
+  for (let e = s.next(25); e; e = s.next(25)) sent.push(e.seq);
+  assert.deepEqual([sent, s.inFlight], [[1, 2], 20]);
+  s.ack(1);
+  assert.equal(s.inFlight, 10);
+  assert.equal(s.next(25)!.seq, 3);
+  s.ack(3);
+  assert.deepEqual([s.inFlight, s.ackedBytes], [0, 30]);
+  assert.equal(s.next(5)!.seq, 4, 'a body above the window goes alone');
+  assert.equal(s.next(5), undefined);
+  s.resume(3);
+  assert.equal(s.inFlight, 0);
+});
+
+/** Drive a window on a link of `rate` bytes per second, always backlogged. */
+function settle(w: FlowWindow, t0: number, rate: number, secs: number, rtt?: number) {
+  let acked = 0, now = t0;
+  for (let i = 0; i < secs * 4; i++) { now += 250; acked += rate / 4; w.observe(now, acked, true, rtt); }
+  return now;
+}
+
+test('the window drains within a third of the dead bound at the measured rate, plus the round trip', () => {
+  const w = new FlowWindow(15_000);
+  assert.equal(w.window, INITIAL_WINDOW);
+  settle(w, 0, 4e6, 12);
+  assert.ok(Math.abs(w.window / 4e6 - 5) < 0.2, `drains in ${w.window / 4e6} s`);
+  const r = new FlowWindow(15_000);
+  settle(r, 0, 4e6, 12, 1700);
+  assert.ok(Math.abs(r.window / 4e6 - 6.7) < 0.2, `holds ${r.window / 4e6} s`);
+  const fast = new FlowWindow(15_000); settle(fast, 0, 1e9, 5);
+  assert.equal(fast.window, 64 << 20, 'at most the replay buffer');
+  const slow = new FlowWindow(15_000); settle(slow, 0, 10e3, 5);
+  assert.equal(slow.window, MIN_WINDOW, 'at least one message');
+});
+
+test('acknowledgements released in a burst do not inflate the window, and idle time is no measurement', () => {
+  const w = new FlowWindow(15_000);
+  let acked = 0, largest = 0;
+  for (let step = 1; step <= 160; step++) {
+    if (step % 32 === 0) acked += 8 * 4e6;
+    w.observe(step * 250, acked, true);
+    largest = Math.max(largest, w.window);
+  }
+  assert.ok(largest / 4e6 <= 8.5, `grew to ${largest / 4e6} s of the link`);
+  const before = w.window;
+  w.observe(3_600_000, acked, false);
+  w.observe(3_601_000, acked, true); w.observe(3_602_000, acked, true);
+  assert.equal(w.window, before);
+});
+
+test('a connection holds no more than its window in flight while acknowledgements are held, and refills as they arrive', async t => {
+  const broker = new FakeBroker();
+  broker.app = () => {};
+  const s = await open(broker, { ...FAST, deadMs: 5000, heartbeatMs: 1000 });
+  t.after(() => s.session.close());
+  broker.holdAcks = true;
+  const n = 12;
+  for (let i = 0; i < n; i++) s.session.send(Buffer.alloc(MAX_BODY));
+  const envelopes = () => broker.received.filter(r => r.kind === 'envelope').length;
+  await until(() => envelopes() >= 4, 3000, 'the first window');
+  await sleep(100);
+  assert.equal(envelopes(), Math.floor(INITIAL_WINDOW / MAX_BODY), 'the initial window, no more');
+  broker.holdAcks = false;
+  broker.ackNow();
+  await until(() => envelopes() === n, 3000, 'the rest after the acknowledgement');
+  await until(() => s.session.unacknowledged === 0, 3000, 'everything acknowledged');
+  assert.ok(s.session.minRttMs !== undefined);
+  assert.deepEqual(s.events, [], 'no reconnect');
+});
+
+test('bodies in flight whose acknowledgement does not advance for the bound still end the connection, and resume', async t => {
+  const broker = new FakeBroker();
+  broker.app = () => {};
+  const s = await open(broker);
+  t.after(() => s.session.close());
+  broker.holdAcks = true;
+  const started = Date.now();
+  s.session.send(Buffer.from('held'));
+  await until(() => s.events.includes('lost'), 3000, 'the stall');
+  const detected = Date.now() - started;
+  assert.ok(detected >= FAST.deadMs! - 20 && detected <= FAST.deadMs! + 150, `detected after ${detected} ms`);
+  broker.holdAcks = false;
+  await until(() => s.events.includes('resumed') && s.session.unacknowledged === 0, 3000, 'the resume');
 });

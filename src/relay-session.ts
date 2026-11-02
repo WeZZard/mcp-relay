@@ -2,10 +2,13 @@
  * The client side of machine-service's remote session (vm-service RP-2, RS):
  * one logical session that survives any number of broken connections. Bodies
  * are numbered, kept until the broker acknowledges them, and sent again after
- * a resume; a connection that is silent, or whose bodies wait for an
- * acknowledgement that does not advance, is dropped and the session resumes
- * on a new one with backoff. The connection itself is a `Dial`, so the state
- * machine runs the same over a real WebSocket and over a test's fake.
+ * a resume; a connection that is silent, or that has bodies in flight while
+ * the acknowledgement does not advance, is dropped and the session resumes on
+ * a new one with backoff. Liveness is that progress, never the age of the
+ * oldest body: an in-flight window adapted from the measured throughput keeps
+ * the queue this side builds in the path within a third of the bound (RP-2).
+ * The connection itself is a `Dial`, so the state machine runs the same over a
+ * real WebSocket and over a test's fake.
  */
 
 /** The largest WebSocket message either side sends or accepts (RP-1, TC-8). */
@@ -18,11 +21,17 @@ export const MAX_BODY = MAX_MESSAGE - ENVELOPE_HEADER;
 export const SESSION_VERSION = 1;
 /** The longest heartbeat interval the transport contract allows (TC-3). */
 export const MAX_HEARTBEAT_MS = 30_000;
+/** The replay buffer: bytes held unacknowledged before a sender waits (RP-12). */
+export const MAX_BUFFERED = 64 << 20;
+/** The in-flight window before the first measurement, on each connection (RP-2). */
+export const INITIAL_WINDOW = 4 << 20;
+/** The smallest in-flight window: one largest message. */
+export const MIN_WINDOW = MAX_MESSAGE;
 
 export interface Timing {
   /** Send an `ack` after this long without sending anything; the broker's `heartbeat_ms` lowers it, never above 30 s. */
   heartbeatMs: number;
-  /** A connection with nothing received, or with bodies unacknowledged, for this long is dead. */
+  /** A connection with nothing received, or with bodies in flight and no new acknowledgement, for this long is dead. */
   deadMs: number;
   /** Bound on opening a connection and its hello/welcome exchange. */
   handshakeMs: number;
@@ -81,6 +90,10 @@ export class SeqState {
   private cursor = 0;
   /** The `received` last told to the peer on the current connection. */
   private ackSent = 0;
+  /** Bytes of the bodies written on the current connection and not yet acknowledged. */
+  inFlight = 0;
+  /** Bytes of every body the peer acknowledged, over the session. */
+  ackedBytes = 0;
   push(body: Buffer): number { this.last++; this.outbox.push(body); this.outboxBytes += body.length; return this.last; }
   /** A body to deliver, or undefined for a duplicate; a gap throws. */
   accept(envelope: Envelope): Buffer | undefined {
@@ -94,18 +107,26 @@ export class SeqState {
   /** Drop every buffered body up to `ack`; a stale, lower one is ignored. */
   ack(ack: number) {
     if (ack > this.last) throw new ProtocolError(`acknowledgement ${ack} is beyond the last sent sequence ${this.last}`);
-    while (this.acked < ack) { this.outboxBytes -= this.outbox.shift()!.length; this.acked++; }
+    while (this.acked < ack) {
+      const length = this.outbox.shift()!.length;
+      this.outboxBytes -= length; this.ackedBytes += length;
+      if (this.acked < this.cursor) this.inFlight -= length;
+      this.acked++;
+    }
   }
   /** A new connection on which the peer reports `peerReceived`: above it is resent, up to it is dropped. */
   resume(peerReceived: number) {
     if (peerReceived < this.acked) throw new ProtocolError(`the broker reports ${peerReceived} received, below its earlier acknowledgement ${this.acked}`);
     this.ack(peerReceived);
-    this.cursor = peerReceived; this.ackSent = 0;
+    this.cursor = peerReceived; this.inFlight = 0; this.ackSent = 0;
   }
-  next(): Envelope | undefined {
-    this.cursor = Math.max(this.cursor, this.acked);
+  /** The next envelope to write, if the bytes in flight stay within `window`; with nothing in flight one body always goes. */
+  next(window = Infinity): Envelope | undefined {
+    if (this.cursor < this.acked) { this.cursor = this.acked; this.inFlight = 0; }
     const body = this.outbox[this.cursor - this.acked];
     if (!body) return undefined;
+    if (this.inFlight > 0 && this.inFlight + body.length > window) return undefined;
+    this.inFlight += body.length;
     this.cursor++; this.ackSent = this.received;
     return { seq: this.cursor, ack: this.received, body };
   }
@@ -113,6 +134,42 @@ export class SeqState {
   markAckSent() { this.ackSent = this.received; return this.received; }
   /** Whether bodies written on the current connection wait for an acknowledgement. */
   get awaitingAck() { return this.cursor > this.acked; }
+  /** Whether any body waits for an acknowledgement, written or not. */
+  get busy() { return this.outbox.length > 0; }
+}
+
+/**
+ * The in-flight window of one connection (RP-2), the same rule as the
+ * `remote-session` crate's: the throughput averaged over the last two drain
+ * times of busy time, times the smallest round trip plus the drain time (a
+ * third of the dead bound), from one message up to the replay buffer. An
+ * average, because a proxy that releases held acknowledgements in a burst
+ * makes a short sample read many times the link's rate.
+ */
+export class FlowWindow {
+  window: number;
+  private readonly drainMs: number;
+  private readonly spanMs: number;
+  private readonly points: Array<{ at: number; bytes: number }> = [];
+  constructor(deadMs: number, private readonly ceiling = MAX_BUFFERED) {
+    this.drainMs = deadMs / 3; this.spanMs = this.drainMs * 2;
+    this.window = Math.min(Math.max(INITIAL_WINDOW, MIN_WINDOW), Math.max(ceiling, MIN_WINDOW));
+  }
+  /** Observe the bytes acknowledged so far, whether bodies wait for one, and the smallest round trip seen. */
+  observe(now: number, ackedBytes: number, busy: boolean, minRttMs?: number) {
+    if (!busy) { this.points.length = 0; return; }
+    const last = this.points.at(-1);
+    if (last && now - last.at < 250) return;
+    this.points.push({ at: now, bytes: ackedBytes });
+    while (this.points.length > 2 && now - this.points[1]!.at >= this.spanMs) this.points.shift();
+    const first = this.points[0]!;
+    const covered = now - first.at;
+    if (covered < Math.max(1000, 2 * (minRttMs ?? 0))) return;
+    const rate = (ackedBytes - first.bytes) / covered; // bytes per millisecond
+    if (rate <= 0) return; // no progress: the stall rule's business
+    const window = Math.floor(rate * (this.drainMs + (minRttMs ?? 0)));
+    this.window = Math.min(Math.max(window, MIN_WINDOW), Math.max(this.ceiling, MIN_WINDOW));
+  }
 }
 
 /** One connection: text frames carry control messages, binary frames envelopes. */
@@ -176,6 +233,11 @@ export class ResumableSession {
   private lastRx = 0;
   private lastTx = 0;
   private ackProgress = { acked: 0, at: 0 };
+  private flow!: FlowWindow;
+  /** Envelopes written on the current connection, for round-trip samples. */
+  private written: Array<{ seq: number; at: number }> = [];
+  /** The smallest round trip seen, from an envelope's write to the acknowledgement that covers it. */
+  minRttMs?: number;
   private ticker?: ReturnType<typeof setInterval>;
   private flushQueued = false;
   private wake?: () => void;
@@ -268,6 +330,7 @@ export class ResumableSession {
     this.graceMs = welcome.grace_ms;
     const now = Date.now();
     this.lastRx = now; this.lastTx = now; this.ackProgress = { acked: this.seq.acked, at: now };
+    this.flow = new FlowWindow(this.timing.deadMs); this.written = [];
     clearInterval(this.ticker);
     this.ticker = setInterval(() => this.tick(generation), this.timing.tickMs);
     this.ticker.unref?.();
@@ -291,12 +354,12 @@ export class ResumableSession {
       if (typeof data === 'string') {
         let control: any;
         try { control = JSON.parse(data); } catch { throw new ProtocolError('a text message that is not JSON'); }
-        if (control?.type === 'ack' && Number.isSafeInteger(control.ack)) { this.seq.ack(control.ack); this.settleDrains(); return; }
+        if (control?.type === 'ack' && Number.isSafeInteger(control.ack)) { this.seq.ack(control.ack); this.acknowledged(); return; }
         if (control?.type === 'bye') { this.finish({ kind: 'closed', byPeer: true }); return; }
         throw new ProtocolError(`unexpected ${String(control?.type)} after the handshake`);
       }
       const body = this.seq.accept(decodeEnvelope(data));
-      this.settleDrains();
+      this.acknowledged();
       if (body) {
         this.flush(); // acknowledge on receipt, independently of handling it
         try { this.options.onBody(Buffer.from(body)); } catch { /* a handler's failure is the handler's */ }
@@ -307,7 +370,20 @@ export class ResumableSession {
     }
   }
 
-  /** Write what the broker has not had on this connection, then an acknowledgement if one is owed. */
+  /** The acknowledgement may have advanced: sample the round trip, wake senders, and fill the freed window. */
+  private acknowledged() {
+    const now = Date.now();
+    let sample: number | undefined;
+    while (this.written.length && this.written[0]!.seq <= this.seq.acked) {
+      const { seq, at } = this.written.shift()!;
+      if (seq === this.seq.acked) sample = now - at;
+    }
+    if (sample !== undefined) this.minRttMs = Math.min(this.minRttMs ?? Infinity, sample);
+    this.settleDrains();
+    this.flush();
+  }
+
+  /** Write what the broker has not had on this connection, within the in-flight window, then an acknowledgement if one is owed. Nothing waits for an acknowledgement. */
   private flush() {
     if (this.flushQueued) return;
     this.flushQueued = true;
@@ -317,7 +393,11 @@ export class ResumableSession {
       if (!link || this.ended) return;
       try {
         let wrote = false;
-        for (let envelope = this.seq.next(); envelope; envelope = this.seq.next()) { link.send(encodeEnvelope(envelope)); wrote = true; }
+        const now = Date.now();
+        for (let envelope = this.seq.next(this.flow.window); envelope; envelope = this.seq.next(this.flow.window)) {
+          link.send(encodeEnvelope(envelope)); wrote = true;
+          this.written.push({ seq: envelope.seq, at: now });
+        }
         if (!wrote && this.seq.needsAck) link.send(JSON.stringify({ type: 'ack', ack: this.seq.markAckSent() }));
         else if (!wrote) return;
         this.lastTx = Date.now();
@@ -329,6 +409,8 @@ export class ResumableSession {
     if (generation !== this.generation || !this.link || this.ended) return;
     const now = Date.now();
     if (now - this.lastRx >= this.timing.deadMs) return this.lost(generation, 'no traffic within the dead-connection bound');
+    this.flow.observe(now, this.seq.ackedBytes, this.seq.busy, this.minRttMs);
+    this.flush();
     if (this.seq.acked !== this.ackProgress.acked || !this.seq.awaitingAck) this.ackProgress = { acked: this.seq.acked, at: now };
     else if (now - this.ackProgress.at >= this.timing.deadMs) return this.lost(generation, 'no acknowledgement within the dead-connection bound');
     if (now - this.lastTx >= this.heartbeatMs) {

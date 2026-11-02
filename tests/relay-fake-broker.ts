@@ -45,6 +45,8 @@ export class FakeBroker {
   refuse = 0;
   /** Swallow traffic both ways without closing, as a blackhole does. */
   blackhole = false;
+  /** Receive envelopes without acknowledging them, as a proxy that holds the acknowledgements does. */
+  holdAcks = false;
   /** Send the next envelope twice. */
   duplicateNext = false;
   /** Hold the next envelope and send it after the one after it. */
@@ -82,6 +84,8 @@ export class FakeBroker {
   dropAll(reason?: string) { for (const conn of this.conns) conn.drop(reason); }
   /** Forget every session, as a broker restart does. */
   forget() { this.sessions.clear(); this.dropAll('broker restarted'); }
+  /** Acknowledge everything received on each open connection now. */
+  ackNow() { for (const conn of this.conns) if (conn.open && conn.session) conn.deliver(JSON.stringify({ type: 'ack', ack: conn.session.seq.markAckSent() })); }
   ackCount() { return this.received.filter(r => r.kind === 'ack').length; }
 
   private receive(conn: Conn, data: string | Buffer) {
@@ -121,7 +125,7 @@ export class FakeBroker {
     this.received.push({ kind: 'envelope', value: envelope.seq });
     let body: Buffer | undefined;
     try { body = session.seq.accept(envelope); } catch { conn.drop('protocol error'); return; }
-    if (session.seq.needsAck) conn.deliver(JSON.stringify({ type: 'ack', ack: session.seq.markAckSent() }));
+    if (session.seq.needsAck && !this.holdAcks) conn.deliver(JSON.stringify({ type: 'ack', ack: session.seq.markAckSent() }));
     if (body) session.app(Buffer.from(body));
   }
   onOpen?: (session: ServerSession) => void;

@@ -18,7 +18,7 @@ import { open } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { rootCertificates } from 'node:tls';
 import WebSocket from 'ws';
-import { MAX_MESSAGE, ResumableSession, type Dial, type SessionEnd, type Timing } from './relay-session.js';
+import { MAX_BUFFERED, MAX_MESSAGE, ResumableSession, type Dial, type SessionEnd, type Timing } from './relay-session.js';
 
 /** The most data one chunk carries: 1 MiB less 4 KiB (RP-4, RP-12). */
 export const MAX_CHUNK = MAX_MESSAGE - 4096;
@@ -27,7 +27,6 @@ export const RELAY_PROTOCOL = 2;
 /** The most bytes of an upload sent beyond the relay agent's last `progress` (RP-15). */
 export const UPLOAD_WINDOW = 32 * 1024 * 1024;
 /** Session bytes unacknowledged before the next chunk waits, under a broker of protocol 1. */
-const SESSION_WINDOW = 8 * MAX_MESSAGE;
 /** How many times an upload continues after `upload_incomplete` before the call fails. */
 const MAX_CONTINUATIONS = 20;
 const CHUNK_TAG = 0x01;
@@ -426,7 +425,7 @@ export class RelayClient {
     const from = at;
     while (at < upload.size) {
       if (v2) while (!stale() && at - (call.committed ?? from) >= UPLOAD_WINDOW) await this.nextProgress(call);
-      else await session.drained(SESSION_WINDOW);
+      else await session.drained(MAX_BUFFERED); // protocol 1: the replay buffer; the session's window bounds what is in flight
       if (stale()) return;
       const length = Math.min(MAX_CHUNK, upload.size - at);
       const data = await upload.read(at, length);
