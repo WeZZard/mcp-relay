@@ -210,7 +210,7 @@ export class RelayManager {
   readonly environment?: SelectedEnvironment;
   readonly tartHome: string;
   readonly tartPath: string;
-  /** Whether destruction is verified in this host's Tart inventory; else in machine-service's (DC-4x-UB-2). */
+  /** Whether destruction is verified in this host's Tart inventory; else in machine-service's (DC-53). */
   readonly localTart: boolean;
   readonly registry: Registry;
   readonly root: string;
