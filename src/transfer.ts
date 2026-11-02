@@ -8,7 +8,8 @@ import { archiveBytes, archiveChunks, unpackArchive, type ArchiveEntry, type Arc
 
 /** machine-service is the sole guest communication channel. */
 export interface VmChannel {
-  exec(name: string, argv: string[], timeoutMs?: number, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ stdout: string; stderr: string; code: number }>;
+  /** `executionId` names the operation for the link's records, so a resend never runs it twice (BK-3, RP-7). */
+  exec(name: string, argv: string[], timeoutMs?: number, options?: { signal?: AbortSignal; timeoutMs?: number; executionId?: string }): Promise<{ stdout: string; stderr: string; code: number }>;
   push(name: string, localPath: string, remotePath: string): Promise<unknown>;
   pull(name: string, remotePath: string, localPath: string, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown>;
 }

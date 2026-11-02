@@ -45,7 +45,7 @@ export class VmTransport implements SessionTransport {
       const result = await this.transfer.vm.exec(this.transfer.name, [
         '/usr/bin/env', `RELAY_RUNTIME_ROOT=${this.guestRoot}`, `RELAY_CUA_DRIVER=${this.cuaDriver}`,
         this.transfer.node, '-e', INVOKE, join(this.guestRoot, 'receiver.mjs'), remote,
-      ], this.timeoutMs + 180000 + wait, { signal: this.signal });
+      ], this.timeoutMs + 180000 + wait, { signal: this.signal, executionId: request.executionId });
       if (result.code !== 0) throw new Error(`Receiver exit ${result.code}: ${result.stderr.slice(0, 1000)}`);
       const guestReceipt = join(this.guestRoot, 'state', 'receiver', 'receipts', `${request.executionId}.json`);
       const originalReceipt = join(this.hostRoot, 'receiver-receipts', `${request.executionId}.json`);

@@ -8,6 +8,7 @@ import { MachineService, MachineServiceError, expectMachineService, type VmLease
 import { canonicalPath, environmentVariables, matchesEnvironment, selectedEnvironment, type SelectedEnvironment } from './environment.js';
 import { homedir } from 'node:os';
 import { Registry, type RegistryRow } from './registry.js';
+import type { RelayGrant } from './relay-client.js';
 import { Transfer, assertHostPath, transientTransfer, type FileFact, type VmChannel } from './transfer.js';
 import type { ArchiveEntry, ArchiveRequest } from './archive.js';
 import { VmTransport } from './transport.js';
@@ -75,6 +76,8 @@ interface Enclosure {
   consoleAttemptIds?: string[];
   /** The host was at capacity and the acquisition waits to be asked again (DC-22). */
   capacityWait?: { since: string; attempts: number; reason: string };
+  /** The acquisition's broker grant, kept apart from the lease record that reconciliation replaces; only the answer carries it (RP-11). */
+  relay?: RelayGrant;
 }
 /** What relay_status, relay_probe and every guest result report about one guest. */
 export interface GuestStatus {
@@ -86,6 +89,9 @@ export interface GuestStatus {
   downloads?: ReturnType<DownloadQueue['counts']>;
   /** The acquisition waits for a host at capacity: since when, how many refusals, and machine-service's reason (DC-22). */
   waitingForCapacity?: { since: string; attempts: number; reason: string };
+  /** How the guest's operations travel, as machine-service reports it: `relay`, or `ssh-fallback`, which runs outside the desktop session (docs/relay-agent-link.md §6). */
+  link?: 'relay' | 'ssh-fallback';
+  linkReason?: string;
 }
 /** A run's result: its execution identity and outcome, the after-snapshot delivery, and kind-specific facts. */
 export interface RunResult {
@@ -606,7 +612,7 @@ class Guest {
     const durable = !!this.enclosure?.machine;
     return {
       exec: async (name, argv, timeoutMs = 180000, options) => {
-        const result = await this.withOwner(backend => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs / 1000), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal }), options);
+        const result = await this.withOwner(backend => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs / 1000), ...(options?.executionId ? { execution_id: options.executionId } : {}), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal }), options);
         return { stdout: result.output, stderr: result.output, code: result.rc };
       },
       push: async (name, local_path, remote_path) => {
@@ -723,7 +729,7 @@ class Guest {
   }
   status(): GuestStatus {
     const e = this.enclosure;
-    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...(e.capacityWait ? { waitingForCapacity: e.capacityWait } : {}) } : { guest: this.name, active: false };
+    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...(e.capacityWait ? { waitingForCapacity: e.capacityWait } : {}), ...(e.lease?.link ? { link: e.lease.link } : {}), ...(e.lease?.link_reason ? { linkReason: e.lease.link_reason } : {}) } : { guest: this.name, active: false };
   }
   private async reconcile() {
     const e = this.enclosure; if (!e) return;
@@ -750,6 +756,7 @@ class Guest {
         if (lease.console.status === 'revoked') e.consoleObservation = lease.console;
       }
       e.lease = e.machine ? { ...lease, vm: e.machine } : lease; e.guestState = lease.state; e.expiresAt = lease.ttl_expires_at;
+      this.vm.useRelay?.(e.lease.vm, { link: e.lease.link, relay: e.relay });
       if (e.failed) { e.lastError = e.failed; delete e.failed; }
       await this.save();
     } catch (error) {
@@ -918,7 +925,10 @@ class Guest {
         try {
           const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000;
           // A durable acquisition names the machine and nothing a running Mac cannot apply (DM-3).
-          e.lease = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? 'none', ttl_hours } : { purpose, image: input.image, env: input.env ?? 'none', ttl_hours, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+          const answer = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? 'none', ttl_hours } : { purpose, image: input.image, env: input.env ?? 'none', ttl_hours, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+          // The credential lives in `relay`, beside the lease record, never inside it (RP-11).
+          e.lease = answer;
+          if (answer.relay) { e.relay = answer.relay; delete e.lease.relay; }
           if (e.machine) {
             e.lease.vm = e.machine;
             if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error('Durable owner machine_id mismatch'));

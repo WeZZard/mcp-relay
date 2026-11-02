@@ -19,7 +19,7 @@
 
 ## 3. The session with the broker
 
-- The relay opens one resumable session per instance with the broker at the instance's `relay_url`, authenticated with the lease credential that the acquisition returned.
+- The relay opens one resumable session per lease with the broker at the instance's `relay_url`, authenticated with the lease credential that the acquisition returned, which binds the session to that lease's relay agent (DC-4x-CL-2).
 - Every operation carries the relay's execution ID, which the relay already records for each run, so a resumed session never runs an operation twice.
 - After any loss that the session cannot resume, the relay asks `query {execution}` and reports `completed`, `running` or `unknown`. An `unknown` outcome stays uncertain, and the relay never replays it, as the relay already does for timeouts.
 - The relay sends data in chunks of at most 1 MiB and sends a heartbeat at least every 30 seconds, as the transport contract requires.

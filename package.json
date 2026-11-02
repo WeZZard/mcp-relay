@@ -58,18 +58,21 @@
     "test": "tsx --test --test-concurrency=1 tests/*.test.ts scripts/selected-image-x11.test.ts",
     "check": "npm run build && npm run typecheck && npm test",
     "test:e2e": "tsx --test tests/e2e/headless.test.ts",
+    "test:broker": "tsx --test --test-concurrency=1 tests/relay-broker.test.ts",
     "verify:package": "node scripts/verify-package.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
     "@wezzard/relay-driver-core": "^0.2.1",
     "@wezzard/relay-driver-host-sdk": "^0.2.1",
     "@wezzard/relay-driver-remote-runtime": "^0.2.1",
     "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "typebox": "1.3.37",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "ws": "^8.22.1"
   },
   "engines": {
     "node": ">=22"
