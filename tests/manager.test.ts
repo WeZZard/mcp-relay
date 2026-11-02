@@ -229,7 +229,7 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-relay-manager-')));
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const service = new FixtureService(root), vm = await service.start();
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), captureReadyWaitMs: 1000, captureReadyRetryMs: 50, ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), localTart: true, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { service.releaseFailures = 0; service.failHeartbeat = false; service.failGet = false; service.hideLeases = false; await manager.release(); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const driver = join(root, 'fake-cua');
@@ -1366,6 +1366,18 @@ test('untruthful service release cannot unregister while authoritative VM invent
   assert.match(await readFile(f.registryPath, 'utf8'), /relay-manager-test/);
   assert.equal((await json(leaseFile(f.manager))).released, undefined);
   absent = true; await f.manager.release(); await f.assertClean();
+});
+
+test('a host with no local Tart verifies destruction in the instance\'s /machines inventory, never in a Tart it cannot read (DC-42)', async t => {
+  const f = await fixture(t, { verifyDestroyed: undefined, localTart: false, tartPath: join(tmpdir(), 'no-such-tart') });
+  await f.manager.acquire(acquireInput());
+  const vm = [...f.service.leases.keys()][0]!;
+  const list = f.manager.vm.list.bind(f.manager.vm);
+  const stale = t.mock.method(f.manager.vm, 'list', async (options?: object) => { const answer = await list(options); return { ...answer, machines: { ...answer.machines, [vm]: { name: vm } } } as typeof answer; });
+  await assert.rejects(f.manager.release(), /its \/machines still lists/);
+  assert.match(await readFile(f.registryPath, 'utf8'), /relay-manager-test/, 'unverified destruction keeps ownership');
+  stale.mock.restore();
+  await f.manager.release(); await f.assertClean();
 });
 
 test('R4: a lease that arrives after the caller cancelled relay_acquire is renewed and reported, not left without a heartbeat', async t => {

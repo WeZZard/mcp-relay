@@ -112,9 +112,14 @@ without a Claude Code plugin or pi package wrapper.
 
 ### Prerequisites
 
-Node 22+, Python 3 with `fcntl` for the registry lock, and for VM execution an
-Apple-silicon Mac with Tart, a running
-[machine-service](https://github.com/WeZZard/vm-service) (formerly vm-service) and prepared guest images.
+Node 22+, Python 3 with `fcntl` for the registry lock, and a running
+[machine-service](https://github.com/WeZZard/vm-service) (formerly vm-service) with prepared guest images.
+The relay runs on macOS and on Ubuntu. Only a local Tart/machine-service
+backend needs an Apple-silicon Mac with Tart; on any other host, such as
+Ubuntu, the relay is a client of an instance on another host, and verifies a
+VM's destruction in that instance's `/machines` inventory instead of a local
+Tart inventory. Bonjour discovery uses `dns-sd` on macOS and Avahi's
+`avahi-browse` on Linux, or the relay's own multicast query when Avahi is absent.
 Check readiness with `node dist/doctor.mjs`. It does not acquire a VM or
 establish guest UI readiness. Staging and runs assume no software in the guest
 but Node.js, which runs the relay's own guest code; `relay_stage` refuses an
@@ -362,8 +367,8 @@ needed. Diagnostic commands appear in the review data
 as command-only steps without screenshots. `finish` verifies the package before
 destroying the VM; a failed delivery removes only the derived files it created
 and retains the VM for a corrected attempt. Cleanup checks the read-only host
-Tart inventory (the selected one, when an environment is selected) before
-claiming destruction. Leases default to 4 hours, renewed 15 minutes at a
+Tart inventory (the selected one, when an environment is selected; on a host
+with no local Tart, the instance's `/machines` inventory) before claiming destruction. Leases default to 4 hours, renewed 15 minutes at a
 time up to that TTL; the machine-service reaper is the final backstop for process death.
 
 Relay evidence has no size limit (owner decision PS-D12): screenshots are
@@ -380,7 +385,7 @@ keeps the VM for a retry after space is freed.
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
 - `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when discovery finds it.
-- `MACHINE_SERVICE_DISCOVERY`: how durable machines' instances are found, `bonjour` (the default) or `consul`, as for machine-service and machctl.
+- `MACHINE_SERVICE_DISCOVERY`: how durable machines' instances are found, `bonjour` (the default: `dns-sd -Z` on macOS, `avahi-browse` on Linux, else the relay's own multicast query) or `consul`, as for machine-service and machctl.
 - `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, in Consul mode; default `http://127.0.0.1:8500`.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.

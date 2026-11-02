@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
+import { GUEST_NETWORKS, capacityWait, guestNetwork, localTartHost, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
 import { MachineService, MachineServiceError, expectMachineService, type VmLease, type VmBackend, type RequestOptions } from './machine-service.js';
@@ -101,7 +101,7 @@ export interface RunResult {
   [key: string]: any;
 }
 export interface ManagerOptions {
-  sessionId: string; project: string; stateRoot?: string; outputRoot?: string; registry?: Registry; vm?: VmBackend; environment?: SelectedEnvironment; tartHome?: string; tartPath?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>;
+  sessionId: string; project: string; stateRoot?: string; outputRoot?: string; registry?: Registry; vm?: VmBackend; environment?: SelectedEnvironment; tartHome?: string; tartPath?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>; localTart?: boolean;
   /** How far each renewal extends the lease at machine-service; default RENEWAL_WINDOW_MS. */
   renewalWindowMs?: number;
   /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
@@ -210,6 +210,8 @@ export class RelayManager {
   readonly environment?: SelectedEnvironment;
   readonly tartHome: string;
   readonly tartPath: string;
+  /** Whether destruction is verified in this host's Tart inventory; else in machine-service's (DC-4x-UB-2). */
+  readonly localTart: boolean;
   readonly registry: Registry;
   readonly root: string;
   /** The most guests this session holds at once (DC-20). */
@@ -231,6 +233,7 @@ export class RelayManager {
     this.environment = options.environment ?? selectedEnvironment();
     this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join(process.env.HOME ?? homedir(), '.tart'));
     this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? 'tart';
+    this.localTart = options.localTart ?? (!!this.environment || localTartHost());
     if (this.environment && ((options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir) || (options.tartHome && canonicalPath(options.tartHome) !== this.tartHome) || (options.tartPath && canonicalPath(options.tartPath) !== this.tartPath))) throw new Error('Injected paths conflict with the selected environment');
     this.maxGuests = options.maxGuests ?? maxGuests();
     if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error('maxGuests must be a positive integer');
@@ -1589,7 +1592,7 @@ class Guest {
         }
         if (!released) throw new Error('Lease release unconfirmed');
         if (e.machine) { if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`); }
-        else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but ${this.m.localTart ? 'Tart' : 'its /machines'} still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true; await this.save().catch(() => {});
     }
@@ -1605,6 +1608,9 @@ class Guest {
   }
   private async destroyed(vm: string): Promise<boolean> {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
+    // A host with no local Tart (Ubuntu) leases from an instance elsewhere, whose
+    // Tart store it cannot read: the instance's own inventory is asked instead.
+    if (!this.m.localTart) return !Object.hasOwn((await this.vm.list({ timeoutMs: 10000 })).machines, vm);
     // Read-only host observation, not a second guest/transfer channel. The daemon
     // currently drops its lease even when Tart deletion fails; 404 is not proof.
     const environment = this.m.environment;

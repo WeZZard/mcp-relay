@@ -1,0 +1,12 @@
++;enp0s1;IPv6;Fixture\032A;_relayfixture._tcp;local
++;enp0s1;IPv6;fixture-l;_relayfixture._tcp;local
++;enp0s1;IPv4;Fixture\032A;_relayfixture._tcp;local
++;enp0s1;IPv4;fixture-l;_relayfixture._tcp;local
++;lo;IPv4;Fixture\032A;_relayfixture._tcp;local
++;lo;IPv4;fixture-l;_relayfixture._tcp;local
+=;enp0s1;IPv6;Fixture\032A;_relayfixture._tcp;local;fixture-a.local;192.0.2.4;6241;"kinds=durable" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "instance=Fixture A" "txtvers=1"
+=;enp0s1;IPv6;fixture-l;_relayfixture._tcp;local;fixture-l.local;192.0.2.5;6240;"kinds=virtual" "instance=fixture-l" "txtvers=1"
+=;enp0s1;IPv4;Fixture\032A;_relayfixture._tcp;local;fixture-a.local;192.0.2.4;6241;"kinds=durable" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "instance=Fixture A" "txtvers=1"
+=;enp0s1;IPv4;fixture-l;_relayfixture._tcp;local;fixture-l.local;192.0.2.5;6240;"kinds=virtual" "instance=fixture-l" "txtvers=1"
+=;lo;IPv4;Fixture\032A;_relayfixture._tcp;local;fixture-a.local;192.0.2.4;6241;"kinds=durable" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "instance=Fixture A" "txtvers=1"
+=;lo;IPv4;fixture-l;_relayfixture._tcp;local;fixture-l.local;192.0.2.5;6240;"kinds=virtual" "instance=fixture-l" "txtvers=1"

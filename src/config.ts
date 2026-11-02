@@ -19,6 +19,15 @@ export function absolute(value: string, label: string): string {
   return normalize(value);
 }
 
+/**
+ * Whether this host can run the local Tart/machine-service backend: an
+ * Apple-silicon Mac. Elsewhere, such as Ubuntu, the relay is a client of a
+ * machine-service instance on another host (DC-42).
+ */
+export function localTartHost(platform: string = process.platform, arch: string = process.arch): boolean {
+  return platform === 'darwin' && arch === 'arm64';
+}
+
 /** MCP_RELAY_STATE_DIR > XDG_STATE_HOME/mcp-relay > ~/.local/state/mcp-relay. */
 export function relayStateRoot(options: ConfigOptions = {}): string {
   const env = options.env ?? process.env;

@@ -17,12 +17,12 @@ test('doctor checks shipped hashes and read-only prerequisites without acquisiti
  t.mock.method(vm,'acquire',async()=>assert.fail('doctor must not allocate'));
  const commands:string[][]=[];
  const run=async(argv:readonly string[])=>{commands.push([...argv]);return{code:0,stdout:argv[0]==='tart'?'[]':'3.14',stderr:''};};
- const r=await installationReport({assetsDir:resolve('dist'),registry,vm,run});
+ const r=await installationReport({assetsDir:resolve('dist'),registry,vm,run,platform:'darwin',arch:'arm64'});
  assert.equal(r.checks.find(c=>c.name==='runtime-bundles')?.ok,true);
  assert.equal(r.checks.find(c=>c.name==='machine-service')?.ok,true);
  assert.equal(r.checks.find(c=>c.name==='registry')?.ok,true);
  assert.equal(commands.length,2);assert.deepEqual(commands[1],['tart','list','--format','json']);
- assert.equal(r.ready,process.platform==='darwin'&&process.arch==='arm64');
+ assert.equal(r.ready,true);
  // A service still answering as vm-service is refused, naming what to install (DC-27).
  t.mock.method(vm,'health',async()=>({ok:true,service:'vm-service'}));
  const renamed=await installationReport({assetsDir:resolve('dist'),registry,vm,run});
@@ -39,4 +39,26 @@ test('doctor rejects corrupt existing managed registry instead of reporting read
  const vm=new MachineService({baseUrl:'http://127.0.0.1:1'});t.mock.method(vm,'health',async()=>{throw Error('offline fixture');});
  const r=await installationReport({registry,vm,run:async()=>({code:0,stdout:'[]',stderr:''})});
  assert.equal(r.ready,false);assert.equal(r.checks.find(c=>c.name==='registry')?.ok,false);
+});
+
+test('doctor accepts a host with no local Tart as a client of a remote instance, and keeps the Apple-silicon check for the local backend (DC-42)',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'relay-doctor-remote-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const registry=new Registry({env:{},home:root});
+ const vm=new MachineService({baseUrl:'http://127.0.0.1:1'});
+ t.mock.method(vm,'health',async()=>({ok:true,service:'machine-service'}));
+ t.mock.method(vm,'images',async()=>({images:{ubuntu2404:{kind:'linux',base:'fixture',base_available:true}},capacity:{}} as any));
+ t.mock.method(vm,'list',async()=>({machines:{}} as any));
+ const commands:string[][]=[];
+ const run=async(argv:readonly string[])=>{commands.push([...argv]);return argv[0]==='tart'?{code:127,stdout:'',stderr:'tart: not found'}:{code:0,stdout:'3.12',stderr:''};};
+ for(const [platform,arch] of [['linux','x64'],['linux','arm64'],['darwin','x64']] as const){
+  commands.length=0;
+  const r=await installationReport({assetsDir:resolve('dist'),registry,vm,run,platform,arch});
+  assert.equal(r.ready,true,`${platform}/${arch} is a client`);
+  assert.match(r.checks.find(c=>c.name==='host')!.detail,/no local Tart backend/);
+  assert.match(r.checks.find(c=>c.name==='tart')!.detail,/remote instance's \/machines inventory/);
+  assert.ok(!commands.some(argv=>argv[0]==='tart'),'no local Tart is asked');
+ }
+ // On an Apple-silicon Mac the local backend still needs Tart, with its message.
+ const local=await installationReport({assetsDir:resolve('dist'),registry,vm,run,platform:'darwin',arch:'arm64'});
+ assert.equal(local.ready,false);assert.match(local.checks.find(c=>c.name==='tart')!.detail,/Install Tart/);
 });

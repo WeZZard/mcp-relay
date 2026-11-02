@@ -3355,8 +3355,8 @@ var require_utils = __commonJS({
     var HOST_DELIMS = { "@": "%40", "/": "%2F", "?": "%3F", "#": "%23", ":": "%3A" };
     var HOST_DELIM_RE = /[@/?#:]/g;
     var HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
-    function reescapeHostDelimiters(host, isIP4) {
-      const re = isIP4 ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE;
+    function reescapeHostDelimiters(host, isIP5) {
+      const re = isIP5 ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE;
       re.lastIndex = 0;
       return host.replace(re, (ch) => HOST_DELIMS[ch]);
     }
@@ -3877,17 +3877,17 @@ var require_fast_uri = __commonJS({
       if (baseMalformed || relativeMalformed || baseMalformedPercentEncoding || relativeMalformedPercentEncoding || baseMalformedSchemeSpecific || relativeMalformedSchemeSpecific || baseMalformedHost || relativeMalformedHost || baseMalformedScheme || relativeMalformedScheme) {
         throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
       }
-      const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
-      const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
-      const resolvedHost = resolved.host;
+      const resolved2 = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
+      const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved2.scheme);
+      const resolvedHost = resolved2.host;
       const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
-      canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
+      canonicalizeHost(resolved2, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
       const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
-      if (resolved.error && !encodedASCIIHost) {
-        throw new Error(resolved.error);
+      if (resolved2.error && !encodedASCIIHost) {
+        throw new Error(resolved2.error);
       }
       schemelessOptions.skipEscape = true;
-      return serialize(resolved, schemelessOptions);
+      return serialize(resolved2, schemelessOptions);
     }
     function resolveComponent(base, relative6, options, skipNormalization) {
       const target = {};
@@ -4045,8 +4045,8 @@ var require_fast_uri = __commonJS({
       const host = matches[4];
       return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
     }
-    function canonicalizeHost(parsed, options, schemeHandler, isIP4) {
-      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP4 === false && nonSimpleDomain(parsed.host)) {
+    function canonicalizeHost(parsed, options, schemeHandler, isIP5) {
+      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP5 === false && nonSimpleDomain(parsed.host)) {
         try {
           parsed.host = new URL("http://" + parsed.host).hostname;
         } catch (e) {
@@ -4073,7 +4073,7 @@ var require_fast_uri = __commonJS({
       let malformedHost = false;
       let malformedIPLiteral = false;
       let malformedScheme = false;
-      let isIP4 = false;
+      let isIP5 = false;
       if (options.reference === "suffix") {
         if (options.scheme) {
           uri = options.scheme + ":" + uri;
@@ -4136,15 +4136,15 @@ var require_fast_uri = __commonJS({
             const bracketedIPLiteral = isIPLiteral(parsed.host);
             const hasIPLiteralBracket = parsed.host.indexOf("[") !== -1 || parsed.host.indexOf("]") !== -1;
             const ipv6result = normalizeIPv6(parsed.host);
-            isIP4 = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
+            isIP5 = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
             malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
-            parsed.host = isIP4 ? ipv6result.host : ipv6result.host.toLowerCase();
+            parsed.host = isIP5 ? ipv6result.host : ipv6result.host.toLowerCase();
             if (malformedIPLiteral) {
               parsed.error = parsed.error || "URI host is malformed.";
               malformedAuthorityOrPort = true;
             }
           } else {
-            isIP4 = true;
+            isIP5 = true;
           }
         }
         if (parsed.scheme === void 0 && parsed.userinfo === void 0 && parsed.host === void 0 && parsed.port === void 0 && parsed.query === void 0 && !parsed.path) {
@@ -4161,13 +4161,13 @@ var require_fast_uri = __commonJS({
         }
         const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
         if (!malformedIPLiteral) {
-          malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP4);
+          malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP5);
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (uri.indexOf("%") !== -1) {
             if (parsed.host !== void 0 && !malformedIPLiteral) {
-              const host = isIP4 ? parsed.host : normalizePercentEncoding(parsed.host, true);
-              parsed.host = reescapeHostDelimiters(host, isIP4);
+              const host = isIP5 ? parsed.host : normalizePercentEncoding(parsed.host, true);
+              parsed.host = reescapeHostDelimiters(host, isIP5);
             }
           }
           if (parsed.path) {
@@ -21045,6 +21045,9 @@ function absolute(value, label) {
   if (!isAbsolute2(value)) throw new TypeError(`${label} must be an absolute path`);
   return normalize(value);
 }
+function localTartHost(platform = process.platform, arch = process.arch) {
+  return platform === "darwin" && arch === "arm64";
+}
 function relayStateRoot(options = {}) {
   const env = options.env ?? process.env;
   const selected = selectedEnvironment(env, options.home);
@@ -27870,9 +27873,9 @@ function CallImmediate(context, state, target, parameters, expression, arguments
 }
 function CallInstantiate(context, state, target, arguments_) {
   const instantiatedArguments = InstantiateTypes(context, state, arguments_);
-  const resolved = ResolveTarget(context, target, arguments_);
-  const name = resolved[0];
-  const type = resolved[1];
+  const resolved2 = ResolveTarget(context, target, arguments_);
+  const name = resolved2[0];
+  const type = resolved2[1];
   const result2 = IsGeneric(type) ? IsTailCall(state, name) ? CallConstruct(Ref(name), instantiatedArguments) : CallImmediate(context, state, Ref(name), type.parameters, type.expression, instantiatedArguments) : CallConstruct(target, instantiatedArguments);
   return result2;
 }
@@ -33563,13 +33566,12 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
   if (archived) await copy(archived, retained);
 }
 
-// src/discovery.ts
-import { existsSync } from "node:fs";
-
 // src/mdns.ts
 import { spawn as spawn5 } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { lookup } from "node:dns/promises";
+import { existsSync } from "node:fs";
+import { isIP as isIP4 } from "node:net";
 var TYPE = { A: 1, PTR: 12, TXT: 16, SRV: 33 };
 var GROUP = "224.0.0.251";
 var PORT = 5353;
@@ -33688,6 +33690,17 @@ async function browse(service, windowMs = 2e3, followUpMs = 1e3, open9 = udpTran
   }
 }
 var unescape2 = (text5) => Buffer.from(text5.replace(/\\(\d{3})|\\(.)/g, (_, code, char) => code ? String.fromCharCode(Number(code)) : char), "latin1").toString("utf8");
+function quotedTxt(text5, reversed = false) {
+  const txt = {}, strings = [...text5.matchAll(/"((?:[^"\\]|\\.)*)"/g)];
+  for (const [, quoted] of reversed ? strings.reverse() : strings) {
+    const pair = unescape2(quoted);
+    if (!pair) continue;
+    const at = pair.indexOf("="), key2 = (at < 0 ? pair : pair.slice(0, at)).toLowerCase();
+    if (!(key2 in txt)) txt[key2] = at < 0 ? "" : pair.slice(at + 1);
+  }
+  return txt;
+}
+var advert = (name, host, port, txt, address) => ({ name, instance: txt.instance || name, ...txt.machine_id ? { machine_id: txt.machine_id } : {}, host, ...address ? { address } : {}, port, txt });
 function parseZone(zone) {
   const lines = zone.split("\n").map((line) => line.replace(/\s;.*$/, "").trim()).filter((line) => line && !line.startsWith(";"));
   const field = (line) => line.match(/^(\S+)\s+(PTR|SRV|TXT)\s+(.*)$/);
@@ -33702,46 +33715,79 @@ function parseZone(zone) {
     } else if (type === "SRV") {
       const [, , port, host] = rest.trim().split(/\s+/);
       if (port && host) srv.set(owner, { port: Number(port), host: host.replace(/\.$/, "") });
-    } else txt.set(owner, Object.fromEntries([...rest.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(([, pair]) => unescape2(pair)).filter((pair) => pair).map((pair) => {
-      const at = pair.indexOf("=");
-      return at < 0 ? [pair.toLowerCase(), ""] : [pair.slice(0, at).toLowerCase(), pair.slice(at + 1)];
-    })));
+    } else txt.set(owner, quotedTxt(rest));
   }
   return order.flatMap((full) => {
     const target = srv.get(full);
     if (!target) return [];
-    const name = unescape2(full.split(/(?<!\\)\./)[0]);
-    const record3 = txt.get(full) ?? {};
-    return [{ name, instance: record3.instance || name, ...record3.machine_id ? { machine_id: record3.machine_id } : {}, host: target.host, port: target.port, txt: record3 }];
+    return [advert(unescape2(full.split(/(?<!\\)\./)[0]), target.host, target.port, txt.get(full) ?? {})];
   });
+}
+function parseAvahi(output) {
+  const found = /* @__PURE__ */ new Map();
+  for (const line of output.split("\n")) {
+    const fields = line.trim().split(";");
+    const [event, , , escaped] = fields;
+    if (!escaped || !["+", "-", "="].includes(event)) continue;
+    const name = unescape2(escaped);
+    if (event === "-") {
+      found.delete(name);
+      continue;
+    }
+    if (event === "+") {
+      if (!found.has(name)) found.set(name, void 0);
+      continue;
+    }
+    if (fields.length < 10) continue;
+    const [host, address, port] = fields.slice(6, 9);
+    const prior = found.get(name), ipv42 = isIP4(address) === 4 ? address : void 0;
+    if (prior?.address || prior && !ipv42) continue;
+    found.set(name, advert(name, host.replace(/\.$/, ""), Number(port), prior?.txt ?? quotedTxt(fields.slice(9).join(";"), true), ipv42));
+  }
+  return [...found.values()].filter((a) => !!a);
 }
 var systemTools = {
   run: (argv, ms) => new Promise((resolve11) => {
     const child = spawn5(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
-    let out = "";
+    let out = "", windowEnded = false;
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
       out += chunk;
     });
-    const timer = setTimeout(() => child.kill("SIGTERM"), ms);
-    child.on("close", () => {
+    const timer = setTimeout(() => {
+      windowEnded = true;
+      child.kill("SIGTERM");
+    }, ms);
+    child.on("close", (code) => {
       clearTimeout(timer);
-      resolve11(out);
+      resolve11({ stdout: out, ran: code === 0 || windowEnded });
     });
     child.on("error", () => {
       clearTimeout(timer);
-      resolve11(out);
+      resolve11({ stdout: out, ran: false });
     });
   }),
   lookup: (host) => lookup(host, { family: 4 }).then((found) => found.address, () => void 0)
 };
 var DNS_SD = "/usr/bin/dns-sd";
+var AVAHI_BROWSE = "avahi-browse";
+var resolved = (found, tools) => Promise.all(found.map(async (advert2) => {
+  if (advert2.address) return advert2;
+  const address = await tools.lookup(advert2.host);
+  return address ? { ...advert2, address } : advert2;
+}));
 async function systemBrowse(service, windowMs = 1500, tools = systemTools) {
   const type = service.replace(/\.local\.?$/, "");
-  const found = parseZone(await tools.run([DNS_SD, "-Z", type, "local."], windowMs));
-  return Promise.all(found.map(async (advert) => {
-    const address = await tools.lookup(advert.host);
-    return address ? { ...advert, address } : advert;
-  }));
+  return resolved(parseZone((await tools.run([DNS_SD, "-Z", type, "local."], windowMs)).stdout), tools);
+}
+async function avahiBrowse(service, windowMs = 1500, tools = systemTools) {
+  const type = service.replace(/\.local\.?$/, "");
+  const run = await tools.run([AVAHI_BROWSE, "--parsable", "--resolve", "--terminate", "--no-db-lookup", "--domain=local", type], windowMs);
+  return run.ran ? resolved(parseAvahi(run.stdout), tools) : void 0;
+}
+async function browseService(service, seams = {}) {
+  const tools = seams.tools ?? systemTools;
+  if (seams.hasDnsSd ?? existsSync(DNS_SD)) return systemBrowse(service, void 0, tools);
+  return await avahiBrowse(service, void 0, tools) ?? (seams.query ?? browse)(service);
 }
 
 // src/discovery.ts
@@ -33775,7 +33821,7 @@ function parseRegistrations(answer) {
 async function candidates(options, mode) {
   if (mode === "bonjour") {
     try {
-      const advertised = await (options.browse ?? (() => existsSync(DNS_SD) ? systemBrowse(SERVICE_TYPE) : browse(SERVICE_TYPE)))();
+      const advertised = await (options.browse ?? (() => browseService(SERVICE_TYPE)))();
       return { found: advertised.map((a) => ({ origin: new URL(`http://${a.address ?? a.host}:${a.port}`).origin, expected: a.instance, ...a.machine_id || a.txt.machine_id ? { machine_id: a.machine_id || a.txt.machine_id } : {} })) };
     } catch (error2) {
       return { found: [], error: `the Bonjour browse failed (${error2 instanceof Error ? error2.message : String(error2)})` };
@@ -33914,6 +33960,7 @@ var RelayManager = class {
     this.environment = options.environment ?? selectedEnvironment();
     this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join13(process.env.HOME ?? homedir4(), ".tart"));
     this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? "tart";
+    this.localTart = options.localTart ?? (!!this.environment || localTartHost());
     if (this.environment && (options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir || options.tartHome && canonicalPath(options.tartHome) !== this.tartHome || options.tartPath && canonicalPath(options.tartPath) !== this.tartPath)) throw new Error("Injected paths conflict with the selected environment");
     this.maxGuests = options.maxGuests ?? maxGuests();
     if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error("maxGuests must be a positive integer");
@@ -33929,6 +33976,8 @@ var RelayManager = class {
   environment;
   tartHome;
   tartPath;
+  /** Whether destruction is verified in this host's Tart inventory; else in machine-service's (DC-4x-UB-2). */
+  localTart;
   registry;
   root;
   /** The most guests this session holds at once (DC-20). */
@@ -34690,20 +34739,20 @@ var Guest = class {
   }
   async consoleOperation(operation, input, signal) {
     if (![input.console_id, input.attempt_id].every((v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(v))) throw new Error("Invalid console or attempt identity");
-    const resolved = await this.resolveConsole(signal), e = this.current();
+    const resolved2 = await this.resolveConsole(signal), e = this.current();
     if (!e.lease.console?.console_id) throw new Error("This lease has no acquired console; automatic VNC retrofit is forbidden");
-    if (resolved.console_id !== input.console_id) throw new Error("Console instance identity mismatch");
+    if (resolved2.console_id !== input.console_id) throw new Error("Console instance identity mismatch");
     const method = operation === "open" ? this.vm.consoleOpen : this.vm.consoleCancel;
     if (!method) throw new Error("Backend lacks console API; upgrade machine-service");
     if (operation === "open") {
-      if (resolved.viewer_location !== "service-host") throw new Error("Only a viewer on the declared service host is supported; no remote-client viewer fallback");
+      if (resolved2.viewer_location !== "service-host") throw new Error("Only a viewer on the declared service host is supported; no remote-client viewer fallback");
       if (e.lease.state !== "running" || !Number.isFinite(e.lease.ttl_expires_at) || e.lease.ttl_expires_at <= Date.now() / 1e3) throw new Error("Console lease is not running or has expired");
-      if (resolved.status !== "ready") throw new Error("Console is not ready or access was revoked; no automatic recovery");
-      if (e.consoleAttempt && e.consoleAttempt.attempt_id === input.attempt_id) return { ...resolved, retainedAttempt: e.consoleAttempt, replayed: false, screenshotEvidence: false };
+      if (resolved2.status !== "ready") throw new Error("Console is not ready or access was revoked; no automatic recovery");
+      if (e.consoleAttempt && e.consoleAttempt.attempt_id === input.attempt_id) return { ...resolved2, retainedAttempt: e.consoleAttempt, replayed: false, screenshotEvidence: false };
       if (e.consoleAttemptIds?.includes(input.attempt_id)) throw new Error("Console attempt ID was already used; historical launches are never replayed");
       if ((e.consoleAttemptIds?.length ?? 0) >= 64) throw new Error("Console attempt limit reached for this enclosure");
       if (e.consoleAttempt && !["cancelled", "closed", "failed", "expired"].includes(e.consoleAttempt.status)) throw new Error("Previous console attempt remains active or uncertain; resolve or cancel it before requesting a new attempt");
-      if (resolved.attempt && !["cancelled", "closed", "failed"].includes(resolved.attempt.status)) throw new Error("Backend console attempt remains active or uncertain; resolve or cancel it first");
+      if (resolved2.attempt && !["cancelled", "closed", "failed"].includes(resolved2.attempt.status)) throw new Error("Backend console attempt remains active or uncertain; resolve or cancel it first");
     }
     const body = { lease_id: e.lease.lease_id, console_id: input.console_id, attempt_id: input.attempt_id };
     if (operation === "cancel" && e.consoleAttempt && e.consoleAttempt.attempt_id !== input.attempt_id && !["cancelled", "closed", "failed", "expired"].includes(e.consoleAttempt.status)) throw new Error("Cancel must identify the active or uncertain owned attempt");
@@ -35215,8 +35264,8 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     if (result2.status !== "unauthorized-reference" || target.source !== "reference") return result2;
     const named2 = job?.image ?? await this.namedImage(target.imageId);
     if (named2?.source !== "display") return result2;
-    const resolved = await store.get({ source: "display", sessionId: named2.sessionId, executionId: named2.executionId, phase: named2.phase }, bounded3, deadline);
-    return resolved.image && resolved.image.imageId !== target.imageId ? { status: "integrity-failed", diagnostic: "The display selector no longer names the referenced image." } : resolved;
+    const resolved2 = await store.get({ source: "display", sessionId: named2.sessionId, executionId: named2.executionId, phase: named2.phase }, bounded3, deadline);
+    return resolved2.image && resolved2.image.imageId !== target.imageId ? { status: "integrity-failed", diagnostic: "The display selector no longer names the referenced image." } : resolved2;
   }
   /** The image a run named with this reference, from the step download records. No guest I/O. */
   async namedImage(imageId) {
@@ -35621,7 +35670,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         if (!released) throw new Error("Lease release unconfirmed");
         if (e.machine) {
           if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`);
-        } else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        } else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but ${this.m.localTart ? "Tart" : "its /machines"} still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true;
       await this.save().catch(() => {
@@ -35643,6 +35692,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   async destroyed(vm) {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
+    if (!this.m.localTart) return !Object.hasOwn((await this.vm.list({ timeoutMs: 1e4 })).machines, vm);
     const environment = this.m.environment;
     const result2 = await command([this.m.tartPath, "list", "--format", "json"], { timeoutMs: 15e3, maxBytes: 4 * 1024 * 1024, env: { ...process.env, ...environment ? environmentVariables(environment) : {}, TART_HOME: this.m.tartHome } });
     if (result2.code !== 0) throw new Error(`Cannot verify VM destruction: ${result2.stderr}`);

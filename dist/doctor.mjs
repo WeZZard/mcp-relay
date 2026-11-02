@@ -5255,6 +5255,9 @@ function absolute(value, label) {
   if (!isAbsolute2(value)) throw new TypeError(`${label} must be an absolute path`);
   return normalize(value);
 }
+function localTartHost(platform = process.platform, arch = process.arch) {
+  return platform === "darwin" && arch === "arm64";
+}
 function relayStateRoot(options = {}) {
   const env = options.env ?? process.env;
   const selected = selectedEnvironment(env, options.home);
@@ -5599,9 +5602,10 @@ async function installationReport(options = {}) {
     if (Number(process.versions.node.split(".")[0]) < 22) throw Error("Install Node.js 22 or newer.");
     return process.versions.node;
   });
+  const platform = options.platform ?? process.platform, arch = options.arch ?? process.arch, local = localTartHost(platform, arch);
   await check("host", async () => {
-    if (process.platform !== "darwin" || process.arch !== "arm64") throw Error("The supported local Tart/machine-service backend requires an Apple-silicon Mac. Ubuntu is a guest, not a substitute host.");
-    return `${process.platform}/${process.arch}`;
+    if (environment && !local) throw Error("The supported local Tart/machine-service backend requires an Apple-silicon Mac. Ubuntu is a guest, not a substitute host.");
+    return local ? `${platform}/${arch}` : `${platform}/${arch}: no local Tart backend; the relay leases from a machine-service instance on another host`;
   });
   await check("python", async () => {
     const r = await run([pythonExecutable(), "-c", "import fcntl, sys; print(sys.version.split()[0])"], { timeoutMs: 5e3 });
@@ -5629,6 +5633,7 @@ async function installationReport(options = {}) {
     }
   });
   await check("tart", async () => {
+    if (!local && !environment) return "Not used on this host: destruction is verified in the remote instance's /machines inventory";
     const r = await run([environment?.profile.tartPath ?? "tart", "list", "--format", "json"], { timeoutMs: 1e4, ...environment ? { env: { ...process.env, ...environmentVariables(environment) } } : {} });
     if (r.code !== 0 || !Array.isArray(JSON.parse(r.stdout))) throw Error("Install Tart and ensure tart list --format json works; required for independent destruction verification.");
     return "Read-only local inventory available";
