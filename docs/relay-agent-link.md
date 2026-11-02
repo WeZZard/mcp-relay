@@ -23,6 +23,7 @@
 - Every operation carries the relay's execution ID, which the relay already records for each run, so a resumed session never runs an operation twice.
 - After any loss that the session cannot resume, the relay asks `query {execution}` and reports `completed`, `running` or `unknown`. An `unknown` outcome stays uncertain, and the relay never replays it, as the relay already does for timeouts.
 - The relay sends data in chunks of at most 1 MiB and sends a heartbeat at least every 30 seconds, as the transport contract requires.
+- The relay speaks relay protocol 2 (vm-service RP-15), named in its session hello: an upload streams from its source, a file read from the disk at any offset, and keeps at most 32 MiB beyond the relay agent's last `progress`, so a file of any size needs no memory of its size. After `upload_incomplete`, or a lost session before the upload's `end` went out, the relay sends the same call with `resume` and continues from the relay agent's committed offset; a read cut by a lost session continues under a new execution ID from the bytes the relay already holds, with `offset`. Under a broker of protocol 1 the relay sends uploads as before (DC-5x-UP-1).
 
 ## 4. Running on Ubuntu
 

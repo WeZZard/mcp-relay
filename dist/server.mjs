@@ -10678,7 +10678,7 @@ var require_stream = __commonJS({
       };
       duplex._final = function(callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open9() {
+          ws.once("open", function open10() {
             duplex._final(callback);
           });
           return;
@@ -10699,7 +10699,7 @@ var require_stream = __commonJS({
       };
       duplex._write = function(chunk, encoding, callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open9() {
+          ws.once("open", function open10() {
             duplex._write(chunk, encoding, callback);
           });
           return;
@@ -20891,7 +20891,7 @@ var StdioServerTransport = class {
 
 // src/manager.ts
 import { randomUUID as randomUUID8 } from "node:crypto";
-import { mkdir as mkdir10, readFile as readFile10, readdir as readdir7, rm as rm5, cp, access, statfs } from "node:fs/promises";
+import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm5, cp, access, statfs } from "node:fs/promises";
 import { join as join13, resolve as resolve9 } from "node:path";
 
 // src/config.ts
@@ -21319,8 +21319,8 @@ var Session = class {
    */
   async runScript(localPath, remotePath, language2, options = {}) {
     const { createHash: createHash9 } = await import("node:crypto");
-    const { readFile: readFile11 } = await import("node:fs/promises");
-    const bytes = await readFile11(localPath);
+    const { readFile: readFile10 } = await import("node:fs/promises");
+    const bytes = await readFile10(localPath);
     const scriptSha256 = createHash9("sha256").update(bytes).digest("hex");
     const upload = await this.transport.upload(localPath, { remotePath });
     const executionId = formatId(allocateId("execution"));
@@ -21459,11 +21459,12 @@ init_evidence_package();
 // src/machine-service.ts
 import { isIP as isIP3 } from "node:net";
 import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
-import { open as open2, readFile as readFile3, rename as rename2, rm, stat as stat2 } from "node:fs/promises";
+import { open as open3, rename as rename2, rm, stat as stat2 } from "node:fs/promises";
 import { basename } from "node:path";
 
 // src/relay-client.ts
 import { createHash as createHash3, randomUUID, X509Certificate } from "node:crypto";
+import { open as open2 } from "node:fs/promises";
 import { isIP as isIP2 } from "node:net";
 import { rootCertificates } from "node:tls";
 
@@ -21929,14 +21930,54 @@ var ResumableSession = class _ResumableSession {
 
 // src/relay-client.ts
 var MAX_CHUNK = MAX_MESSAGE - 4096;
-var MAX_UPLOAD = 256 * 1024 * 1024;
+var RELAY_PROTOCOL = 2;
+var UPLOAD_WINDOW = 32 * 1024 * 1024;
+var SESSION_WINDOW = 8 * MAX_MESSAGE;
+var MAX_CONTINUATIONS = 20;
 var CHUNK_TAG = 1;
-var EMPTY_SHA256 = createHash3("sha256").digest("hex");
-var UPLOAD_WINDOW = 8 * MAX_MESSAGE;
 var OUTPUT_KEPT = 16 * 1024 * 1024;
 var kindOf = (op) => typeof op === "string" ? op : Object.keys(op)[0];
-var uploads = (kind) => kind === "exec" || kind === "script" || kind === "write";
-var streams = (kind) => kind === "exec" || kind === "script" || kind === "read";
+var uploads = (kind) => kind === "exec" || kind === "script" || kind === "write" || kind === "write_tree";
+var streams = (kind) => kind === "exec" || kind === "script" || kind === "read" || kind === "read_tree";
+var reads = (kind) => kind === "read" || kind === "read_tree";
+function bufferSource(bytes) {
+  return { size: bytes.length, sha256: createHash3("sha256").update(bytes).digest("hex"), read: async (offset, length) => bytes.subarray(offset, offset + length) };
+}
+async function fileSource(path) {
+  const hash3 = createHash3("sha256");
+  let size = 0;
+  const file = await open2(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_CHUNK);
+    for (; ; ) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, size);
+      if (!bytesRead) break;
+      hash3.update(buffer.subarray(0, bytesRead));
+      size += bytesRead;
+    }
+  } finally {
+    await file.close();
+  }
+  return {
+    size,
+    sha256: hash3.digest("hex"),
+    read: async (offset, length) => {
+      const reader = await open2(path, "r");
+      try {
+        const out = Buffer.allocUnsafe(length);
+        let filled = 0;
+        while (filled < length) {
+          const { bytesRead } = await reader.read(out, filled, length - filled, offset + filled);
+          if (!bytesRead) throw new Error(`${path} ended before ${offset + length} bytes; it changed during the upload`);
+          filled += bytesRead;
+        }
+        return out;
+      } finally {
+        await reader.close();
+      }
+    }
+  };
+}
 function encodeChunk(call, data) {
   if (data.length > MAX_CHUNK) throw new RangeError(`a chunk of ${data.length} bytes exceeds ${MAX_CHUNK}`);
   const out = Buffer.allocUnsafe(9 + data.length);
@@ -21994,9 +22035,9 @@ function webSocketDial(url, caPem, handshakeMs = 1e4) {
   return (handlers) => new Promise((resolve11, reject) => {
     const tlsOptions = { ca, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new wrapper_default(url, [], tlsOptions);
-    let open9 = false;
+    let open10 = false;
     socket.on("open", () => {
-      open9 = true;
+      open10 = true;
       const close = () => {
         if (socket.readyState >= wrapper_default.CLOSING) return;
         socket.close();
@@ -22009,10 +22050,10 @@ function webSocketDial(url, caPem, handshakeMs = 1e4) {
       handlers.message(binary ? bytes : bytes.toString("utf8"));
     });
     socket.on("error", (error2) => {
-      if (!open9) reject(error2);
+      if (!open10) reject(error2);
     });
     socket.on("close", (code, reason2) => {
-      if (!open9) reject(new Error(`closed before opening (${code})`));
+      if (!open10) reject(new Error(`closed before opening (${code})`));
       else handlers.closed(`closed (${code}${reason2.length ? `: ${reason2}` : ""})`);
     });
   });
@@ -22057,16 +22098,16 @@ var RelayClient = class {
     return (await this.current()).ready;
   }
   /** Run one operation and wait for its result. A `failed` or `interrupted` outcome is returned, not thrown. */
-  async run(op, upload = Buffer.alloc(0), options = {}) {
+  async run(op, input = Buffer.alloc(0), options = {}) {
     options.signal?.throwIfAborted();
     const kind = kindOf(op);
-    if (!uploads(kind) && upload.length) throw new TypeError(`${kind} takes no upload`);
-    if (upload.length > MAX_UPLOAD) throw new RangeError(`an upload of ${upload.length} bytes exceeds 256 MiB`);
+    const upload = Buffer.isBuffer(input) ? bufferSource(input) : input;
+    if (!uploads(kind) && upload.size) throw new TypeError(`${kind} takes no upload`);
     let executionId = options.executionId ?? randomUUID();
     if (!executionId || Buffer.byteLength(executionId) > 256) throw new TypeError("an execution ID has 1 to 256 bytes");
-    for (let reads = 0; ; reads++) {
+    for (let attempt = 0; ; attempt++) {
       const answer = await this.once(op, upload, executionId, options);
-      if (kind === "read" && "read" in answer.outcome && !this.streamMatches(answer) && reads < 3) {
+      if (reads(kind) && "read" in answer.outcome && !this.streamMatches(answer) && attempt < 3) {
         options.sink?.reset();
         executionId = randomUUID();
         continue;
@@ -22076,7 +22117,7 @@ var RelayClient = class {
   }
   /** What the broker or the relay agent knows of an execution ID (RP-7). */
   async query(executionId, options = {}) {
-    const call = this.track(executionId, "status", "query", Buffer.alloc(0));
+    const call = this.track(executionId, "status", "query", bufferSource(Buffer.alloc(0)));
     return (await this.dispatch(call, options)).state;
   }
   close() {
@@ -22095,17 +22136,18 @@ var RelayClient = class {
     const kind = kindOf(op);
     const call = this.track(executionId, op, kind, upload, options.sink);
     const { result: result2 } = await this.dispatch(call, options);
+    const id2 = call.executionId;
     const stream = streams(kind) && (call.end || call.size) ? { size: call.size, sha256: call.hash.copy().digest("hex") } : void 0;
     if (streams(kind) && call.end && stream && (call.end.size !== stream.size || call.end.sha256 !== stream.sha256)) {
-      if (kind !== "read") throw new RelayUncertainError(executionId, `the output of execution ${executionId} does not match its end`);
-      return { executionId, replayed: result2.replayed, outcome: result2.outcome, output: Buffer.alloc(0) };
+      if (!reads(kind)) throw new RelayUncertainError(id2, `the output of execution ${id2} does not match its end`);
+      return { executionId: id2, replayed: result2.replayed, outcome: result2.outcome, output: Buffer.alloc(0) };
     }
     const exit = result2.outcome.exit;
-    if (exit && stream && (exit.output.size !== stream.size || exit.output.sha256 !== stream.sha256)) throw new RelayUncertainError(executionId, `the output of execution ${executionId} does not match its outcome`);
-    return { executionId, replayed: result2.replayed, outcome: result2.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
+    if (exit && stream && (exit.output.size !== stream.size || exit.output.sha256 !== stream.sha256)) throw new RelayUncertainError(id2, `the output of execution ${id2} does not match its outcome`);
+    return { executionId: id2, replayed: result2.replayed, outcome: result2.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
   }
   track(executionId, op, kind, upload, sink) {
-    return { executionId, op, kind, upload, sink, hash: createHash3("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, settle: () => {
+    return { executionId, op, kind, upload, sink, hash: createHash3("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {
     }, fail: () => {
     }, done: false };
   }
@@ -22115,7 +22157,25 @@ var RelayClient = class {
     call.kept = [];
     call.keptBytes = 0;
     call.end = void 0;
+    call.offset = 0;
     call.sink?.reset();
+  }
+  /** Wake whoever waits on the call's progress. */
+  wakeAll(call) {
+    const wake = call.wake;
+    call.wake = [];
+    for (const go of wake) go();
+  }
+  /** Wait for the call's next progress, its end, or a second, whichever comes first. */
+  nextProgress(call) {
+    return new Promise((done) => {
+      const timer = setTimeout(done, 1e3);
+      timer.unref?.();
+      call.wake.push(() => {
+        clearTimeout(timer);
+        done();
+      });
+    });
   }
   /** Send a call in the current session and wait for its last message, through any recovery. */
   dispatch(call, options) {
@@ -22129,20 +22189,22 @@ var RelayClient = class {
       call.settle = (answer) => {
         if (call.done) return;
         finish();
+        this.wakeAll(call);
         resolve11(answer);
       };
       call.fail = (error2) => {
         if (call.done) return;
         finish();
+        this.wakeAll(call);
         reject(error2);
       };
       const abort = () => {
         const reason2 = options.signal.reason;
-        if (call.kind !== "query" && call.kind !== "read" && call.kind !== "status") void this.cancel(call.executionId);
+        if (call.kind !== "query" && !reads(call.kind) && call.kind !== "status") void this.cancel(call.executionId);
         call.fail(reason2 instanceof Error ? reason2 : new Error(String(reason2)));
       };
       options.signal?.addEventListener("abort", abort, { once: true });
-      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === "query" || call.kind === "read" || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`) : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
+      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === "query" || reads(call.kind) || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`) : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
       this.send(call).catch((error2) => call.fail(error2));
     });
   }
@@ -22173,7 +22235,7 @@ var RelayClient = class {
     handle.session = await ResumableSession.open({
       dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs),
       credential: this.grant.credential,
-      attributes: { role: "client" },
+      attributes: { role: "client", protocol: RELAY_PROTOCOL },
       ...this.options.timing ? { timing: this.options.timing } : {},
       ...this.options.random ? { random: this.options.random } : {},
       onBody: (body) => this.receive(handle, body, readyResolve),
@@ -22184,7 +22246,12 @@ var RelayClient = class {
     if (!handle.session.ended && !this.closed) this.active = handle;
     return handle;
   }
-  /** Put a call into the current session: its `call`, its upload as chunks, its `end`. */
+  /**
+   * Put a call into the current session: its `call`, its upload as chunks
+   * within the window beyond the relay agent's progress, its `end`. A call
+   * that resumes waits for the agent's committed offset and sends from there
+   * (RP-15).
+   */
   async send(call) {
     let handle = await this.current();
     while (handle.session.ended) {
@@ -22198,25 +22265,46 @@ var RelayClient = class {
     const number3 = handle.next++;
     call.number = number3;
     call.committedSend = false;
+    call.committed = void 0;
     handle.calls.set(number3, call);
     const session = handle.session;
     if (call.kind === "query") {
       session.send(encodeControl("query", { call: number3, execution: call.executionId }));
       return;
     }
-    session.send(encodeControl("call", { call: number3, execution: call.executionId, op: call.op }));
+    const v2 = (await handle.ready).protocol >= 2;
+    const stale = () => call.done || session.ended || handle.calls.get(number3) !== call;
+    if (stale()) return;
+    const resume = v2 && call.resume && uploads(call.kind);
+    const offset = v2 ? call.offset : 0;
+    if (!v2 && call.offset) this.reset(call);
+    session.send(encodeControl("call", { call: number3, execution: call.executionId, op: call.op, ...resume ? { resume: true } : {}, ...offset ? { offset } : {} }));
     if (!uploads(call.kind)) {
       call.committedSend = true;
       return;
     }
-    for (let at = 0; at < call.upload.length; at += MAX_CHUNK) {
-      await session.drained(UPLOAD_WINDOW);
-      if (session.ended || handle.calls.get(number3) !== call) return;
-      session.send(encodeChunk(number3, call.upload.subarray(at, at + MAX_CHUNK)));
+    const { upload } = call;
+    let at = 0;
+    if (resume) {
+      while (call.committed === void 0) {
+        if (stale()) return;
+        await this.nextProgress(call);
+      }
+      at = Math.min(call.committed, upload.size);
     }
-    if (session.ended || handle.calls.get(number3) !== call) return;
-    const sha256 = call.upload.length ? createHash3("sha256").update(call.upload).digest("hex") : EMPTY_SHA256;
-    session.send(encodeControl("end", { call: number3, execution: call.executionId, size: call.upload.length, sha256 }));
+    const from = at;
+    while (at < upload.size) {
+      if (v2) while (!stale() && at - (call.committed ?? from) >= UPLOAD_WINDOW) await this.nextProgress(call);
+      else await session.drained(SESSION_WINDOW);
+      if (stale()) return;
+      const length = Math.min(MAX_CHUNK, upload.size - at);
+      const data = await upload.read(at, length);
+      if (stale()) return;
+      session.send(encodeChunk(number3, data));
+      at += length;
+    }
+    if (stale()) return;
+    session.send(encodeControl("end", { call: number3, execution: call.executionId, size: upload.size, sha256: upload.sha256 }));
     call.committedSend = true;
   }
   receive(handle, body, readyResolve) {
@@ -22255,11 +22343,26 @@ var RelayClient = class {
       case "end":
         if (call && value.execution === call.executionId) call.end = { size: value.size, sha256: value.sha256 };
         return;
-      case "result":
+      case "progress":
+        if (!call || value.execution !== call.executionId || typeof value.committed !== "number") return;
+        call.committed = Math.max(call.committed ?? 0, value.committed);
+        this.wakeAll(call);
+        return;
+      case "result": {
         if (!call || value.execution !== call.executionId) return;
         handle.calls.delete(value.call);
+        const failed = value.outcome.failed;
+        if (failed?.code === "upload_incomplete" && !failed.committed && uploads(call.kind) && call.continuations < MAX_CONTINUATIONS) {
+          call.continuations++;
+          call.resume = true;
+          this.options.log?.(`relay: execution ${call.executionId} continues from the relay agent's committed offset`);
+          this.wakeAll(call);
+          void this.send(call).catch((error2) => call.fail(error2));
+          return;
+        }
         call.settle({ result: { replayed: !!value.replayed, outcome: value.outcome } });
         return;
+      }
       case "query_result":
         if (!call || value.execution !== call.executionId) return;
         handle.calls.delete(value.call);
@@ -22289,6 +22392,7 @@ var RelayClient = class {
     this.options.log?.(`relay: ${why}`);
     const final = this.closed || end.kind === "rejected" || end.kind === "closed";
     for (const call of calls) {
+      this.wakeAll(call);
       if (final) {
         call.fail(this.mayHaveRun(call) ? new RelayUncertainError(call.executionId, `relay: ${why}`) : new Error(`relay: ${why}; the operation never reached its commit point`));
         continue;
@@ -22298,15 +22402,24 @@ var RelayClient = class {
   }
   /** Whether a call may have passed its commit point: its upload's `end`, or for cancel its `call`, went out. */
   mayHaveRun(call) {
-    if (call.kind === "query" || call.kind === "read" || call.kind === "status" || call.number === void 0) return false;
+    if (call.kind === "query" || reads(call.kind) || call.kind === "status" || call.number === void 0) return false;
     return call.committedSend || !uploads(call.kind);
   }
   /** After an unresumable loss: query, then attach to a known execution, or report it uncertain. */
   async recover(call) {
     if (call.done) return;
+    if (reads(call.kind) && !call.end) {
+      call.executionId = randomUUID();
+      call.offset = call.size;
+      return this.send(call);
+    }
     this.reset(call);
+    if (uploads(call.kind) && !call.committedSend && call.number !== void 0) {
+      call.resume = true;
+      return this.send(call);
+    }
     if (!this.mayHaveRun(call)) {
-      if (call.kind === "read") call.executionId = randomUUID();
+      if (reads(call.kind)) call.executionId = randomUUID();
       return this.send(call);
     }
     let state;
@@ -22317,6 +22430,7 @@ var RelayClient = class {
     }
     if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution");
     if (call.done) return;
+    call.resume = true;
     return this.send(call);
   }
 };
@@ -22563,10 +22677,10 @@ var MachineService = class {
     const client = await this.relayFor(vm);
     const facts = client ? await stat2(body.local_path) : void 0;
     if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
-    const bytes = await readFile3(body.local_path);
-    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, bytes, randomUUID2(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const source = await fileSource(body.local_path);
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, source, randomUUID2(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
     const written = answer.outcome.written;
-    if (!written || written.size !== bytes.length || written.sha256 !== createHash4("sha256").update(bytes).digest("hex")) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
+    if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
     return { vm, pushed: body.local_path, to: body.remote_path };
   }
   /** On a `relay` lease a file comes as a `read` through the broker, checked and renamed into place; a guest folder still goes over HTTP. */
@@ -22590,7 +22704,7 @@ var MachineService = class {
   }
   /** Read a guest file into `to`, which must not exist, streaming and hashing it; the bytes must match the read's outcome. */
   async relayRead(client, remote, to, options) {
-    const file = await open2(to, "wx", 384);
+    const file = await open3(to, "wx", 384);
     let position = 0, writing = Promise.resolve();
     const sink = {
       write: (data) => {
@@ -22659,7 +22773,7 @@ var MachineService = class {
         throw error2;
       }
     }
-    const hash3 = createHash4("sha256"), file = await open2(body.to, "wx", 384);
+    const hash3 = createHash4("sha256"), file = await open3(body.to, "wx", 384);
     let bytes = 0;
     try {
       const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async (chunk) => {
@@ -22778,7 +22892,7 @@ import { homedir as homedir4 } from "node:os";
 
 // src/registry.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { link, lstat, mkdir as mkdir2, open as open3, readFile as readFile4, realpath, rename as rename3, unlink } from "node:fs/promises";
+import { link, lstat, mkdir as mkdir2, open as open4, readFile as readFile3, realpath, rename as rename3, unlink } from "node:fs/promises";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { spawn as spawn2 } from "node:child_process";
@@ -22956,11 +23070,11 @@ var Registry = class {
       if (this.managed) await this.initialize(target, lock.check);
       const before = await lstat(target);
       if (!before.isFile()) throw new RegistryError("Registry target must be a regular file");
-      const original = await readFile4(target, "utf8");
+      const original = await readFile3(target, "utf8");
       const updated = transform2(original);
       if (original === updated) return false;
       temporary = join5(dirname3(target), `.${target.split("/").at(-1)}.${token2}.tmp`);
-      const handle = await open3(temporary, "wx", before.mode & 511);
+      const handle = await open4(temporary, "wx", before.mode & 511);
       try {
         await handle.chmod(before.mode & 511);
         await handle.writeFile(updated, "utf8");
@@ -22970,13 +23084,13 @@ var Registry = class {
       }
       signal?.throwIfAborted();
       const current = await lstat(target);
-      if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || await readFile4(target, "utf8") !== original) {
+      if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || await readFile3(target, "utf8") !== original) {
         throw new RegistryError("Registry changed outside its lock; retry without overwriting those changes");
       }
       lock.check();
       await rename3(temporary, target);
       temporary = void 0;
-      const dir = await open3(dirname3(target), "r");
+      const dir = await open4(dirname3(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -23003,7 +23117,7 @@ var Registry = class {
       if (!errno(error2, "ENOENT")) throw error2;
     }
     const temporary = join5(dirname3(target), `.registry.${randomUUID3()}.tmp`);
-    const handle = await open3(temporary, "wx", 384);
+    const handle = await open4(temporary, "wx", 384);
     try {
       try {
         await handle.chmod(384);
@@ -23018,7 +23132,7 @@ var Registry = class {
       } catch (error2) {
         if (!errno(error2, "EEXIST")) throw error2;
       }
-      const dir = await open3(dirname3(target), "r");
+      const dir = await open4(dirname3(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -23093,7 +23207,7 @@ var Registry = class {
 };
 
 // src/transfer.ts
-import { copyFile, mkdir as mkdir5, readFile as readFile6, lstat as lstat3, mkdtemp, rm as rm2, open as open6, link as link2 } from "node:fs/promises";
+import { copyFile, mkdir as mkdir5, readFile as readFile5, lstat as lstat3, mkdtemp, rm as rm2, open as open7, link as link2 } from "node:fs/promises";
 import { constants as constants3, linkSync } from "node:fs";
 import { dirname as dirname6, join as join7, resolve as resolve5, relative as relative4, isAbsolute as isAbsolute4 } from "node:path";
 import { tmpdir } from "node:os";
@@ -23102,11 +23216,11 @@ import { randomUUID as randomUUID5 } from "node:crypto";
 // src/util.ts
 import { spawn as spawn3 } from "node:child_process";
 import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
-import { mkdir as mkdir3, rename as rename4, lstat as lstat2, readdir as readdir2, open as open4 } from "node:fs/promises";
+import { mkdir as mkdir3, rename as rename4, lstat as lstat2, readdir as readdir2, open as open5 } from "node:fs/promises";
 import { dirname as dirname4, join as join6, resolve as resolve4, relative as relative3, isAbsolute as isAbsolute3 } from "node:path";
 var hash = (bytes) => createHash5("sha256").update(bytes).digest("hex");
 async function hashFile(path) {
-  const file = await open4(path, "r");
+  const file = await open5(path, "r");
   try {
     const digest = createHash5("sha256"), chunk = Buffer.alloc(8 * 1024 * 1024);
     let bytes = 0;
@@ -23124,7 +23238,7 @@ async function hashFile(path) {
 async function jsonFile(path, value) {
   await mkdir3(dirname4(path), { recursive: true, mode: 448 });
   const tmp = `${path}.${randomUUID4()}.tmp`;
-  const file = await open4(tmp, "wx", 384);
+  const file = await open5(tmp, "wx", 384);
   try {
     await file.writeFile(JSON.stringify(value, null, 2) + "\n");
     await file.sync();
@@ -23132,7 +23246,7 @@ async function jsonFile(path, value) {
     await file.close();
   }
   await rename4(tmp, path);
-  const directory2 = await open4(dirname4(path), "r");
+  const directory2 = await open5(dirname4(path), "r");
   try {
     await directory2.sync();
   } finally {
@@ -23196,7 +23310,7 @@ async function command(argv, options = {}) {
 }
 
 // src/archive.ts
-import { open as open5, mkdir as mkdir4 } from "node:fs/promises";
+import { open as open6, mkdir as mkdir4 } from "node:fs/promises";
 import { constants as constants2 } from "node:fs";
 import { createHash as createHash6 } from "node:crypto";
 import { dirname as dirname5 } from "node:path";
@@ -23225,7 +23339,7 @@ function archiveChunks(files, maxArgvBytes = 64 * 1024) {
   return chunks;
 }
 async function unpackArchive(archive, directory2, requested, options = {}) {
-  const input = await open5(archive, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+  const input = await open6(archive, constants2.O_RDONLY | constants2.O_NOFOLLOW);
   const unpacked = [];
   try {
     const buffer = Buffer.alloc(8 * 1024 * 1024);
@@ -23271,7 +23385,7 @@ async function unpackArchive(archive, directory2, requested, options = {}) {
       const bytes = head.bytes;
       const target = within(directory2, fact.path);
       await mkdir4(dirname5(target), { recursive: true, mode: 448 });
-      const output = await open5(target, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
+      const output = await open6(target, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
       const digest = createHash6("sha256");
       try {
         for (let left = bytes; left > 0; ) {
@@ -23442,7 +23556,7 @@ var Transfer = class {
     const info = await lstat3(local);
     if (!info.isFile()) throw new Error(`Expected regular file: ${local}`);
     if (info.size > STAGING_MAX_BYTES) throw new Error("Staging exceeds 512 MiB");
-    const bytes = await readFile6(local), before = hash(bytes);
+    const bytes = await readFile5(local), before = hash(bytes);
     const guestRoot = this.options.guestRoot ?? dirname6(remote);
     await this.checked([this.node, "-e", PREPARE, guestRoot, remote]);
     await this.copy("push", () => this.vm.push(this.name, resolve5(local), remote), async () => {
@@ -23450,7 +23564,7 @@ var Transfer = class {
       await this.checked([this.node, "-e", PREPARE, guestRoot, remote]);
     });
     await assertHostPath(approvedLocalRoot, local);
-    const after = await readFile6(local);
+    const after = await readFile5(local);
     if (hash(after) !== before || after.length !== bytes.length) throw new Error(`Staging source changed: ${local}`);
     const facts = await this.scan(remote, guestRoot, bytes.length);
     if (facts.length !== 1 || facts[0].sha256 !== before || facts[0].bytes !== bytes.length) throw new Error(`Staging checksum mismatch: ${local}`);
@@ -23496,7 +23610,7 @@ var Transfer = class {
     const info = await lstat3(local);
     if (!info.isFile()) throw new Error("Invalid local frame file");
     if (info.size !== before.bytes) throw new Error(`Extraction checksum mismatch: ${remote}`);
-    const bytes = await readFile6(local);
+    const bytes = await readFile5(local);
     if (bytes.length !== before.bytes || hash(bytes) !== before.sha256) throw new Error(`Extraction checksum mismatch: ${remote}`);
     if (JSON.stringify(await this.fileFact(remote, approvedRoot)) !== JSON.stringify(before)) throw new Error(`Source changed during extraction: ${remote}`);
     return bytes;
@@ -23593,7 +23707,7 @@ var Transfer = class {
       const info = await lstat3(path);
       if (!info.isFile()) throw new ImageTransferError("unsafe-path", "Expected a regular local image");
       if (info.size !== identity.bytes) throw new ImageTransferError("integrity-failed", "Local image size conflicts with original");
-      const fd = await open6(path, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+      const fd = await open7(path, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
       try {
         const same = (s) => s.isFile() && s.dev === info.dev && s.ino === info.ino && s.size === info.size && s.mtimeMs === info.mtimeMs && s.ctimeMs === info.ctimeMs;
         if (!same(await fd.stat())) throw new ImageTransferError("integrity-failed", "Local image changed before verification");
@@ -24005,7 +24119,7 @@ var VmTransport = class {
 
 // src/package.ts
 import { createHash as createHash7 } from "node:crypto";
-import { lstat as lstat4, readFile as readFile7, readdir as readdir3, mkdir as mkdir6, writeFile as writeFile3, rm as rm3 } from "node:fs/promises";
+import { lstat as lstat4, readFile as readFile6, readdir as readdir3, mkdir as mkdir6, writeFile as writeFile3, rm as rm3 } from "node:fs/promises";
 import { dirname as dirname7, join as join9, resolve as resolve6, parse as parse4 } from "node:path";
 var generated = ["OPENING.txt", "manifest.json"];
 var hash2 = (bytes) => createHash7("sha256").update(bytes).digest("hex");
@@ -24048,7 +24162,7 @@ async function filesUnder(root, prefix = "") {
   return result2.sort();
 }
 async function readJson(root, path) {
-  return object3(JSON.parse(await readFile7(join9(root, relativePath(path)), "utf8")), path);
+  return object3(JSON.parse(await readFile6(join9(root, relativePath(path)), "utf8")), path);
 }
 function snapshotPath(sessionId, sn) {
   const name = relativePath(sn.fileName);
@@ -24096,7 +24210,7 @@ async function analyze(root, options, files) {
   relativePath(options.sessionId);
   const journalPath = "state/journal/events.jsonl";
   if (!files.includes(journalPath)) throw new Error("missing original state/journal/events.jsonl");
-  const events = (await readFile7(join9(root, journalPath), "utf8")).split("\n").filter((l) => l.trim()).map((l, i) => object3(JSON.parse(l), `journal line ${i + 1}`));
+  const events = (await readFile6(join9(root, journalPath), "utf8")).split("\n").filter((l) => l.trim()).map((l, i) => object3(JSON.parse(l), `journal line ${i + 1}`));
   const starts = /* @__PURE__ */ new Map(), completions = /* @__PURE__ */ new Map(), refusals = /* @__PURE__ */ new Map();
   const actionRecords = /* @__PURE__ */ new Map();
   const findings = [];
@@ -24135,7 +24249,7 @@ async function analyze(root, options, files) {
     if (event.attemptId !== start.attemptId) throw new Error(`snapshot attempt mismatch: ${id2}`);
     if (sn.role === "before" && !plan.capturesBefore || sn.role === "after" && (!plan.capturesAfter || plan.capturesAfter.afterIntervalMs !== sn.declaredAfterIntervalMs)) throw new Error(`snapshot contradicts declared plan: ${id2}`);
     if (!files.includes(path)) throw new Error(`missing captured original: ${path}`);
-    const bytes = await readFile7(join9(root, path));
+    const bytes = await readFile6(join9(root, path));
     if (bytes.length !== sn.bytes || hash2(bytes) !== sn.sha256) throw new Error(`capture integrity mismatch: ${path}`);
     const artifact = {
       path,
@@ -24190,7 +24304,7 @@ async function analyze(root, options, files) {
   }
   const hostRecords = events.filter((e) => e.kind === "annotation" && e.annotationType === "routing-decision");
   for (const path of files.filter((p) => p.startsWith("host/") && /\.jsonl?$/.test(p))) {
-    const raw = await readFile7(join9(root, path), "utf8");
+    const raw = await readFile6(join9(root, path), "utf8");
     for (const value of path.endsWith(".jsonl") ? raw.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l)) : [JSON.parse(raw)]) {
       if (value && typeof value === "object") hostRecords.push(value);
     }
@@ -24417,7 +24531,7 @@ async function verifyDeliveredPackage(rootDir) {
     seen.add(path);
     if (!files.includes(path)) throw new Error(`missing artifact: ${path}`);
     if (!Number.isSafeInteger(artifact.bytes) || artifact.bytes < 0 || typeof artifact.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(artifact.sha256)) throw new Error(`invalid manifest integrity metadata: ${path}`);
-    const bytes = await readFile7(join9(root, path));
+    const bytes = await readFile6(join9(root, path));
     if (bytes.length !== artifact.bytes || hash2(bytes) !== artifact.sha256) throw new Error(`artifact integrity mismatch: ${path}`);
   }
   for (const path of files) if (path !== "manifest.json" && !seen.has(path)) throw new Error(`unmanifested artifact: ${path}`);
@@ -24477,7 +24591,7 @@ async function probeLocal(run = command, platform = process.platform) {
 // src/owner-lock.ts
 import { spawn as spawn4 } from "node:child_process";
 import { constants as constants4 } from "node:fs";
-import { open as open7 } from "node:fs/promises";
+import { open as open8 } from "node:fs/promises";
 var OwnerLockError = class extends Error {
   constructor(message3, options) {
     super(message3, options);
@@ -24502,7 +24616,7 @@ async function acquireOwnerLock(path, options = {}) {
   const executable = options.pythonExecutable === void 0 ? pythonExecutable() : nonblank(options.pythonExecutable, "pythonExecutable");
   const signal = options.signal;
   signal?.throwIfAborted();
-  const file = await open7(path, constants4.O_RDWR | constants4.O_CREAT | constants4.O_NOFOLLOW, 384);
+  const file = await open8(path, constants4.O_RDWR | constants4.O_CREAT | constants4.O_NOFOLLOW, 384);
   try {
     if (!(await file.stat()).isFile()) throw new OwnerLockError("Owner lock must be a regular file");
     signal?.throwIfAborted();
@@ -32259,7 +32373,7 @@ function searchCatalog(value, query) {
 
 // src/search-diagnostics.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
-import { lstat as lstat5, mkdir as mkdir7, readdir as readdir4, readFile as readFile8, unlink as unlink2 } from "node:fs/promises";
+import { lstat as lstat5, mkdir as mkdir7, readdir as readdir4, readFile as readFile7, unlink as unlink2 } from "node:fs/promises";
 import { join as join10, resolve as resolve7, parse as parse5 } from "node:path";
 var common = {
   schemaVersion: typebox_exports.Literal(1),
@@ -32336,7 +32450,7 @@ async function recordSearch(root, query, outcome, options = {}) {
     if (!RECORD.test(name)) throw new Error("Unrecognized search diagnostic entry");
     const path2 = join10(directory2, name), info = await lstat5(path2);
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 16384 || (info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid()) throw new Error("Unsafe search diagnostic record");
-    const previous = JSON.parse(await readFile8(path2, "utf8"));
+    const previous = JSON.parse(await readFile7(path2, "utf8"));
     const at = Date.parse(previous.at);
     if (!validDiagnostic(previous) || !Number.isFinite(at) || new Date(at).toISOString() !== previous.at || previous.query.name !== normalizeSearchName(previous.query.name) || name !== `${previous.at.replace(/:/g, "-")}-${previous.id}.json`) throw new Error("Invalid search diagnostic record");
     existing.push({ name, at });
@@ -32404,7 +32518,7 @@ function acquisitionCapabilities(value) {
 }
 
 // src/images.ts
-import { mkdir as mkdir8, lstat as lstat6, open as open8, readdir as readdir5, rm as rm4 } from "node:fs/promises";
+import { mkdir as mkdir8, lstat as lstat6, open as open9, readdir as readdir5, rm as rm4 } from "node:fs/promises";
 import { constants as constants5, linkSync as linkSync2 } from "node:fs";
 import { join as join11, dirname as dirname8, extname } from "node:path";
 import { randomUUID as randomUUID7 } from "node:crypto";
@@ -32915,7 +33029,7 @@ async function readBounded(root, path, limit, signal) {
   const before = await lstat6(path);
   if (!before.isFile()) fail("unsafe-path", "Image evidence must be a regular file.");
   if (before.size < 1 || before.size > limit) fail("integrity-failed", "Image evidence exceeds its size bound.");
-  const fd = await open8(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
+  const fd = await open9(path, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
   try {
     const same = (s) => s.isFile() && s.dev === before.dev && s.ino === before.ino && s.size === before.size && s.mtimeMs === before.mtimeMs && s.ctimeMs === before.ctimeMs;
     if (!same(await fd.stat())) fail("integrity-failed", "Image evidence changed before reading.");
@@ -32961,7 +33075,7 @@ async function publish(root, path, bytes, signal) {
   await hostPath(root, path, true);
   guard(signal);
   const temporary = join11(dirname8(path), `.image-${randomUUID7()}.tmp`);
-  const fd = await open8(temporary, "wx", 384);
+  const fd = await open9(temporary, "wx", 384);
   try {
     try {
       await fd.writeFile(bytes);
@@ -32982,7 +33096,7 @@ async function publish(root, path, bytes, signal) {
     await hostPath(root, temporary, true);
     await rm4(temporary, { force: true });
   }
-  const directory2 = await open8(dirname8(path), "r");
+  const directory2 = await open9(dirname8(path), "r");
   try {
     await directory2.sync();
   } finally {
@@ -33458,7 +33572,7 @@ var DownloadQueue = class {
 
 // src/evidence-merge.ts
 import { constants as constants6 } from "node:fs";
-import { copyFile as copyFile2, lstat as lstat7, mkdir as mkdir9, mkdtemp as mkdtemp2, readFile as readFile9, readdir as readdir6, rename as rename5 } from "node:fs/promises";
+import { copyFile as copyFile2, lstat as lstat7, mkdir as mkdir9, mkdtemp as mkdtemp2, readFile as readFile8, readdir as readdir6, rename as rename5 } from "node:fs/promises";
 import { dirname as dirname9, isAbsolute as isAbsolute5, join as join12, parse as parse6, relative as relative5, resolve as resolve8 } from "node:path";
 function safePath(value) {
   if (!value || /[\\\x00-\x1f\x7f:#?]/.test(value) || value.split("/").some((p) => p === "." || p === "..")) {
@@ -33529,7 +33643,7 @@ async function refreshEvidenceState(incoming, destination, archiveRoot, options 
     if (path !== "snapshots" && !path.startsWith("snapshots/")) continue;
     const replacement = fresh.get(path);
     if (replacement && replacement !== kind) throw new Error(`snapshot conflict: ${path}`);
-    if (replacement === "file" && !(await readFile9(join12(destination, path))).equals(await readFile9(join12(incoming, path)))) {
+    if (replacement === "file" && !(await readFile8(join12(destination, path))).equals(await readFile8(join12(incoming, path)))) {
       throw new Error(`snapshot conflict: ${path}`);
     }
     if (!replacement) retained.set(path, kind);
@@ -33669,9 +33783,9 @@ var udpTransport = (receive) => new Promise((resolve11, reject) => {
   });
 });
 var wait = (ms) => new Promise((done) => setTimeout(done, ms));
-async function browse(service, windowMs = 2e3, followUpMs = 1e3, open9 = udpTransport) {
+async function browse(service, windowMs = 2e3, followUpMs = 1e3, open10 = udpTransport) {
   const records = [];
-  const transport = await open9((message3) => records.push(...parseRecords(message3)));
+  const transport = await open10((message3) => records.push(...parseRecords(message3)));
   try {
     const question = encodeQuery([{ name: service, type: TYPE.PTR }]);
     transport.send(question);
@@ -34418,7 +34532,7 @@ var RelayManager = class {
 };
 async function readRecord(path) {
   try {
-    return JSON.parse(await readFile10(path, "utf8"));
+    return JSON.parse(await readFile9(path, "utf8"));
   } catch (error2) {
     if (error2.code === "ENOENT") return null;
     throw error2;
@@ -34481,7 +34595,7 @@ var Guest = class {
       },
       push: async (name, local_path, remote_path) => {
         if (!durable) return this.vm.push(name, { local_path, remote_path, ...identity() });
-        const bytes = await readFile10(local_path);
+        const bytes = await readFile9(local_path);
         return this.withOwner((backend) => {
           if (!backend.pushBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
           return backend.pushBytes(this.enclosure.machine, { remote_path, bytes, ...identity() });
@@ -35271,7 +35385,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   async namedImage(imageId) {
     const records = join13(this.current().hostRoot, "host", "evidence-downloads");
     for (const name of (await readdir7(records).catch(() => [])).filter((n) => n.endsWith(".json"))) {
-      const image = await readFile10(join13(records, name), "utf8").then((text5) => JSON.parse(text5)?.image, () => void 0);
+      const image = await readFile9(join13(records, name), "utf8").then((text5) => JSON.parse(text5)?.image, () => void 0);
       if (image?.imageId === imageId) return image;
     }
     return void 0;
@@ -35296,7 +35410,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     if (!stepId(executionId)) return void 0;
     let receipt;
     try {
-      receipt = JSON.parse(await readFile10(join13(hostRoot, "host", "receiver-receipts", `${executionId}.json`), "utf8"));
+      receipt = JSON.parse(await readFile9(join13(hostRoot, "host", "receiver-receipts", `${executionId}.json`), "utf8"));
     } catch {
       return void 0;
     }
@@ -35352,7 +35466,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
       if (!stepId(executionId)) continue;
       let record3;
       try {
-        record3 = JSON.parse(await readFile10(join13(records, name), "utf8"));
+        record3 = JSON.parse(await readFile9(join13(records, name), "utf8"));
       } catch {
         continue;
       }
@@ -35537,7 +35651,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   async diagnostic(input, timeoutMs2, signal) {
     const e = this.current();
     if (input.language !== "shell" || input.snapshots?.group) throw new Error("A diagnostic run is a shell script and cannot join a snapshot group");
-    const script = input.inline ? input.code : await readFile10(await this.m.projectPath(input.localPath ?? "", "localPath"), "utf8");
+    const script = input.inline ? input.code : await readFile9(await this.m.projectPath(input.localPath ?? "", "localPath"), "utf8");
     if (typeof script !== "string") throw new Error("relay_script with inline: true takes the script as code, and no localPath");
     const executionId = `diagnostic-${randomUUID8()}`;
     const { guest: _guest, ...requested } = input;

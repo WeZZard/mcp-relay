@@ -128,27 +128,61 @@ export class FakeBroker {
 }
 
 interface Execution { op: Op; output: Buffer; outcome?: Outcome; runs: number }
-interface Upload { call: number; execution: string; op: Op; chunks: Buffer[] }
+/** An upload the fake relay agent holds between its call and its end, by execution ID (RP-15). */
+interface Held { op: Op; chunks: Buffer[]; size: number; owner?: string; reported: number }
+const PROGRESS_STEP = 4 * 1024 * 1024;
 /**
  * The relay layer over FakeBroker: `ready` first, then calls with execution
  * records. `exec` runs a tiny command language: `echo <text>` prints the
- * text, `hold` waits until the test calls `finish`.
+ * text, `hold` waits until the test calls `finish`. Protocol 2 (RP-15): an
+ * upload is held by execution ID, its progress reported, and a call with
+ * `resume` continues it; a read starts at `offset`.
  */
 export class FakeRelay {
   readonly executions = new Map<string, Execution>();
-  readonly calls: Array<{ execution: string; op: Op; size: number }> = [];
+  readonly calls: Array<{ execution: string; op: Op; size: number; resume?: boolean; offset?: number }> = [];
   readonly queries: string[] = [];
   readonly chunkSizes: number[] = [];
-  private readonly held = new Map<string, Array<() => void>>();
+  readonly held = new Map<string, Held>();
+  private readonly holds = new Map<string, Array<() => void>>();
   /** Answer `unknown` to every query. */
   forgetRecords = false;
+  /** The relay protocol in `ready`. */
+  protocol = 2;
+  /** End an upload with `upload_incomplete` once the agent holds this many bytes of it, once, as a lost agent session does. */
+  cutUploadAt?: number;
+  /** Withhold progress reports, so the client's window fills. */
+  stallProgress = false;
+  /** The most bytes of an upload that arrived beyond the last progress reported. */
+  maxAhead = 0;
+  /** A read's bytes, by path; `contents of <path>` otherwise. */
+  readonly files = new Map<string, Buffer>();
+  /** Send only this many bytes of the next read, then forget every session, as a broker restart does. */
+  cutReadAt?: number;
+  private report?: () => void;
   constructor(readonly broker: FakeBroker) {
-    broker.onOpen = session => broker.send(session, encodeControl('ready', { protocol: 1, lease: 'fake-lease', agent: { os: 'macos', arch: 'aarch64', build: 'f'.repeat(64), protocol: 1 } }));
-    const uploads = new Map<string, Upload>();
+    broker.onOpen = session => broker.send(session, encodeControl('ready', { protocol: this.protocol, lease: 'fake-lease', agent: { os: 'macos', arch: 'aarch64', build: 'f'.repeat(64), protocol: this.protocol } }));
     broker.app = (session, body) => {
       const reply = (name: string, value: unknown) => broker.send(session, encodeControl(name, value));
       const message = decodeMessage(body);
-      if ('chunk' in message) { this.chunkSizes.push(message.chunk.data.length); uploads.get(`${session.id}:${message.chunk.call}`)!.chunks.push(Buffer.from(message.chunk.data)); return; }
+      const key = (call: number) => `${session.id}:${call}`;
+      if ('chunk' in message) {
+        this.chunkSizes.push(message.chunk.data.length);
+        const entry = [...this.held.entries()].find(([, held]) => held.owner === key(message.chunk.call));
+        if (!entry) return; // a call that ended before its stream did
+        const [execution, held] = entry;
+        held.chunks.push(Buffer.from(message.chunk.data)); held.size += message.chunk.data.length;
+        this.maxAhead = Math.max(this.maxAhead, held.size - held.reported);
+        if (this.cutUploadAt !== undefined && held.size >= this.cutUploadAt) {
+          this.cutUploadAt = undefined; held.owner = undefined;
+          return reply('result', { call: message.chunk.call, execution, replayed: false, outcome: { failed: { code: 'upload_incomplete', message: 'the relay agent\'s session ended', committed: false } } });
+        }
+        const progress = () => { held.reported = held.size; reply('progress', { call: message.chunk.call, execution, committed: held.size }); };
+        if (this.protocol >= 2 && held.size >= held.reported + PROGRESS_STEP) {
+          if (this.stallProgress) this.report = progress; else progress();
+        }
+        return;
+      }
       const { name, value } = message;
       if (name === 'query') {
         this.queries.push(value.execution);
@@ -158,23 +192,42 @@ export class FakeRelay {
       }
       if (name === 'call') {
         const kind = typeof value.op === 'string' ? value.op : Object.keys(value.op)[0];
-        if (['exec', 'script', 'write'].includes(kind)) { uploads.set(`${session.id}:${value.call}`, { call: value.call, execution: value.execution, op: value.op, chunks: [] }); return; }
-        return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply);
+        if (['exec', 'script', 'write', 'write_tree'].includes(kind)) {
+          const known = this.executions.get(value.execution);
+          if (known) return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, 0);
+          let held = this.held.get(value.execution);
+          if (!held || !value.resume || JSON.stringify(held.op) !== JSON.stringify(value.op)) { held = { op: value.op, chunks: [], size: 0, reported: 0 }; this.held.set(value.execution, held); }
+          held.owner = key(value.call); held.reported = held.size;
+          this.calls.push({ execution: value.execution, op: value.op, size: -1, resume: !!value.resume });
+          if (this.protocol >= 2) reply('progress', { call: value.call, execution: value.execution, committed: held.size });
+          return;
+        }
+        return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, value.offset ?? 0);
       }
       if (name === 'end') {
-        const upload = uploads.get(`${session.id}:${value.call}`)!; uploads.delete(`${session.id}:${value.call}`);
-        const bytes = Buffer.concat(upload.chunks);
-        if (bytes.length !== value.size || createHash('sha256').update(bytes).digest('hex') !== value.sha256) return reply('result', { call: value.call, execution: value.execution, replayed: false, outcome: { failed: { code: 'checksum_mismatch', message: 'no match', committed: false } } });
-        return this.start(session, value.call, value.execution, upload.op, bytes, reply);
+        const entry = [...this.held.entries()].find(([, held]) => held.owner === key(value.call));
+        if (!entry) return;
+        const [execution, held] = entry;
+        held.owner = undefined;
+        const fail = (code: string) => reply('result', { call: value.call, execution: value.execution, replayed: false, outcome: { failed: { code, message: code, committed: false } } });
+        if (held.size < value.size) return fail('upload_incomplete');
+        const bytes = Buffer.concat(held.chunks);
+        this.held.delete(execution);
+        if (bytes.length !== value.size || createHash('sha256').update(bytes).digest('hex') !== value.sha256) return fail('checksum_mismatch');
+        const placeholder = this.calls.findIndex(c => c.execution === value.execution && c.size === -1);
+        if (placeholder >= 0) this.calls.splice(placeholder, 1);
+        return this.start(session, value.call, value.execution, held.op, bytes, reply, 0);
       }
     };
   }
+  /** Report the progress that `stallProgress` withheld, and report as bytes come from now on. */
+  release() { this.stallProgress = false; const report = this.report; this.report = undefined; report?.(); }
   /** Let every `hold` command of this execution finish. */
-  finish(execution: string) { for (const go of this.held.get(execution) ?? []) go(); this.held.delete(execution); }
+  finish(execution: string) { for (const go of this.holds.get(execution) ?? []) go(); this.holds.delete(execution); }
   runs(execution: string) { return this.executions.get(execution)?.runs ?? 0; }
 
-  private start(session: any, call: number, execution: string, op: Op, upload: Buffer, reply: (name: string, value: unknown) => void) {
-    this.calls.push({ execution, op, size: upload.length });
+  private start(session: any, call: number, execution: string, op: Op, upload: Buffer, reply: (name: string, value: unknown) => void, offset: number) {
+    this.calls.push({ execution, op, size: upload.length, offset });
     const stream = (data: Buffer) => { for (let at = 0; at < data.length; at += MAX_CHUNK) this.broker.send(session, encodeChunk(call, data.subarray(at, at + MAX_CHUNK))); };
     const digest = (data: Buffer) => ({ size: data.length, sha256: createHash('sha256').update(data).digest('hex') });
     const answer = (record: Execution, replayed: boolean) => {
@@ -184,7 +237,7 @@ export class FakeRelay {
     const known = this.executions.get(execution);
     if (known) {
       if (known.outcome) return answer(known, true);
-      const waiting = this.held.get(execution) ?? []; waiting.push(() => answer(known, true)); this.held.set(execution, waiting);
+      const waiting = this.holds.get(execution) ?? []; waiting.push(() => answer(known, true)); this.holds.set(execution, waiting);
       return;
     }
     const record: Execution = { op, output: Buffer.alloc(0), runs: 1 };
@@ -193,9 +246,9 @@ export class FakeRelay {
       const command = op.exec.command;
       const done = () => { record.outcome = { exit: { rc: 0, signal: null, timed_out: false, cancelled: false, output: digest(record.output) } }; };
       if (command === 'hold') {
-        const waiting = this.held.get(execution) ?? [];
+        const waiting = this.holds.get(execution) ?? [];
         waiting.unshift(() => { record.output = Buffer.from('held\n'); done(); answer(record, false); });
-        this.held.set(execution, waiting);
+        this.holds.set(execution, waiting);
         return;
       }
       record.output = Buffer.from(command.startsWith('echo ') ? `${command.slice(5)}\n` : command === 'big' ? 'x'.repeat(3 * 1024 * 1024) : `ran: ${command}\n`);
@@ -206,11 +259,18 @@ export class FakeRelay {
       record.outcome = { exit: { rc: 0, signal: null, timed_out: false, cancelled: false, output: digest(record.output) } };
       return answer(record, false);
     }
-    if (typeof op === 'object' && 'write' in op) { record.output = upload; record.outcome = { written: digest(upload) }; return answer(record, false); }
-    if (typeof op === 'object' && 'read' in op) {
-      const data = Buffer.from(`contents of ${op.read.path}`);
+    if (typeof op === 'object' && ('write' in op || 'write_tree' in op)) { record.output = upload; record.outcome = { written: digest(upload) }; return answer(record, false); }
+    if (typeof op === 'object' && ('read' in op || 'read_tree' in op)) {
+      const path = 'read' in op ? op.read.path : op.read_tree.path;
+      const data = this.files.get(path) ?? Buffer.from(`contents of ${path}`);
       record.outcome = { read: digest(data) };
-      stream(data); reply('end', { call, execution, ...digest(data) });
+      if (this.cutReadAt !== undefined) {
+        const cut = this.cutReadAt; this.cutReadAt = undefined;
+        stream(data.subarray(offset, offset + cut));
+        setTimeout(() => this.broker.forget(), 20);
+        return;
+      }
+      stream(data.subarray(offset)); reply('end', { call, execution, ...digest(data) });
       return reply('result', { call, execution, replayed: false, outcome: record.outcome });
     }
     if (typeof op === 'object' && 'cancel' in op) { record.outcome = { cancel: { target: op.cancel.target, found: 'unknown' } }; return answer(record, false); }

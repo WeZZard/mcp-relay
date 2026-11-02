@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { FakeBroker, FakeRelay } from './relay-fake-broker.js';
-import { MAX_CHUNK, RelayClient, RelayUncertainError, caFingerprint, checkGrant, decodeMessage, encodeChunk, encodeControl, type Sink } from '../src/relay-client.js';
+import { MAX_CHUNK, RELAY_PROTOCOL, RelayClient, RelayUncertainError, UPLOAD_WINDOW, caFingerprint, checkGrant, decodeMessage, encodeChunk, encodeControl, fileSource, type Sink } from '../src/relay-client.js';
+import { writeFileSync } from 'node:fs';
 import { MAX_BODY, type Timing } from '../src/relay-session.js';
 
 const FAST: Partial<Timing> = { heartbeatMs: 40, deadMs: 300, handshakeMs: 500, backoffInitialMs: 5, backoffMaxMs: 40, tickMs: 10, openMs: 1000 };
@@ -154,6 +155,107 @@ test('a call without an outcome by its deadline is uncertain', async t => {
   const { relay, client } = fixture(t);
   await assert.rejects(client.run({ exec: { command: 'hold', stdin: false, timeout_s: 60 } }, Buffer.alloc(0), { executionId: 'slow-1', timeoutMs: 100 }), RelayUncertainError);
   relay.finish('slow-1');
+});
+
+// --------------------------------------------------- resumable streams (RP-15)
+
+const pattern = (size: number, seed: number) => { const out = Buffer.allocUnsafe(size); let state = seed | 1; for (let i = 0; i < size; i++) { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; out[i] = state & 0xff; } return out; };
+const write = (path: string) => ({ write: { path, name: '', mode: null } });
+
+test('the client names relay protocol 2 in its hello', async t => {
+  const { broker, client } = fixture(t);
+  assert.equal((await client.ready()).protocol, 2);
+  assert.deepEqual(broker.received.find(r => r.kind === 'hello')!.value.attributes, { role: 'client', protocol: RELAY_PROTOCOL });
+});
+
+test('an upload keeps within the window beyond the relay agent\'s progress', async t => {
+  const { relay, client } = fixture(t);
+  await client.ready();
+  relay.stallProgress = true;
+  const bytes = pattern(UPLOAD_WINDOW + 8 * MAX_CHUNK + 5, 1);
+  const pending = client.run(write('w.bin'), bytes, { executionId: 'window-1' });
+  await waitFor(() => (relay.held.get('window-1')?.size ?? 0) >= UPLOAD_WINDOW - MAX_CHUNK, 'the window to fill');
+  await sleep(100);
+  const held = relay.held.get('window-1')!.size;
+  assert.ok(held <= UPLOAD_WINDOW + MAX_CHUNK, `${held} bytes went out past no progress`);
+  relay.release();
+  const answer = await pending;
+  assert.deepEqual(answer.outcome, { written: { size: bytes.length, sha256: sha(bytes) } });
+  assert.ok(relay.maxAhead <= UPLOAD_WINDOW + MAX_CHUNK, `${relay.maxAhead}`);
+});
+
+test('an upload that ends upload_incomplete continues from the relay agent\'s committed offset', async t => {
+  const { relay, client } = fixture(t);
+  await client.ready();
+  const bytes = pattern(6 * MAX_CHUNK + 333, 2);
+  relay.cutUploadAt = 3 * MAX_CHUNK;
+  const answer = await client.run({ write_tree: { path: 'tree', name: '' } }, bytes, { executionId: 'cut-1' });
+  assert.deepEqual(answer.outcome, { written: { size: bytes.length, sha256: sha(bytes) } });
+  assert.equal(relay.executions.get('cut-1')!.output.equals(bytes), true, 'the agent holds the whole stream, once');
+  assert.ok(relay.calls.some(c => c.execution === 'cut-1' && c.resume), 'the upload continued with resume');
+  // What was on the way when the upload was cut is dropped; the continuation sends only what the agent lacked.
+  const sent = relay.chunkSizes.reduce((a, b) => a + b, 0);
+  assert.ok(sent <= 2 * bytes.length - 3 * MAX_CHUNK, `${sent} bytes sent for ${bytes.length}: the continuation restarted from the first byte`);
+});
+
+test('an upload whose session cannot resume continues in the next session from the committed offset', async t => {
+  const { broker, relay, client } = fixture(t);
+  await client.ready();
+  relay.stallProgress = true;
+  const bytes = pattern(UPLOAD_WINDOW + 4 * MAX_CHUNK, 3);
+  const pending = client.run(write('s.bin'), bytes, { executionId: 'lost-up-1' });
+  await waitFor(() => (relay.held.get('lost-up-1')?.size ?? 0) >= UPLOAD_WINDOW - MAX_CHUNK, 'the window to fill');
+  const held = relay.held.get('lost-up-1')!.size;
+  relay.stallProgress = false;
+  broker.forget(); // a broker restart: the agent keeps what it holds
+  const answer = await pending;
+  assert.deepEqual(answer.outcome, { written: { size: bytes.length, sha256: sha(bytes) } });
+  assert.equal(client.sessions, 2);
+  assert.ok(relay.calls.some(c => c.execution === 'lost-up-1' && c.resume));
+  const sent = relay.chunkSizes.reduce((a, b) => a + b, 0);
+  assert.ok(sent <= bytes.length + MAX_CHUNK, `${sent} bytes sent; ${held} were held before the loss`);
+});
+
+test('a read cut by a session that cannot resume continues at its offset under a new execution ID', async t => {
+  const { relay, client } = fixture(t);
+  await client.ready();
+  const data = pattern(5 * MAX_CHUNK + 77, 4);
+  relay.files.set('big.bin', data);
+  relay.cutReadAt = 2 * MAX_CHUNK;
+  const parts: Buffer[] = []; let resets = 0;
+  const sink: Sink = { write: part => parts.push(Buffer.from(part)), reset: () => { parts.length = 0; resets++; } };
+  const answer = await client.run({ read: { path: 'big.bin' } }, Buffer.alloc(0), { executionId: 'read-cut', sink });
+  assert.ok(Buffer.concat(parts).equals(data));
+  assert.equal(resets, 0, 'no byte arrived twice');
+  assert.deepEqual(answer.stream, { size: data.length, sha256: sha(data) });
+  assert.notEqual(answer.executionId, 'read-cut');
+  assert.ok(relay.calls.some(c => 'read' in (c.op as object) && c.offset === 2 * MAX_CHUNK));
+});
+
+test('a file uploads from the disk, read at any offset', async t => {
+  const { relay, client } = fixture(t);
+  const dir = mkdtempSync(join(tmpdir(), 'relay-source-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = pattern(3 * MAX_CHUNK + 9, 5);
+  writeFileSync(join(dir, 'f.bin'), bytes);
+  const source = await fileSource(join(dir, 'f.bin'));
+  assert.deepEqual({ size: source.size, sha256: source.sha256 }, { size: bytes.length, sha256: sha(bytes) });
+  assert.ok((await source.read(MAX_CHUNK + 1, 10)).equals(bytes.subarray(MAX_CHUNK + 1, MAX_CHUNK + 11)));
+  relay.cutUploadAt = MAX_CHUNK + 1;
+  const answer = await client.run(write('f.bin'), source, { executionId: 'file-1' });
+  assert.deepEqual(answer.outcome, { written: { size: bytes.length, sha256: sha(bytes) } });
+  assert.ok(relay.executions.get('file-1')!.output.equals(bytes));
+});
+
+test('under a broker of protocol 1 the client sends no resume and waits for no progress', async t => {
+  const broker = new FakeBroker(), relay = new FakeRelay(broker);
+  relay.protocol = 1;
+  const client = new RelayClient(grant, { dial: broker.dial, timing: FAST });
+  t.after(() => client.close());
+  const bytes = pattern(UPLOAD_WINDOW + 2 * MAX_CHUNK, 6);
+  const answer = await client.run(write('v1.bin'), bytes, { executionId: 'v1-1' });
+  assert.deepEqual(answer.outcome, { written: { size: bytes.length, sha256: sha(bytes) } });
+  assert.ok(relay.calls.every(c => !c.resume));
 });
 
 async function waitFor(check: () => boolean, what = 'condition', ms = 4000) {

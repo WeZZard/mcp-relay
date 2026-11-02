@@ -3255,7 +3255,7 @@ var require_stream = __commonJS({
       };
       duplex._final = function(callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open3() {
+          ws.once("open", function open4() {
             duplex._final(callback);
           });
           return;
@@ -3276,7 +3276,7 @@ var require_stream = __commonJS({
       };
       duplex._write = function(chunk, encoding, callback) {
         if (ws.readyState === ws.CONNECTING) {
-          ws.once("open", function open3() {
+          ws.once("open", function open4() {
             duplex._write(chunk, encoding, callback);
           });
           return;
@@ -3738,7 +3738,7 @@ var require_websocket_server = __commonJS({
 });
 
 // src/doctor.ts
-import { access, readFile as readFile3 } from "node:fs/promises";
+import { access, readFile as readFile2 } from "node:fs/promises";
 import { join as join4 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { realpathSync as realpathSync2 } from "node:fs";
@@ -3784,11 +3784,12 @@ async function command(argv, options = {}) {
 // src/machine-service.ts
 import { isIP as isIP2 } from "node:net";
 import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
-import { open, readFile, rename, rm, stat } from "node:fs/promises";
+import { open as open2, rename, rm, stat } from "node:fs/promises";
 import { basename } from "node:path";
 
 // src/relay-client.ts
 import { createHash as createHash2, randomUUID as randomUUID2, X509Certificate } from "node:crypto";
+import { open } from "node:fs/promises";
 import { isIP } from "node:net";
 import { rootCertificates } from "node:tls";
 
@@ -4254,14 +4255,54 @@ var ResumableSession = class _ResumableSession {
 
 // src/relay-client.ts
 var MAX_CHUNK = MAX_MESSAGE - 4096;
-var MAX_UPLOAD = 256 * 1024 * 1024;
+var RELAY_PROTOCOL = 2;
+var UPLOAD_WINDOW = 32 * 1024 * 1024;
+var SESSION_WINDOW = 8 * MAX_MESSAGE;
+var MAX_CONTINUATIONS = 20;
 var CHUNK_TAG = 1;
-var EMPTY_SHA256 = createHash2("sha256").digest("hex");
-var UPLOAD_WINDOW = 8 * MAX_MESSAGE;
 var OUTPUT_KEPT = 16 * 1024 * 1024;
 var kindOf = (op) => typeof op === "string" ? op : Object.keys(op)[0];
-var uploads = (kind) => kind === "exec" || kind === "script" || kind === "write";
-var streams = (kind) => kind === "exec" || kind === "script" || kind === "read";
+var uploads = (kind) => kind === "exec" || kind === "script" || kind === "write" || kind === "write_tree";
+var streams = (kind) => kind === "exec" || kind === "script" || kind === "read" || kind === "read_tree";
+var reads = (kind) => kind === "read" || kind === "read_tree";
+function bufferSource(bytes) {
+  return { size: bytes.length, sha256: createHash2("sha256").update(bytes).digest("hex"), read: async (offset, length) => bytes.subarray(offset, offset + length) };
+}
+async function fileSource(path) {
+  const hash2 = createHash2("sha256");
+  let size = 0;
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(MAX_CHUNK);
+    for (; ; ) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, size);
+      if (!bytesRead) break;
+      hash2.update(buffer.subarray(0, bytesRead));
+      size += bytesRead;
+    }
+  } finally {
+    await file.close();
+  }
+  return {
+    size,
+    sha256: hash2.digest("hex"),
+    read: async (offset, length) => {
+      const reader = await open(path, "r");
+      try {
+        const out = Buffer.allocUnsafe(length);
+        let filled = 0;
+        while (filled < length) {
+          const { bytesRead } = await reader.read(out, filled, length - filled, offset + filled);
+          if (!bytesRead) throw new Error(`${path} ended before ${offset + length} bytes; it changed during the upload`);
+          filled += bytesRead;
+        }
+        return out;
+      } finally {
+        await reader.close();
+      }
+    }
+  };
+}
 function encodeChunk(call, data) {
   if (data.length > MAX_CHUNK) throw new RangeError(`a chunk of ${data.length} bytes exceeds ${MAX_CHUNK}`);
   const out = Buffer.allocUnsafe(9 + data.length);
@@ -4319,9 +4360,9 @@ function webSocketDial(url, caPem, handshakeMs = 1e4) {
   return (handlers) => new Promise((resolve4, reject) => {
     const tlsOptions = { ca, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new wrapper_default(url, [], tlsOptions);
-    let open3 = false;
+    let open4 = false;
     socket.on("open", () => {
-      open3 = true;
+      open4 = true;
       const close = () => {
         if (socket.readyState >= wrapper_default.CLOSING) return;
         socket.close();
@@ -4334,10 +4375,10 @@ function webSocketDial(url, caPem, handshakeMs = 1e4) {
       handlers.message(binary ? bytes : bytes.toString("utf8"));
     });
     socket.on("error", (error) => {
-      if (!open3) reject(error);
+      if (!open4) reject(error);
     });
     socket.on("close", (code, reason) => {
-      if (!open3) reject(new Error(`closed before opening (${code})`));
+      if (!open4) reject(new Error(`closed before opening (${code})`));
       else handlers.closed(`closed (${code}${reason.length ? `: ${reason}` : ""})`);
     });
   });
@@ -4382,16 +4423,16 @@ var RelayClient = class {
     return (await this.current()).ready;
   }
   /** Run one operation and wait for its result. A `failed` or `interrupted` outcome is returned, not thrown. */
-  async run(op, upload = Buffer.alloc(0), options = {}) {
+  async run(op, input = Buffer.alloc(0), options = {}) {
     options.signal?.throwIfAborted();
     const kind = kindOf(op);
-    if (!uploads(kind) && upload.length) throw new TypeError(`${kind} takes no upload`);
-    if (upload.length > MAX_UPLOAD) throw new RangeError(`an upload of ${upload.length} bytes exceeds 256 MiB`);
+    const upload = Buffer.isBuffer(input) ? bufferSource(input) : input;
+    if (!uploads(kind) && upload.size) throw new TypeError(`${kind} takes no upload`);
     let executionId = options.executionId ?? randomUUID2();
     if (!executionId || Buffer.byteLength(executionId) > 256) throw new TypeError("an execution ID has 1 to 256 bytes");
-    for (let reads = 0; ; reads++) {
+    for (let attempt = 0; ; attempt++) {
       const answer = await this.once(op, upload, executionId, options);
-      if (kind === "read" && "read" in answer.outcome && !this.streamMatches(answer) && reads < 3) {
+      if (reads(kind) && "read" in answer.outcome && !this.streamMatches(answer) && attempt < 3) {
         options.sink?.reset();
         executionId = randomUUID2();
         continue;
@@ -4401,7 +4442,7 @@ var RelayClient = class {
   }
   /** What the broker or the relay agent knows of an execution ID (RP-7). */
   async query(executionId, options = {}) {
-    const call = this.track(executionId, "status", "query", Buffer.alloc(0));
+    const call = this.track(executionId, "status", "query", bufferSource(Buffer.alloc(0)));
     return (await this.dispatch(call, options)).state;
   }
   close() {
@@ -4420,17 +4461,18 @@ var RelayClient = class {
     const kind = kindOf(op);
     const call = this.track(executionId, op, kind, upload, options.sink);
     const { result } = await this.dispatch(call, options);
+    const id = call.executionId;
     const stream = streams(kind) && (call.end || call.size) ? { size: call.size, sha256: call.hash.copy().digest("hex") } : void 0;
     if (streams(kind) && call.end && stream && (call.end.size !== stream.size || call.end.sha256 !== stream.sha256)) {
-      if (kind !== "read") throw new RelayUncertainError(executionId, `the output of execution ${executionId} does not match its end`);
-      return { executionId, replayed: result.replayed, outcome: result.outcome, output: Buffer.alloc(0) };
+      if (!reads(kind)) throw new RelayUncertainError(id, `the output of execution ${id} does not match its end`);
+      return { executionId: id, replayed: result.replayed, outcome: result.outcome, output: Buffer.alloc(0) };
     }
     const exit = result.outcome.exit;
-    if (exit && stream && (exit.output.size !== stream.size || exit.output.sha256 !== stream.sha256)) throw new RelayUncertainError(executionId, `the output of execution ${executionId} does not match its outcome`);
-    return { executionId, replayed: result.replayed, outcome: result.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
+    if (exit && stream && (exit.output.size !== stream.size || exit.output.sha256 !== stream.sha256)) throw new RelayUncertainError(id, `the output of execution ${id} does not match its outcome`);
+    return { executionId: id, replayed: result.replayed, outcome: result.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
   }
   track(executionId, op, kind, upload, sink) {
-    return { executionId, op, kind, upload, sink, hash: createHash2("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, settle: () => {
+    return { executionId, op, kind, upload, sink, hash: createHash2("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {
     }, fail: () => {
     }, done: false };
   }
@@ -4440,7 +4482,25 @@ var RelayClient = class {
     call.kept = [];
     call.keptBytes = 0;
     call.end = void 0;
+    call.offset = 0;
     call.sink?.reset();
+  }
+  /** Wake whoever waits on the call's progress. */
+  wakeAll(call) {
+    const wake = call.wake;
+    call.wake = [];
+    for (const go of wake) go();
+  }
+  /** Wait for the call's next progress, its end, or a second, whichever comes first. */
+  nextProgress(call) {
+    return new Promise((done) => {
+      const timer = setTimeout(done, 1e3);
+      timer.unref?.();
+      call.wake.push(() => {
+        clearTimeout(timer);
+        done();
+      });
+    });
   }
   /** Send a call in the current session and wait for its last message, through any recovery. */
   dispatch(call, options) {
@@ -4454,20 +4514,22 @@ var RelayClient = class {
       call.settle = (answer) => {
         if (call.done) return;
         finish();
+        this.wakeAll(call);
         resolve4(answer);
       };
       call.fail = (error) => {
         if (call.done) return;
         finish();
+        this.wakeAll(call);
         reject(error);
       };
       const abort = () => {
         const reason = options.signal.reason;
-        if (call.kind !== "query" && call.kind !== "read" && call.kind !== "status") void this.cancel(call.executionId);
+        if (call.kind !== "query" && !reads(call.kind) && call.kind !== "status") void this.cancel(call.executionId);
         call.fail(reason instanceof Error ? reason : new Error(String(reason)));
       };
       options.signal?.addEventListener("abort", abort, { once: true });
-      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === "query" || call.kind === "read" || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`) : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
+      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === "query" || reads(call.kind) || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`) : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
       this.send(call).catch((error) => call.fail(error));
     });
   }
@@ -4498,7 +4560,7 @@ var RelayClient = class {
     handle.session = await ResumableSession.open({
       dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs),
       credential: this.grant.credential,
-      attributes: { role: "client" },
+      attributes: { role: "client", protocol: RELAY_PROTOCOL },
       ...this.options.timing ? { timing: this.options.timing } : {},
       ...this.options.random ? { random: this.options.random } : {},
       onBody: (body) => this.receive(handle, body, readyResolve),
@@ -4509,7 +4571,12 @@ var RelayClient = class {
     if (!handle.session.ended && !this.closed) this.active = handle;
     return handle;
   }
-  /** Put a call into the current session: its `call`, its upload as chunks, its `end`. */
+  /**
+   * Put a call into the current session: its `call`, its upload as chunks
+   * within the window beyond the relay agent's progress, its `end`. A call
+   * that resumes waits for the agent's committed offset and sends from there
+   * (RP-15).
+   */
   async send(call) {
     let handle = await this.current();
     while (handle.session.ended) {
@@ -4523,25 +4590,46 @@ var RelayClient = class {
     const number = handle.next++;
     call.number = number;
     call.committedSend = false;
+    call.committed = void 0;
     handle.calls.set(number, call);
     const session = handle.session;
     if (call.kind === "query") {
       session.send(encodeControl("query", { call: number, execution: call.executionId }));
       return;
     }
-    session.send(encodeControl("call", { call: number, execution: call.executionId, op: call.op }));
+    const v2 = (await handle.ready).protocol >= 2;
+    const stale = () => call.done || session.ended || handle.calls.get(number) !== call;
+    if (stale()) return;
+    const resume = v2 && call.resume && uploads(call.kind);
+    const offset = v2 ? call.offset : 0;
+    if (!v2 && call.offset) this.reset(call);
+    session.send(encodeControl("call", { call: number, execution: call.executionId, op: call.op, ...resume ? { resume: true } : {}, ...offset ? { offset } : {} }));
     if (!uploads(call.kind)) {
       call.committedSend = true;
       return;
     }
-    for (let at = 0; at < call.upload.length; at += MAX_CHUNK) {
-      await session.drained(UPLOAD_WINDOW);
-      if (session.ended || handle.calls.get(number) !== call) return;
-      session.send(encodeChunk(number, call.upload.subarray(at, at + MAX_CHUNK)));
+    const { upload } = call;
+    let at = 0;
+    if (resume) {
+      while (call.committed === void 0) {
+        if (stale()) return;
+        await this.nextProgress(call);
+      }
+      at = Math.min(call.committed, upload.size);
     }
-    if (session.ended || handle.calls.get(number) !== call) return;
-    const sha256 = call.upload.length ? createHash2("sha256").update(call.upload).digest("hex") : EMPTY_SHA256;
-    session.send(encodeControl("end", { call: number, execution: call.executionId, size: call.upload.length, sha256 }));
+    const from = at;
+    while (at < upload.size) {
+      if (v2) while (!stale() && at - (call.committed ?? from) >= UPLOAD_WINDOW) await this.nextProgress(call);
+      else await session.drained(SESSION_WINDOW);
+      if (stale()) return;
+      const length = Math.min(MAX_CHUNK, upload.size - at);
+      const data = await upload.read(at, length);
+      if (stale()) return;
+      session.send(encodeChunk(number, data));
+      at += length;
+    }
+    if (stale()) return;
+    session.send(encodeControl("end", { call: number, execution: call.executionId, size: upload.size, sha256: upload.sha256 }));
     call.committedSend = true;
   }
   receive(handle, body, readyResolve) {
@@ -4580,11 +4668,26 @@ var RelayClient = class {
       case "end":
         if (call && value.execution === call.executionId) call.end = { size: value.size, sha256: value.sha256 };
         return;
-      case "result":
+      case "progress":
+        if (!call || value.execution !== call.executionId || typeof value.committed !== "number") return;
+        call.committed = Math.max(call.committed ?? 0, value.committed);
+        this.wakeAll(call);
+        return;
+      case "result": {
         if (!call || value.execution !== call.executionId) return;
         handle.calls.delete(value.call);
+        const failed = value.outcome.failed;
+        if (failed?.code === "upload_incomplete" && !failed.committed && uploads(call.kind) && call.continuations < MAX_CONTINUATIONS) {
+          call.continuations++;
+          call.resume = true;
+          this.options.log?.(`relay: execution ${call.executionId} continues from the relay agent's committed offset`);
+          this.wakeAll(call);
+          void this.send(call).catch((error) => call.fail(error));
+          return;
+        }
         call.settle({ result: { replayed: !!value.replayed, outcome: value.outcome } });
         return;
+      }
       case "query_result":
         if (!call || value.execution !== call.executionId) return;
         handle.calls.delete(value.call);
@@ -4614,6 +4717,7 @@ var RelayClient = class {
     this.options.log?.(`relay: ${why}`);
     const final = this.closed || end.kind === "rejected" || end.kind === "closed";
     for (const call of calls) {
+      this.wakeAll(call);
       if (final) {
         call.fail(this.mayHaveRun(call) ? new RelayUncertainError(call.executionId, `relay: ${why}`) : new Error(`relay: ${why}; the operation never reached its commit point`));
         continue;
@@ -4623,15 +4727,24 @@ var RelayClient = class {
   }
   /** Whether a call may have passed its commit point: its upload's `end`, or for cancel its `call`, went out. */
   mayHaveRun(call) {
-    if (call.kind === "query" || call.kind === "read" || call.kind === "status" || call.number === void 0) return false;
+    if (call.kind === "query" || reads(call.kind) || call.kind === "status" || call.number === void 0) return false;
     return call.committedSend || !uploads(call.kind);
   }
   /** After an unresumable loss: query, then attach to a known execution, or report it uncertain. */
   async recover(call) {
     if (call.done) return;
+    if (reads(call.kind) && !call.end) {
+      call.executionId = randomUUID2();
+      call.offset = call.size;
+      return this.send(call);
+    }
     this.reset(call);
+    if (uploads(call.kind) && !call.committedSend && call.number !== void 0) {
+      call.resume = true;
+      return this.send(call);
+    }
     if (!this.mayHaveRun(call)) {
-      if (call.kind === "read") call.executionId = randomUUID2();
+      if (reads(call.kind)) call.executionId = randomUUID2();
       return this.send(call);
     }
     let state;
@@ -4642,6 +4755,7 @@ var RelayClient = class {
     }
     if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution");
     if (call.done) return;
+    call.resume = true;
     return this.send(call);
   }
 };
@@ -4888,10 +5002,10 @@ var MachineService = class {
     const client = await this.relayFor(vm);
     const facts = client ? await stat(body.local_path) : void 0;
     if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
-    const bytes = await readFile(body.local_path);
-    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, bytes, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const source = await fileSource(body.local_path);
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, source, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
     const written = answer.outcome.written;
-    if (!written || written.size !== bytes.length || written.sha256 !== createHash3("sha256").update(bytes).digest("hex")) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
+    if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
     return { vm, pushed: body.local_path, to: body.remote_path };
   }
   /** On a `relay` lease a file comes as a `read` through the broker, checked and renamed into place; a guest folder still goes over HTTP. */
@@ -4915,7 +5029,7 @@ var MachineService = class {
   }
   /** Read a guest file into `to`, which must not exist, streaming and hashing it; the bytes must match the read's outcome. */
   async relayRead(client, remote, to, options) {
-    const file = await open(to, "wx", 384);
+    const file = await open2(to, "wx", 384);
     let position = 0, writing = Promise.resolve();
     const sink = {
       write: (data) => {
@@ -4984,7 +5098,7 @@ var MachineService = class {
         throw error;
       }
     }
-    const hash2 = createHash3("sha256"), file = await open(body.to, "wx", 384);
+    const hash2 = createHash3("sha256"), file = await open2(body.to, "wx", 384);
     let bytes = 0;
     try {
       const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async (chunk) => {
@@ -5100,7 +5214,7 @@ var MachineService = class {
 
 // src/registry.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { link, lstat, mkdir, open as open2, readFile as readFile2, realpath, rename as rename2, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, open as open3, readFile, realpath, rename as rename2, unlink } from "node:fs/promises";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 
@@ -5449,11 +5563,11 @@ var Registry = class {
       if (this.managed) await this.initialize(target, lock.check);
       const before = await lstat(target);
       if (!before.isFile()) throw new RegistryError("Registry target must be a regular file");
-      const original = await readFile2(target, "utf8");
+      const original = await readFile(target, "utf8");
       const updated = transform(original);
       if (original === updated) return false;
       temporary = join3(dirname2(target), `.${target.split("/").at(-1)}.${token}.tmp`);
-      const handle = await open2(temporary, "wx", before.mode & 511);
+      const handle = await open3(temporary, "wx", before.mode & 511);
       try {
         await handle.chmod(before.mode & 511);
         await handle.writeFile(updated, "utf8");
@@ -5463,13 +5577,13 @@ var Registry = class {
       }
       signal?.throwIfAborted();
       const current = await lstat(target);
-      if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || await readFile2(target, "utf8") !== original) {
+      if (current.ino !== before.ino || current.mtimeMs !== before.mtimeMs || await readFile(target, "utf8") !== original) {
         throw new RegistryError("Registry changed outside its lock; retry without overwriting those changes");
       }
       lock.check();
       await rename2(temporary, target);
       temporary = void 0;
-      const dir = await open2(dirname2(target), "r");
+      const dir = await open3(dirname2(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -5496,7 +5610,7 @@ var Registry = class {
       if (!errno(error, "ENOENT")) throw error;
     }
     const temporary = join3(dirname2(target), `.registry.${randomUUID4()}.tmp`);
-    const handle = await open2(temporary, "wx", 384);
+    const handle = await open3(temporary, "wx", 384);
     try {
       try {
         await handle.chmod(384);
@@ -5511,7 +5625,7 @@ var Registry = class {
       } catch (error) {
         if (!errno(error, "EEXIST")) throw error;
       }
-      const dir = await open2(dirname2(target), "r");
+      const dir = await open3(dirname2(target), "r");
       try {
         await dir.sync();
       } finally {
@@ -5613,9 +5727,9 @@ async function installationReport(options = {}) {
     return r.stdout.trim();
   });
   await check("runtime-bundles", async () => {
-    const integrity = JSON.parse(await readFile3(join4(assets, "integrity.json"), "utf8"));
+    const integrity = JSON.parse(await readFile2(join4(assets, "integrity.json"), "utf8"));
     for (const name of ["server.mjs", "receiver.mjs", "doctor.mjs"]) {
-      const b = await readFile3(join4(assets, name));
+      const b = await readFile2(join4(assets, name));
       if (hash(b) !== integrity[name]) throw Error(`Invalid/missing shipped ${name}; reinstall the package.`);
     }
     return "Host extension, guest receiver and doctor hashes verified";
@@ -5624,7 +5738,7 @@ async function installationReport(options = {}) {
     const registry = options.registry ?? new Registry(environment ? { managedRoot: environment.profile.relayStateDir } : {});
     try {
       await access(registry.path);
-      validateRegistryText(await readFile3(registry.path, "utf8"));
+      validateRegistryText(await readFile2(registry.path, "utf8"));
       return `Existing registry: ${registry.path}`;
     } catch (e) {
       if (e.code !== "ENOENT") throw e;

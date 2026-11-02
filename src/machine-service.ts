@@ -1,9 +1,9 @@
 import { isIP } from "node:net";
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, rm, stat } from "node:fs/promises";
+import { open, rename, rm, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type { SelectedEnvironment, EnvironmentIdentity } from './environment.js';
-import { checkGrant, RelayClient, RelayFailedError, RelayUncertainError, type CallAnswer, type Op, type RelayClientOptions, type RelayGrant } from './relay-client.js';
+import { checkGrant, fileSource, RelayClient, RelayFailedError, RelayUncertainError, type CallAnswer, type Op, type RelayClientOptions, type RelayGrant, type UploadSource } from './relay-client.js';
 
 /**
  * The daemon's actual record; acquire returns this directly, not a lease wrapper.
@@ -252,7 +252,7 @@ export class MachineService {
     return route.checked;
   }
   /** One operation through the broker, its `failed` and `interrupted` outcomes as errors. */
-  private async relayRun(client: RelayClient, op: Op, upload: Buffer, executionId: string, options: RequestOptions & { sink?: import('./relay-client.js').Sink }): Promise<CallAnswer> {
+  private async relayRun(client: RelayClient, op: Op, upload: Buffer | UploadSource, executionId: string, options: RequestOptions & { sink?: import('./relay-client.js').Sink }): Promise<CallAnswer> {
     let answer: CallAnswer;
     try { answer = await client.run(op, upload, { executionId, ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), ...(options.sink ? { sink: options.sink } : {}) }); }
     catch (cause) {
@@ -356,10 +356,11 @@ export class MachineService {
     const client = await this.relayFor(vm);
     const facts = client ? await stat(body.local_path) : undefined;
     if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
-    const bytes = await readFile(body.local_path);
-    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 0o777 } }, bytes, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    // The file streams from the disk and continues after a loss (RP-15), so its size needs no memory.
+    const source = await fileSource(body.local_path);
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 0o777 } }, source, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
     const written = (answer.outcome as { written?: { size: number; sha256: string } }).written;
-    if (!written || written.size !== bytes.length || written.sha256 !== createHash("sha256").update(bytes).digest("hex")) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
+    if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
     return { vm, pushed: body.local_path, to: body.remote_path };
   }
   /** On a `relay` lease a file comes as a `read` through the broker, checked and renamed into place; a guest folder still goes over HTTP. */
