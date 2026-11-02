@@ -83,3 +83,13 @@ The relay tools work on durable machines, the Mac minis that machine-service exp
 | DC-38 | A durable guest with a saved `machine_id` binds its image references to that ID, the relay session and the enclosure. The owner's current name and address are routing information and may change without invalidating saved images or blocking finish. Guests without a saved ID keep their existing image binding. | [Agent] (2026-11-01), to keep DC-37's resumed evidence readable. |
 | DC-39 | `npm test` runs test files one at a time. The suite launches real subprocesses and HTTP fixtures whose timing checks need bounded load; individual timeouts and coverage stay unchanged. The concurrency option precedes the filenames because `tsx` ignores runner options after them. | [Agent] (2026-11-01), after parallel runs exceeded existing VM lifecycle and subprocess startup timing limits. |
 | DC-40 | On macOS the relay browses Bonjour through the system's DNS-SD service (`dns-sd -Z`), as machctl does, instead of its own multicast query; its own query, now asked twice per window, remains where `dns-sd` is absent. End-to-end, the relay's own query heard nothing at all in some browses and missed single instances in others, while mDNSResponder's cached view answered all 30 of 30 lookups. | [Agent] (2026-11-01). |
+
+## The relay agent link
+
+The relay sends its guest operations through machine-service's broker to the relay agent in each machine's desktop session, instead of through HTTP requests that machine-service runs over SSH. See [the relay agent link](relay-agent-link.md).
+
+| ID | Decision | Owner |
+|---|---|---|
+| DC-41 | Guest operations travel as operations of one resumable session with the broker at the instance's `relay_url`, each with the relay's execution ID; acquire, heartbeat and release stay HTTP. | User |
+| DC-42 | The relay runs on Ubuntu as well as on macOS, because the relay acceptance runs its client on both. The Apple-silicon check moves to the commands that need local Tart, and Bonjour browses through Avahi on Ubuntu. | Agent |
+| DC-43 | relay-driver's receiver runs as a child of the relay agent and must produce byte-identical evidence packages through either link. | Agent |
