@@ -14,7 +14,7 @@ import { browseService, type Advertised } from './mdns.js';
  *
  * A process the test harness started (MCP_RELAY_ISOLATED=1) discovers only
  * through an injected seam, `browse` or `fetchJson`: a real Bonjour browse or
- * Consul query would find the instances on the LAN (DC-6x-ISO2-2).
+ * Consul query would find the instances on the LAN (DC-67).
  */
 
 /** How instances are found (machine-service DC-84). */

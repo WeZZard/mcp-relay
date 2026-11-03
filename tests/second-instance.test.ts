@@ -1,6 +1,6 @@
 /**
  * The selected-image lifecycle drives only a second instance that
- * machine-service's launcher started, never the installed one (DC-6x-ISO2-1).
+ * machine-service's launcher started, never the installed one (DC-66).
  */
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';

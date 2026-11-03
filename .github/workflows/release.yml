@@ -47,7 +47,7 @@ jobs:
 
       # Trusted publishing (OIDC) needs a newer npm than Node 22 ships. It is
       # installed under the job's temporary directory and put first on the
-      # job's PATH, not over the runner's global npm, as in CI (DC-6x-ISO2-3).
+      # job's PATH, not over the runner's global npm, as in CI (DC-68).
       - name: Update npm for trusted publishing (OIDC), for this job only
         run: |
           npm install --prefix "$RUNNER_TEMP/npm" npm@latest

@@ -4,7 +4,7 @@
 //
 // It drives a second instance that machine-service's launcher started under
 // <root> (`second-instance start --root <root> --port N --session-port N
-// --tart-home <store>`), never the installed one (DC-6x-ISO2-1): the
+// --tart-home <store>`), never the installed one (DC-66): the
 // manifest's ports are not 6240 or 6241, its Tart store is not ~/.tart, its
 // /health carries the launcher's mark with the manifest's ID, and the run's
 // registry is its own, under the evidence root, never ~/AGENTS.md. The Tart
@@ -29,7 +29,7 @@ if(!process.argv.includes('--run'))throw Error('Explicit --run required');
 const supportPath=supportArgument(process.argv.slice(2));
 // Validate before creating evidence or making any service call. No implicit fallback.
 const support=supportPath?await verifySupportDriver(project,supportPath):undefined;
-// The instance is named, never defaulted, and checked before anything is made (DC-6x-ISO2-1).
+// The instance is named, never defaulted, and checked before anything is made (DC-66).
 const home=homedir();
 const instanceRoot=flagValue(process.argv.slice(2),'--instance'),tartPath=flagValue(process.argv.slice(2),'--tart');
 if(!instanceRoot)throw Error('--instance <root> is required: the root of a second instance started by machine-service\'s second-instance launcher');
@@ -49,7 +49,7 @@ async function audit<T>(kind:string,input:unknown,fn:()=>Promise<T>):Promise<T>{
 const fetchOriginal=globalThis.fetch;
 globalThis.fetch=async(input,init)=>{const url=String(input);assert(url.startsWith(instance.origin+'/'));return audit('http',{url,method:init?.method??'GET',body:init?.body?JSON.parse(String(init.body)):undefined},async()=>{const response=await fetchOriginal(input,init);const bytes=await response.clone().text();await save(`http-response-${seq++}.json`,{url,status:response.status,body:bytes});return response;});};
 const vm=new MachineService({baseUrl:instance.origin,acquireTimeoutMs:420000});
-// The second instance, its own Tart store and a registry of this run's own (DC-64, DC-6x-ISO2-1).
+// The second instance, its own Tart store and a registry of this run's own (DC-64, DC-66).
 const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,registry:new Registry({managedRoot:ownRegistry(join(root,'relay'),home)}),stateRoot:join(root,'state'),tartHome:instance.tartHome,tartPath,outputRoot:join(root,'packages'),heartbeatMs:3000});
 let lease:any,finished=false,failed:unknown,before:any;
 const call=async(input:any)=>audit('public-'+input.action,input,async()=>{const r=await relayCall(manager,input);return r.details??JSON.parse(r.text);});

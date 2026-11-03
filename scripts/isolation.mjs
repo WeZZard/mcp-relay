@@ -54,7 +54,7 @@ export function testInputs(env = process.env) {
 const executableFile = path => { try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; } };
 
 /**
- * The python3 the tests run (DC-6x-ISO2-4), resolved once at startup to the
+ * The python3 the tests run (DC-69), resolved once at startup to the
  * real file it names, so neither a later PATH nor a moved link can swap it:
  * MCP_RELAY_TEST_PYTHON, which must be an absolute path to an executable,
  * else the first python3 on the caller's PATH. CI must name it; a CI run

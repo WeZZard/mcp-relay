@@ -65,7 +65,7 @@ jobs:
         env:
           # The tests start from an empty environment; only MCP_RELAY_TEST_* inputs reach them (DC-61).
           MCP_RELAY_TEST_MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
-          # The tests' python3, named rather than taken from the runner's PATH (DC-6x-ISO2-4).
+          # The tests' python3, named rather than taken from the runner's PATH (DC-69).
           MCP_RELAY_TEST_PYTHON: /usr/bin/python3
 
       - name: Confirm generated files are committed

@@ -1,5 +1,5 @@
 // The machine-service instance a live tool drives: a second instance that
-// machine-service's launcher started, never the installed one (DC-6x-ISO2-1).
+// machine-service's launcher started, never the installed one (DC-66).
 //
 // machine-service's conventions (its DC-243 to DC-246, crate
 // `second-instance`): `second-instance start --root DIR --port N

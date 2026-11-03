@@ -128,7 +128,7 @@ test('CI builds machctl from the pinned machine-service commit and installs noth
   assert.doesNotMatch(ci, /^\s+MACHCTL:/m, 'machctl reaches the tests only as MCP_RELAY_TEST_MACHCTL');
 });
 
-test('in a test process durable-machine discovery runs only through an injected seam (DC-6x-ISO2-2)', { timeout: 60_000 }, async t => {
+test('in a test process durable-machine discovery runs only through an injected seam (DC-67)', { timeout: 60_000 }, async t => {
   const h = await hostile(t);
   // The LAN: a Consul agent that records any question, as the hostile listener does.
   const saved = { mode: process.env.MACHINE_SERVICE_DISCOVERY, consul: process.env.CONSUL_HTTP_ADDR };
@@ -152,7 +152,7 @@ test('in a test process durable-machine discovery runs only through an injected 
   assert.deepEqual(asked, [`${h.origin}/v1/health/service/machine-service`, 'browse', 'browse']);
 });
 
-test('the runner resolves the tests\' python3 once, to an absolute file, and records it (DC-6x-ISO2-4)', { timeout: 120_000 }, async t => {
+test('the runner resolves the tests\' python3 once, to an absolute file, and records it (DC-69)', { timeout: 120_000 }, async t => {
   const h = await hostile(t);
   // A python3 reached through a link on the caller's PATH, and one named.
   const real = join(h.root, 'python-real'); await mkdir(real);
@@ -179,7 +179,7 @@ test('probe', () => { writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ na
   await h.heardNothing();
 });
 
-test('CI and the release name the tests\' python3 and install nothing over the runner (DC-6x-ISO2-3, DC-6x-ISO2-4)', async () => {
+test('CI and the release name the tests\' python3 and install nothing over the runner (DC-68, DC-69)', async () => {
   for (const workflow of ['ci.yml', 'release.yml']) {
     const text = await readFile(join('.github/workflows', workflow), 'utf8');
     assert.doesNotMatch(text, /npm install (-g|--global)\b/, workflow);

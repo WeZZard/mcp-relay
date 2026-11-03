@@ -9,7 +9,7 @@
 // TART_HOME, reaches a test. python3 is resolved once, here, to the real file
 // MCP_RELAY_TEST_PYTHON names (an absolute path; CI must name it), else to the
 // first on the shell's PATH, and the runner records it as MCP_RELAY_TEST_PYTHON
-// (DC-6x-ISO2-4): the tests need a Python 3 with fcntl, not any
+// (DC-69): the tests need a Python 3 with fcntl, not any
 // machine-service tool.
 import { spawn } from 'node:child_process';
 import { accessSync, constants, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
