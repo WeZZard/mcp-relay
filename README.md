@@ -331,8 +331,9 @@ tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md
   `com.trycua.driver`) holds Screen Recording, read with
   `cua-driver permissions status --json` in the lease. machine-service's own
   permissions are not read, and it needs no Screen Recording grant.
-- A durable machine is on the home network and not isolated from it, a CI job
-  may share its desktop, and it has no console.
+- A durable machine is on the home network and not isolated from it, and it has
+  no console. A CI job on it holds its lease like any other client, so it never
+  shares the desktop with a lease.
 
 ## Selected environments
 
