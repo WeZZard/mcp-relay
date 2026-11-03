@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { GUEST_NETWORKS, capacityWait, guestNetwork, localTartHost, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
-import { MachineService, MachineServiceError, expectMachineService, type VmLease, type VmBackend, type RequestOptions } from './machine-service.js';
+import { MachineService, MachineServiceError, expectMachineService, machineServiceFromProcess, type VmLease, type VmBackend, type RequestOptions } from './machine-service.js';
 import { canonicalPath, environmentVariables, matchesEnvironment, selectedEnvironment, type SelectedEnvironment } from './environment.js';
 import { homedir } from 'node:os';
 import { Registry, type RegistryRow } from './registry.js';
@@ -100,8 +100,19 @@ export interface RunResult {
   imageDelivery: Omit<ImageResult, 'content'> & { content?: ImageResult['content'] };
   [key: string]: any;
 }
-export interface ManagerOptions {
-  sessionId: string; project: string; stateRoot?: string; outputRoot?: string; registry?: Registry; vm?: VmBackend; environment?: SelectedEnvironment; tartHome?: string; tartPath?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>; localTart?: boolean;
+/**
+ * Where a manager's backend, store and state are: a selected environment
+ * binds them all; without one, each is named. The constructor supplies no
+ * default and reads no process variable, so a test cannot reach the installed
+ * service, ~/.tart or ~/AGENTS.md by leaving one out; `relayManagerFromProcess`
+ * supplies production's defaults (DC-6x-ISO-2).
+ */
+export type ManagerBackend =
+  | { environment: SelectedEnvironment; vm?: VmBackend; registry?: Registry; stateRoot?: string; tartHome?: string; tartPath?: string }
+  | { environment?: undefined; vm: VmBackend; registry: Registry; stateRoot: string; tartHome: string; tartPath: string };
+export type ManagerOptions = ManagerSettings & ManagerBackend;
+export interface ManagerSettings {
+  sessionId: string; project: string; outputRoot?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>; localTart?: boolean;
   /** How far each renewal extends the lease at machine-service; default RENEWAL_WINDOW_MS. */
   renewalWindowMs?: number;
   /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
@@ -205,6 +216,20 @@ export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so
  * same time. The session's own queue orders what spans guests: loading the
  * state, admitting an acquisition, search, the host probe and shutdown.
  */
+/**
+ * The manager a relay process runs: the selected environment's backend, store
+ * and state, or else MCP_RELAY_URL (default the installed instance), the
+ * registry's own resolution, the state root, TART_HOME (default ~/.tart) and
+ * TART (default `tart`). Under the test harness the origin has no default
+ * (config.serviceUrl, DC-6x-ISO-1).
+ */
+export function relayManagerFromProcess(settings: ManagerSettings, env: NodeJS.ProcessEnv = process.env): RelayManager {
+  const environment = selectedEnvironment(env);
+  if (environment) return new RelayManager({ ...settings, environment });
+  return new RelayManager({ ...settings, vm: machineServiceFromProcess(env, undefined), registry: new Registry({ env }), stateRoot: relayStateRoot({ env }),
+    tartHome: env.TART_HOME ?? join(env.HOME ?? homedir(), '.tart'), tartPath: env.TART ?? 'tart' });
+}
+
 export class RelayManager {
   readonly vm: VmBackend;
   readonly environment?: SelectedEnvironment;
@@ -230,9 +255,11 @@ export class RelayManager {
   /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
   shuttingDown = false;
   constructor(readonly options: ManagerOptions) {
-    this.environment = options.environment ?? selectedEnvironment();
-    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join(process.env.HOME ?? homedir(), '.tart'));
-    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? 'tart';
+    this.environment = options.environment;
+    const unnamed = this.environment ? [] : (['vm', 'registry', 'stateRoot', 'tartHome', 'tartPath'] as const).filter(key => options[key] === undefined);
+    if (unnamed.length) throw new TypeError(`A relay manager without a selected environment needs ${unnamed.join(', ')}; relayManagerFromProcess supplies production's defaults`);
+    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome!);
+    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath!;
     this.localTart = options.localTart ?? (!!this.environment || localTartHost());
     if (this.environment && ((options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir) || (options.tartHome && canonicalPath(options.tartHome) !== this.tartHome) || (options.tartPath && canonicalPath(options.tartPath) !== this.tartPath))) throw new Error('Injected paths conflict with the selected environment');
     this.maxGuests = options.maxGuests ?? maxGuests();
@@ -240,9 +267,9 @@ export class RelayManager {
     this.capacityWaitMs = options.capacityWaitMs ?? capacityWait() * 1000;
     this.capacityRetryMs = options.capacityRetryMs ?? CAPACITY_RETRY_MS;
     if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error('capacityWaitMs must be nonnegative and capacityRetryMs positive');
-    this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
-    this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
-    this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
+    this.vm = options.vm ?? new MachineService({ environment: options.environment! });
+    this.registry = options.registry ?? new Registry({ managedRoot: options.environment!.profile.relayStateDir });
+    this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot!, hash(options.sessionId).slice(0, 32));
   }
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
   durableOwner(machine: string, machineId?: string): Promise<DurableOwner> {

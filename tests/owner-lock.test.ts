@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { acquireOwnerLock } from "../src/owner-lock.js";
+import { childEnvironment } from "./isolation.js";
 
 const modulePath = fileURLToPath(new URL("../src/owner-lock.ts", import.meta.url));
 const workerScript = `
@@ -35,7 +36,7 @@ async function setup(t: test.TestContext) {
   const path = join(dir, "owner.lock");
   async function worker() {
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", workerScript], {
-      env: { ...process.env, LOCK_PATH: path }, stdio: ["ignore", "ignore", "pipe", "ipc"],
+      env: childEnvironment({ LOCK_PATH: path }), stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
     children.push(child);
     let stderr = "";

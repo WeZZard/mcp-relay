@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { replaceOnSuccess } from '../scripts/replace-on-success.mjs';
+import { childEnvironment } from './isolation.js';
 
 const root = resolve(import.meta.dirname, '..');
 function scratch(t: { after: (fn: () => void) => void }) {
@@ -52,7 +53,7 @@ test('scripts/build.mjs with a dependency missing fails and keeps dist/', { time
     if (entry !== '@wezzard') symlinkSync(join(root, 'node_modules', entry), join(dir, 'node_modules', entry));
   }
   seed(dir);
-  assert.throws(() => execFileSync(process.execPath, ['scripts/build.mjs'], { cwd: dir, stdio: 'pipe' }));
+  assert.throws(() => execFileSync(process.execPath, ['scripts/build.mjs'], { cwd: dir, stdio: 'pipe', env: childEnvironment() }));
   assert.equal(readFileSync(join(dir, 'dist', 'server.mjs'), 'utf8'), 'the committed build');
   assert.deepEqual(readdirSync(dir).filter(name => name.startsWith('.dist')), [], 'no partial build is left');
 });

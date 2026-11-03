@@ -217,12 +217,17 @@ The default is the wait from the end of the call to the after-snapshot.
 ## Live checks
 
 To repeat them, build and run one step file per image. Each acquires, uses
-and finishes a real VM through the local vm-service:
+and finishes a real VM through the machine-service instance a selected
+environment profile names. The profile is required, and one whose origin is
+the installed instance's (loopback port 6240) is refused, so a live check
+never leases from the installed service or writes the operator's registry;
+the relay keeps the run's registry in the profile's own state directory
+(DC-6x-ISO-4):
 
 ```sh
 npm run build
-node scripts/live-check.mjs scripts/live-checks/ubuntu.json <outDir>
-node scripts/live-check.mjs scripts/live-checks/macos.json <outDir>
+node scripts/live-check.mjs --environment <profile.json> scripts/live-checks/ubuntu.json <outDir>
+node scripts/live-check.mjs --environment <profile.json> scripts/live-checks/macos.json <outDir>
 ```
 
 The script exits nonzero when any step's result differs from what its step

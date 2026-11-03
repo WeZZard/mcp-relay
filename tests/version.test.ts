@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { childEnvironment } from './isolation.js';
 
 const run = promisify(execFile);
 
@@ -24,7 +27,9 @@ test('package.json ships no skills or hook; pi gets the MCP server and the promp
 });
 
 test('npm pack ships no skills/ or hooks/ files', async () => {
-  const { stdout } = await run('npm', ['pack', '--dry-run', '--json']);
+  // npm keeps its cache under HOME; the test gives it one of its own.
+  const home = await mkdtemp(join(tmpdir(), 'mcp-relay-npm-'));
+  const { stdout } = await run('npm', ['pack', '--dry-run', '--json'], { env: childEnvironment({ HOME: home }) }).finally(() => rm(home, { recursive: true, force: true }));
   // npm 10 prints an array of packages; npm 12 prints an object keyed by package name.
   const parsed = JSON.parse(stdout);
   const { files } = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0] as { files: { path: string }[] };

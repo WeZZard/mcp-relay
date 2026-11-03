@@ -2,7 +2,8 @@ import { isIP } from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import { open, rename, rm, stat } from "node:fs/promises";
 import { basename } from "node:path";
-import type { SelectedEnvironment, EnvironmentIdentity } from './environment.js';
+import { selectedEnvironment, type SelectedEnvironment, type EnvironmentIdentity } from './environment.js';
+import { serviceUrl } from './config.js';
 import { checkGrant, fileSource, RelayClient, RelayFailedError, RelayUncertainError, type CallAnswer, type Op, type RelayClientOptions, type RelayGrant, type UploadSource } from './relay-client.js';
 
 /**
@@ -89,9 +90,17 @@ export interface PullResponse { vm: string; pulled: string; to: string }
 export interface ReleaseResponse { vm?: string; name?: string; released: boolean; reason: string; hygiene?: unknown }
 export interface BytesResponse { sha256: string; bytes: number }
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
-export interface MachineServiceOptions {
-  baseUrl?: string;
-  environment?: SelectedEnvironment;
+/** How the client sends a request: the platform's fetch in production, a stand-in in tests (DC-6x-ISO-2). */
+export type Transport = (url: string, init: RequestInit) => Promise<Response>;
+/**
+ * A client names its instance: the origin, or a selected environment that
+ * binds one. There is no default origin here; `machineServiceFromProcess`
+ * supplies the installed one to production (DC-6x-ISO-2).
+ */
+export type MachineServiceOptions = MachineServiceSettings & ({ baseUrl: string; environment?: SelectedEnvironment } | { baseUrl?: string; environment: SelectedEnvironment });
+export interface MachineServiceSettings {
+  /** How requests are sent; default the platform's fetch. */
+  transport?: Transport;
   timeoutMs?: number;
   acquireTimeoutMs?: number;
   maxResponseBytes?: number;
@@ -99,6 +108,16 @@ export interface MachineServiceOptions {
   listed?: boolean;
   /** Options of the broker sessions, for tests. */
   relay?: RelayClientOptions;
+}
+
+/**
+ * The client a relay process uses: the selected environment's instance, else
+ * MCP_RELAY_URL, else the installed one; under the test harness there is no
+ * default and the installed instance is refused (config.serviceUrl, DC-6x-ISO-1).
+ */
+export function machineServiceFromProcess(env: NodeJS.ProcessEnv = process.env, environment = selectedEnvironment(env), settings: MachineServiceSettings = {}): MachineService {
+  const baseUrl = serviceUrl(env, environment);
+  return new MachineService(environment ? { ...settings, baseUrl, environment } : { ...settings, baseUrl });
 }
 
 /** The manager depends on this protocol, not on a concrete transport or hypervisor. */
@@ -198,11 +217,15 @@ export class MachineService {
   private readonly timeoutMs: number;
   private readonly acquireTimeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly transport: Transport;
 
-  constructor(options: MachineServiceOptions | string = {}) {
+  constructor(options: MachineServiceOptions | string) {
     if (typeof options === "string") options = { baseUrl: options };
     this.environment = options.environment;
-    const url = new URL(options.baseUrl ?? options.environment?.profile.vmServiceUrl ?? "http://localhost:6240");
+    this.transport = options.transport ?? ((url, init) => fetch(url, init));
+    const named = options.baseUrl ?? options.environment?.profile.vmServiceUrl;
+    if (named === undefined) throw new TypeError("machine-service client needs its origin: a baseUrl or a selected environment");
+    const url = new URL(named);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError('Backend endpoint does not match the selected environment');
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
@@ -488,7 +511,7 @@ export class MachineService {
     const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await this.transport(`${this.baseUrl}${path}`, {
         method: init.method,
         headers: { ...init.headers, ...(this.environment ? { 'X-VM-Environment-Fingerprint': this.environment.identity.fingerprint } : {}) },
         ...(init.body === undefined ? {} : { body: init.body }),

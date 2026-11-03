@@ -2,17 +2,19 @@
  * End-to-end: headless Claude Code (`claude --print`) with this plugin loaded
  * from disk, driving the relay through the plugin's own MCP server against a
  * loopback stand-in for machine-service. What is checked is what happened on disk
- * and at the service, not what the model said. Needs `claude` on PATH and an
- * account; spends a few model turns per case. Run with `npm run test:e2e`.
+ * and at the service, not what the model said. Needs the claude executable and a
+ * credential named below; spends a few model turns per case. Run with
+ * `npm run test:e2e`.
  */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { access, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import { verifyDeliveredPackage } from '../../src/package.js';
+import { childEnvironment } from '../isolation.js';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PREFIX = 'mcp__plugin_mcp-relay_relay__';
@@ -22,8 +24,20 @@ const tool = (name: string) => PREFIX + name;
 const STATUS = tool('relay_status');
 const registryText = '# Test registry\n\n## Using VMs\n\n| Machine | OS | Task Name | Agent | Project | Start Date |\n| -- | -- | -- | -- | -- | -- |\n| foreign | linux | keep-me | another agent | /project | yesterday |\n\n## End\nUnrelated text.\n';
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
-const hasClaude = await new Promise<boolean>(done => { const child = spawn('claude', ['--version'], { stdio: 'ignore' }); child.on('error', () => done(false)); child.on('close', code => done(code === 0)); });
-const skip = hasClaude ? false : 'claude is not on PATH';
+/**
+ * The Claude Code under test and its credential are named, never found: the
+ * executable at MCP_RELAY_TEST_CLAUDE, signed in by MCP_RELAY_TEST_ANTHROPIC_API_KEY
+ * or MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN. Each run gets its own HOME and
+ * CLAUDE_CONFIG_DIR, so the operator's settings, installed plugins (an
+ * installed mcp-relay among them) and MCP servers do not load beside the
+ * plugin from this checkout (DC-6x-ISO-4).
+ */
+const claudeExecutable = process.env.MCP_RELAY_TEST_CLAUDE;
+const credential: Record<string, string> = process.env.MCP_RELAY_TEST_ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.MCP_RELAY_TEST_ANTHROPIC_API_KEY }
+  : process.env.MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: process.env.MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN } : {};
+const skip = !claudeExecutable || !isAbsolute(claudeExecutable) ? 'set MCP_RELAY_TEST_CLAUDE to the absolute path of the claude executable under test'
+  : !Object.keys(credential).length ? 'set MCP_RELAY_TEST_ANTHROPIC_API_KEY or MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN: the run has its own configuration directory, so it has no stored sign-in'
+  : false;
 
 interface ToolUse { name: string; input: any }
 interface ToolResult { text: string; isError: boolean }
@@ -34,22 +48,26 @@ async function fixture(t: TestContext) {
   const project = join(root, 'project'); await mkdir(project);
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const infoFile = join(root, 'service.json');
-  const service = spawn(process.execPath, [join(repo, 'node_modules', '.bin', 'tsx'), join(repo, 'tests', 'e2e', 'fixture-service.ts'), root, infoFile], { stdio: ['ignore', 'inherit', 'inherit'] });
+  const service = spawn(process.execPath, [join(repo, 'node_modules', '.bin', 'tsx'), join(repo, 'tests', 'e2e', 'fixture-service.ts'), root, infoFile], { env: childEnvironment({ HOME: root }), stdio: ['ignore', 'inherit', 'inherit'] });
   t.after(async () => { service.kill('SIGTERM'); await new Promise(done => { service.on('close', done); setTimeout(done, 8000); }); await rm(root, { recursive: true, force: true }); });
   const deadline = Date.now() + 15000; let info: any;
   while (!info && Date.now() < deadline) { try { info = JSON.parse(await readFile(infoFile, 'utf8')); } catch { await sleep(50); } }
   assert.ok(info, 'fixture service did not start');
   const env = { MCP_RELAY_URL: info.url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registryPath, MCP_RELAY_SESSION: `e2e-${t.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}` };
   const requests = async () => (await readFile(join(root, 'requests.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-  return { root, project, registryPath, info, env, requests };
+  // The run's own home and Claude Code configuration: only the plugin under test loads.
+  const home = join(root, 'home'), config = join(root, 'claude-config');
+  await mkdir(home); await mkdir(config);
+  return { root, project, registryPath, info, env, requests, owned: { HOME: home, CLAUDE_CONFIG_DIR: config } };
 }
 
 /** One headless run: the prompt on stdin, the plugin from this checkout, only the relay tools allowed, the service pointed at the fixture. */
-function claude(project: string, prompt: string, env: Record<string, string>, maxTurns = 40): Promise<Run> {
+function claude(f: { project: string; env: Record<string, string>; owned: Record<string, string> }, prompt: string, maxTurns = 40): Promise<Run> {
+  const { project, env } = f;
   return new Promise((done, reject) => {
     const args = ['--print', '--plugin-dir', repo, '--model', 'sonnet', '--output-format', 'stream-json', '--verbose', '--max-turns', String(maxTurns),
       '--settings', JSON.stringify({ env }), '--allowedTools', `${PREFIX}*`];
-    const child: ChildProcess = spawn('claude', args, { cwd: project, env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child: ChildProcess = spawn(claudeExecutable!, args, { cwd: project, env: childEnvironment({ ...f.owned, ...credential, ...env }), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout!.on('data', data => { stdout += data; }); child.stderr!.on('data', data => { stderr += data; });
     child.on('error', reject);
@@ -80,7 +98,7 @@ const stepJson = (value: unknown) => JSON.stringify(value);
 
 test('status: the plugin loads, its tools carry the plugin-scoped names, and the server talks to the fixture service', { skip, timeout: 300_000 }, async t => {
   const f = await fixture(t);
-  const run = await claude(f.project, 'Call the relay_status tool once, with no arguments, and reply with exactly the JSON it returned and nothing else.', f.env, 4);
+  const run = await claude(f, 'Call the relay_status tool once, with no arguments, and reply with exactly the JSON it returned and nothing else.', 4);
   assert.equal(run.code, 0, run.stderr);
   assert.ok(run.toolUses.length >= 1, `no relay tool call in ${JSON.stringify(run.result)}`);
   assert.equal(run.toolUses[0]!.name, STATUS, 'the tool carries the plugin-scoped name');
@@ -93,7 +111,7 @@ test('status: the plugin loads, its tools carry the plugin-scoped names, and the
 test('refusal: an invalid relay call is an error result from the strict contract, reported without a crash', { skip, timeout: 300_000 }, async t => {
   const f = await fixture(t);
   // relay_script with inline: true takes code; one without it is refused by the strict contract (DC-23).
-  const run = await claude(f.project, `Call the relay_script tool exactly once with the arguments ${stepJson({ guest: 'nowhere-1', language: 'python', inline: true })}. It will fail; that is expected. Reply with the error text you received and nothing else. Do not retry.`, f.env, 4);
+  const run = await claude(f, `Call the relay_script tool exactly once with the arguments ${stepJson({ guest: 'nowhere-1', language: 'python', inline: true })}. It will fail; that is expected. Reply with the error text you received and nothing else. Do not retry.`, 4);
   assert.equal(run.code, 0, run.stderr);
   assert.equal(run.toolUses.length, 1); assert.equal(run.toolUses[0]!.name, tool('relay_script'));
   assert.equal(run.toolResults[0]!.isError, true);
@@ -112,7 +130,7 @@ test('lifecycle: acquire, stage, run one shell script and one inline JavaScript 
     ['relay_finish', { guest: 'e2e-exec-1' }],
   ];
   const prompt = `You are exercising the relay plugin against a fixture service. Make exactly these ${steps.length} tool calls, in this order, one at a time, passing each JSON object as the arguments verbatim:\n${steps.map(([name, args], i) => `${i + 1}. ${name} with ${stepJson(args)}`).join('\n')}\nDo not call any other tool and do not change the arguments. When the last call has returned, reply with the single word DONE.`;
-  const run = await claude(f.project, prompt, f.env, 14);
+  const run = await claude(f, prompt, 14);
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(run.toolUses.map(u => u.name), steps.map(([name]) => tool(name)), JSON.stringify(run.toolUses));
   for (const result of run.toolResults) assert.equal(result.isError, false, result.text);
@@ -135,7 +153,7 @@ test('lifecycle: acquire, stage, run one shell script and one inline JavaScript 
 test('abandoned lease: a session that acquires and stops without finishing keeps its VM; renewal pauses and the lease waits for an explicit release or the service TTL', { skip, timeout: 600_000 }, async t => {
   const f = await fixture(t);
   const prompt = `This is a cleanup test. Make exactly one relay_acquire tool call with the arguments ${stepJson({ task: 'e2e-abandon', image: 'ubuntu2404', extractions: [] })}. Then reply with the single word DONE. Do not call finish, release or any other tool: the test is checking what happens when a session ends with a lease still held.`;
-  const run = await claude(f.project, prompt, f.env, 4);
+  const run = await claude(f, prompt, 4);
   assert.equal(run.code, 0, run.stderr);
   assert.deepEqual(run.toolUses.map(u => u.name), [tool('relay_acquire')], JSON.stringify(run.toolUses));
   assert.equal(run.toolResults[0]!.isError, false, run.toolResults[0]!.text);

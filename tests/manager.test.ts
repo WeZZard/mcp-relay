@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
-import { RelayManager, type AcquireInput, type ManagerOptions, type RunInput } from '../src/manager.js';
+import { RelayManager, type AcquireInput, type ManagerOptions, type ManagerSettings, type RunInput } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
 import { MachineService, MachineServiceError, capacityRefusal, type VmLease } from '../src/machine-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
@@ -17,6 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { relayCall } from '../src/surface.js';
 import type { RelayInput } from '../src/schema.js';
+import { childEnvironment, childPath } from './isolation.js';
 
 /**
  * A stand-in for a runtime's tool binding, shaped like pi's: validate through
@@ -206,7 +207,7 @@ class FixtureService {
       if (isReceiver) await this.receiverHook?.();
       const response = await new Promise<{ rc: number; output: string }>((resolve, reject) => {
         // The receiver finds the language runtimes on the guest's PATH: python3 from the host, tsx from this checkout.
-        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: { PATH: `${localBin}:${process.env.PATH}`, HOME: this.root }, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: childEnvironment({ PATH: childPath(localBin), HOME: this.root }), stdio: ['ignore', 'pipe', 'pipe'] });
         let output = '';
         child.stdout.on('data', data => { output += String(data); }); child.stderr.on('data', data => { output += String(data); });
         child.on('error', reject); child.on('close', code => resolve({ rc: code ?? 1, output }));
@@ -225,11 +226,11 @@ class FixtureService {
   }
 }
 
-async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
+async function fixture(t: TestContext, patch: Partial<ManagerSettings> & { tartPath?: string } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pi-relay-manager-')));
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const service = new FixtureService(root), vm = await service.start();
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), localTart: true, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async name => !service.leases.has(name), localTart: true, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { service.releaseFailures = 0; service.failHeartbeat = false; service.failGet = false; service.hideLeases = false; await manager.release(); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const driver = join(root, 'fake-cua');
@@ -373,8 +374,7 @@ test('single relay tool: real HTTP/receiver acquire → stage → exec/script/co
 test('the shipped MCP server stages its shipped receiver and completes a full HTTP lifecycle over stdio', async t => {
   const f = await fixture(t);
   const bin = join(f.root, 'bin'); await mkdir(bin); await writeFile(join(bin, 'tart'), '#!/bin/sh\nprintf "[]"\n'); await chmod(join(bin, 'tart'), 0o700);
-  const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: f.root, MCP_RELAY_STATE_DIR: join(f.root, 'compiled-state'), MCP_RELAY_URL: f.manager.vm.baseUrl, MCP_RELAY_REGISTRY: f.registryPath, MCP_RELAY_PROJECT: f.root, MCP_RELAY_SESSION: 'compiled-distribution-fixture', PATH: `${bin}:${process.env.PATH}` };
-  delete env.VM_ENVIRONMENT_FILE;
+  const env = childEnvironment({ HOME: f.root, MCP_RELAY_STATE_DIR: join(f.root, 'compiled-state'), MCP_RELAY_URL: f.manager.vm.baseUrl, MCP_RELAY_REGISTRY: f.registryPath, MCP_RELAY_PROJECT: f.root, MCP_RELAY_SESSION: 'compiled-distribution-fixture', TART: join(bin, 'tart'), TART_HOME: join(f.root, 'tart') });
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'server.mjs')], env });
   const client = new Client({ name: 'manager-test', version: '0' });
   await client.connect(transport);
@@ -1486,7 +1486,7 @@ test('finish fails before pulling the relay state when the evidence volume has t
   let free = 4096n; const volumes: string[] = [];
   // An injected statfs: 4096 bytes free until the test frees space.
   const statfs = async (path: string) => { volumes.push(path); return { bavail: free / 4096n, bsize: 4096n }; };
-  const f = await fixture(t, { statfs } as Partial<ManagerOptions>);
+  const f = await fixture(t, { statfs } as Partial<ManagerSettings>);
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();
   await shown(f.manager, await f.manager.run(operation('state-needs-space')));
   const guestState = await bytesUnder(join(acquired.guestRoot, 'state'));

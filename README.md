@@ -408,13 +408,20 @@ npm run setup:dev -- /absolute/path/to/built/relay-driver
 npm run check                                            # build, typecheck, tests
 ```
 
+The tests start from an empty environment (`scripts/test.mjs`): nothing in
+your shell, such as `VM_ENVIRONMENT_FILE`, `MCP_RELAY_URL`, `MACHCTL`, `TART`
+or `TART_HOME`, reaches them, and a relay a test starts is refused the
+installed instance's origin. Only variables named `MCP_RELAY_TEST_*` pass, as
+the tests' own inputs. Run a single file the same way:
+`node scripts/test.mjs tests/server.test.ts`.
+
 Three tests need something outside this repository and skip with a message
 when it is absent: the console fixture regeneration needs a historical
 `../vm-service` checkout with the Python backend (or
-`VM_SERVICE_PYTHON_BACKEND`); the environment parity test needs
-machine-service's `machctl` (`MACHCTL`, `PATH`, or a release build in
-`../machine-service/rust`) and `../pilot-images`; and the shared catalog text
-corpus needs `../pilot-images`. The JPEG and WebP presentation fixtures in
+`MCP_RELAY_TEST_PYTHON_BACKEND`); the environment parity test needs a
+`machctl` built from source (`MCP_RELAY_TEST_MACHCTL`, or a release build in
+`../machine-service/rust`; never one on PATH) and `../pilot-images`; and the
+shared catalog text corpus needs `../pilot-images`. The JPEG and WebP presentation fixtures in
 `tests/fixtures/` were encoded once from the test's spatial PNG with a codec
 outside this repository and are committed, because the core carries none.
 
@@ -434,8 +441,11 @@ the stand-in before anything is acquired), an invalid call refused by the
 contract, a full acquire, stage, exec, finish lifecycle with a verified package,
 and a lease abandoned when the session ends, which is retained with its renewal
 paused rather than released. What is checked is what happened on disk and at
-the service, not what the model said. The suite needs `claude` on PATH with an
-account and spends a few model turns per case, so it is not part of `npm test`.
+the service, not what the model said. Each session has its own HOME and
+`CLAUDE_CONFIG_DIR`, so only the plugin under test loads. The suite needs the
+Claude Code executable named by `MCP_RELAY_TEST_CLAUDE` and a credential in
+`MCP_RELAY_TEST_ANTHROPIC_API_KEY` or `MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN`,
+and spends a few model turns per case, so it is not part of `npm test`.
 
 The relay-driver links are development-only. The tests run the manager, the
 guest programs and the shipped server against fixture HTTP services, fixture

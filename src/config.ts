@@ -28,6 +28,36 @@ export function localTartHost(platform: string = process.platform, arch: string 
   return platform === 'darwin' && arch === 'arm64';
 }
 
+/** The origin an installed machine-service listens on, which the relay uses when nothing names another. */
+export const INSTALLED_SERVICE_URL = 'http://localhost:6240';
+/** The variable the test harness sets on every process it starts (scripts/isolation.mjs, DC-6x-ISO-1). */
+export const ISOLATION_VARIABLE = 'MCP_RELAY_ISOLATED';
+
+/** Whether the process was started by the test harness, which gives the relay no defaults (DC-6x-ISO-1). */
+export function isolated(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[ISOLATION_VARIABLE] === '1';
+}
+
+/** Whether an origin is the installed instance's: its port on any loopback name. */
+export function installedOrigin(url: string): boolean {
+  const parsed = new URL(url);
+  return parsed.port === new URL(INSTALLED_SERVICE_URL).port && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+}
+
+/**
+ * The machine-service origin a process uses: the selected environment's, then
+ * MCP_RELAY_URL, then the installed instance's. A process the test harness
+ * started gets no default and is refused the installed instance's origin
+ * however it is named, so no test reaches the real service (DC-6x-ISO-1).
+ */
+export function serviceUrl(env: NodeJS.ProcessEnv = process.env, environment = selectedEnvironment(env)): string {
+  const named = environment?.profile.vmServiceUrl ?? env.MCP_RELAY_URL;
+  if (!isolated(env)) return named ?? INSTALLED_SERVICE_URL;
+  if (named === undefined) throw new Error(`${ISOLATION_VARIABLE}=1: name the machine-service origin with MCP_RELAY_URL or VM_ENVIRONMENT_FILE; a test gets no default`);
+  if (installedOrigin(named)) throw new Error(`${ISOLATION_VARIABLE}=1: ${named} is the installed machine-service's origin, which no test may reach`);
+  return named;
+}
+
 /** MCP_RELAY_STATE_DIR > XDG_STATE_HOME/mcp-relay > ~/.local/state/mcp-relay. */
 export function relayStateRoot(options: ConfigOptions = {}): string {
   const env = options.env ?? process.env;

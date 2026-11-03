@@ -55,11 +55,12 @@
     "build": "node scripts/build.mjs",
     "setup:dev": "node scripts/setup-dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=1 tests/*.test.ts scripts/selected-image-x11.test.ts",
+    "test": "node scripts/test.mjs --test-concurrency=1 tests/*.test.ts scripts/selected-image-x11.test.ts",
     "check": "npm run build && npm run typecheck && npm test",
-    "test:e2e": "tsx --test tests/e2e/headless.test.ts",
-    "test:broker": "tsx --test --test-concurrency=1 tests/relay-broker.test.ts",
-    "verify:package": "node scripts/verify-package.mjs"
+    "test:e2e": "node scripts/test.mjs tests/e2e/headless.test.ts",
+    "test:broker": "node scripts/test.mjs --test-concurrency=1 tests/relay-broker.test.ts",
+    "verify:package": "node scripts/verify-package.mjs",
+    "pin:machine-service": "node scripts/pin-machine-service.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

@@ -10,6 +10,7 @@ import { Registry } from '../src/registry.js';
 import { type VmBackend, type VmLease } from '../src/machine-service.js';
 import { consoleStatus, acquisitionCapabilities } from '../src/console.js';
 import { validateRelayInput } from '../src/schema.js';
+import { childEnvironment } from './isolation.js';
 
 const wire = JSON.parse(await readFile(new URL('./fixtures/console-reports.json', import.meta.url), 'utf8'));
 const capabilities = structuredClone(wire.capabilities);
@@ -37,7 +38,7 @@ async function fixture(t: test.TestContext, kind: 'linux' | 'macos' = 'linux') {
     heartbeat: async () => ({ ...lease!, ttl_hours_remaining: 1 }),
     exec: async () => assert.fail('guest execution'), push: async () => assert.fail('push'), pull: async () => assert.fail('pull'), applications: async () => assert.fail('applications'),
   };
-  const options: ManagerOptions = { sessionId: 'test', project: root, stateRoot: root, registry: new Registry({ managedRoot: root }), vm, verifyDestroyed: async () => !lease };
+  const options: ManagerOptions = { sessionId: 'test', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), registry: new Registry({ managedRoot: root }), vm, verifyDestroyed: async () => !lease };
   const managers = [new RelayManager(options)];
   t.after(async () => { for (const manager of managers) await manager.cleanup('test'); await rm(root, { recursive: true, force: true }); });
   return { manager: managers[0], options, managers, calls, acquisitions, vm, get lease() { return lease!; }, setObservation: (v: Record<string, unknown>) => { observation = { ...observation, ...v }; }, lose: () => { loseOpen = true; } };
@@ -161,11 +162,11 @@ test('cancel before open records a terminal attempt without releasing or replayi
 // The generator imports the backend's report methods from a vm-service checkout
 // beside this repository. That Python implementation was replaced by the Rust
 // port, so it now only exists in a historical checkout: point
-// VM_SERVICE_PYTHON_BACKEND at one to re-run the generator. The checked-in
+// MCP_RELAY_TEST_PYTHON_BACKEND at one to re-run the generator. The checked-in
 // fixture keeps its recorded source hash.
-const backendReports = process.env.VM_SERVICE_PYTHON_BACKEND ?? resolve('../vm-service/bin/console_sessions.py');
-test('checked-in fixtures match the backend report generator', { skip: !existsSync(backendReports) && `no backend at ${backendReports}; set VM_SERVICE_PYTHON_BACKEND to a historical vm-service checkout` }, () => {
-  const generated = JSON.parse(execFileSync('python3', ['-B', new URL('./fixtures/generate-console-reports.py', import.meta.url).pathname], { encoding: 'utf8' }));
+const backendReports = process.env.MCP_RELAY_TEST_PYTHON_BACKEND ?? resolve('../vm-service/bin/console_sessions.py');
+test('checked-in fixtures match the backend report generator', { skip: !existsSync(backendReports) && `no backend at ${backendReports}; set MCP_RELAY_TEST_PYTHON_BACKEND to a historical vm-service checkout` }, () => {
+  const generated = JSON.parse(execFileSync('python3', ['-B', new URL('./fixtures/generate-console-reports.py', import.meta.url).pathname], { encoding: 'utf8', env: childEnvironment() }));
   assert.deepEqual(generated.reports, wire.reports);
   assert.deepEqual(generated.capabilities, wire.capabilities);
 });

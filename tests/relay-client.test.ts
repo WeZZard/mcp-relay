@@ -16,6 +16,7 @@ import { FakeBroker, FakeRelay } from './relay-fake-broker.js';
 import { MAX_CHUNK, RELAY_PROTOCOL, RelayClient, RelayUncertainError, UPLOAD_WINDOW, caFingerprint, checkGrant, decodeMessage, encodeChunk, encodeControl, fileSource, type Sink } from '../src/relay-client.js';
 import { writeFileSync } from 'node:fs';
 import { MAX_BODY, type Timing } from '../src/relay-session.js';
+import { childEnvironment } from './isolation.js';
 
 const FAST: Partial<Timing> = { heartbeatMs: 40, deadMs: 300, handshakeMs: 500, backoffInitialMs: 5, backoffMaxMs: 40, tickMs: 10, openMs: 1000 };
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
@@ -267,7 +268,7 @@ async function waitFor(check: () => boolean, what = 'condition', ms = 4000) {
 function testCertificate() {
   const dir = mkdtempSync(join(tmpdir(), 'relay-ca-'));
   try {
-    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=relay-test', '-days', '1', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'ca.pem')], { stdio: 'ignore' });
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=relay-test', '-days', '1', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'ca.pem')], { stdio: 'ignore', env: childEnvironment() });
     return readFileSync(join(dir, 'ca.pem'), 'utf8');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }

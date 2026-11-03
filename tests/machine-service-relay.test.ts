@@ -15,11 +15,12 @@ import test, { type TestContext } from 'node:test';
 import { FakeBroker, FakeRelay } from './relay-fake-broker.js';
 import { MachineService, shellQuote } from '../src/machine-service.js';
 import { caFingerprint } from '../src/relay-client.js';
+import { childEnvironment } from './isolation.js';
 
 function certificate() {
   const dir = mkdtempSync(join(tmpdir(), 'relay-ca-'));
   try {
-    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=relay-test', '-days', '1', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'ca.pem')], { stdio: 'ignore' });
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-subj', '/CN=relay-test', '-days', '1', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'ca.pem')], { stdio: 'ignore', env: childEnvironment() });
     return readFileSync(join(dir, 'ca.pem'), 'utf8');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }

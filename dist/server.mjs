@@ -21048,6 +21048,22 @@ function absolute(value, label) {
 function localTartHost(platform = process.platform, arch = process.arch) {
   return platform === "darwin" && arch === "arm64";
 }
+var INSTALLED_SERVICE_URL = "http://localhost:6240";
+var ISOLATION_VARIABLE = "MCP_RELAY_ISOLATED";
+function isolated(env = process.env) {
+  return env[ISOLATION_VARIABLE] === "1";
+}
+function installedOrigin(url) {
+  const parsed = new URL(url);
+  return parsed.port === new URL(INSTALLED_SERVICE_URL).port && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+}
+function serviceUrl(env = process.env, environment = selectedEnvironment(env)) {
+  const named2 = environment?.profile.vmServiceUrl ?? env.MCP_RELAY_URL;
+  if (!isolated(env)) return named2 ?? INSTALLED_SERVICE_URL;
+  if (named2 === void 0) throw new Error(`${ISOLATION_VARIABLE}=1: name the machine-service origin with MCP_RELAY_URL or VM_ENVIRONMENT_FILE; a test gets no default`);
+  if (installedOrigin(named2)) throw new Error(`${ISOLATION_VARIABLE}=1: ${named2} is the installed machine-service's origin, which no test may reach`);
+  return named2;
+}
 function relayStateRoot(options = {}) {
   const env = options.env ?? process.env;
   const selected = selectedEnvironment(env, options.home);
@@ -22510,6 +22526,10 @@ var RelayClient = class {
 };
 
 // src/machine-service.ts
+function machineServiceFromProcess(env = process.env, environment = selectedEnvironment(env), settings2 = {}) {
+  const baseUrl = serviceUrl(env, environment);
+  return new MachineService(environment ? { ...settings2, baseUrl, environment } : { ...settings2, baseUrl });
+}
 var MachineServiceError = class extends Error {
   constructor(message3, status, responseBody, options) {
     super(message3, options);
@@ -22585,10 +22605,14 @@ var MachineService = class {
   timeoutMs;
   acquireTimeoutMs;
   maxResponseBytes;
-  constructor(options = {}) {
+  transport;
+  constructor(options) {
     if (typeof options === "string") options = { baseUrl: options };
     this.environment = options.environment;
-    const url = new URL(options.baseUrl ?? options.environment?.profile.vmServiceUrl ?? "http://localhost:6240");
+    this.transport = options.transport ?? ((url2, init) => fetch(url2, init));
+    const named2 = options.baseUrl ?? options.environment?.profile.vmServiceUrl;
+    if (named2 === void 0) throw new TypeError("machine-service client needs its origin: a baseUrl or a selected environment");
+    const url = new URL(named2);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback2 = host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
@@ -22906,7 +22930,7 @@ var MachineService = class {
     const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs2}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs2);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await this.transport(`${this.baseUrl}${path}`, {
         method: init.method,
         headers: { ...init.headers, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
         ...init.body === void 0 ? {} : { body: init.body },
@@ -34142,12 +34166,26 @@ function originUnavailable(error2) {
 }
 var instructions = "This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run's after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session's limit that relay_status reports. relay_acquire answers each guest's name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend's own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job may share its desktop, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host's display and offers no video or spawn API. Every tool's text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.";
 var NO_OWNED_LEASE = "This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.";
+function relayManagerFromProcess(settings2, env = process.env) {
+  const environment = selectedEnvironment(env);
+  if (environment) return new RelayManager({ ...settings2, environment });
+  return new RelayManager({
+    ...settings2,
+    vm: machineServiceFromProcess(env, void 0),
+    registry: new Registry({ env }),
+    stateRoot: relayStateRoot({ env }),
+    tartHome: env.TART_HOME ?? join13(env.HOME ?? homedir4(), ".tart"),
+    tartPath: env.TART ?? "tart"
+  });
+}
 var RelayManager = class {
   constructor(options) {
     this.options = options;
-    this.environment = options.environment ?? selectedEnvironment();
-    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join13(process.env.HOME ?? homedir4(), ".tart"));
-    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? "tart";
+    this.environment = options.environment;
+    const unnamed = this.environment ? [] : ["vm", "registry", "stateRoot", "tartHome", "tartPath"].filter((key2) => options[key2] === void 0);
+    if (unnamed.length) throw new TypeError(`A relay manager without a selected environment needs ${unnamed.join(", ")}; relayManagerFromProcess supplies production's defaults`);
+    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome);
+    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath;
     this.localTart = options.localTart ?? (!!this.environment || localTartHost());
     if (this.environment && (options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir || options.tartHome && canonicalPath(options.tartHome) !== this.tartHome || options.tartPath && canonicalPath(options.tartPath) !== this.tartPath)) throw new Error("Injected paths conflict with the selected environment");
     this.maxGuests = options.maxGuests ?? maxGuests();
@@ -34155,9 +34193,9 @@ var RelayManager = class {
     this.capacityWaitMs = options.capacityWaitMs ?? capacityWait() * 1e3;
     this.capacityRetryMs = options.capacityRetryMs ?? CAPACITY_RETRY_MS;
     if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error("capacityWaitMs must be nonnegative and capacityRetryMs positive");
-    this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
-    this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
-    this.root = join13(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
+    this.vm = options.vm ?? new MachineService({ environment: options.environment });
+    this.registry = options.registry ?? new Registry({ managedRoot: options.environment.profile.relayStateDir });
+    this.root = join13(this.environment?.profile.relayStateDir ?? options.stateRoot, hash(options.sessionId).slice(0, 32));
   }
   options;
   vm;
@@ -36251,18 +36289,10 @@ function createRelayServer(options = {}) {
   const exit = options.onExit ?? onExit();
   const project = options.project ?? projectDirectory();
   let manager;
-  const get = options.manager ?? (() => {
-    if (!manager) {
-      const environment = selectedEnvironment();
-      manager = new RelayManager({ sessionId, project, environment, registry: new Registry(environment ? { managedRoot: environment.profile.relayStateDir } : {}) });
-    }
-    return manager;
-  });
+  const get = options.manager ?? (() => manager ??= relayManagerFromProcess({ sessionId, project }));
   const statusPayload = async () => {
-    const environment = selectedEnvironment();
-    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? "http://localhost:6240";
     const owned = get();
-    return { ...await owned.loadedStatus(), project, service, environment: environment?.identity };
+    return { ...await owned.loadedStatus(), project, service: owned.vm.baseUrl, environment: owned.environment?.identity };
   };
   const shutdownController = new AbortController();
   const server = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} }, instructions });
@@ -36309,6 +36339,7 @@ async function main(args) {
   maxGuests();
   onExit();
   capacityWait();
+  if (isolated()) serviceUrl();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error("MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds");

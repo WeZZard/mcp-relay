@@ -7,10 +7,10 @@
  * relay agent itself as an image that ships it would. The relay agent runs
  * commands on this machine, as this user, in temporary folders.
  *
- * Build both binaries from vm-service and point RELAY_BROKER_BIN_DIR at them:
+ * Build both binaries from vm-service and point MCP_RELAY_TEST_BROKER_BIN_DIR at them:
  *
  *   cargo build -p machine-service -p relay-agent   # in vm-service/rust
- *   RELAY_BROKER_BIN_DIR=<vm-service>/rust/target/debug npm run test:broker
+ *   MCP_RELAY_TEST_BROKER_BIN_DIR=<vm-service>/rust/target/debug npm run test:broker
  */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -26,11 +26,12 @@ import { MachineService } from '../src/machine-service.js';
 import { RelayManager } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
 import { verifyDeliveredPackage } from '../src/package.js';
+import { childEnvironment, childPath } from './isolation.js';
 
-const binDir = process.env.RELAY_BROKER_BIN_DIR;
+const binDir = process.env.MCP_RELAY_TEST_BROKER_BIN_DIR;
 const daemonBin = binDir && join(binDir, 'machine-service');
 const agentBin = binDir && join(binDir, 'relay-agent');
-const skip = !binDir ? 'RELAY_BROKER_BIN_DIR is not set' : !existsSync(daemonBin!) || !existsSync(agentBin!) ? `machine-service or relay-agent is missing in ${binDir}` : false;
+const skip = !binDir ? 'MCP_RELAY_TEST_BROKER_BIN_DIR is not set' : !existsSync(daemonBin!) || !existsSync(agentBin!) ? `machine-service or relay-agent is missing in ${binDir}` : false;
 const bundle = fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 const sha = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
@@ -124,11 +125,11 @@ async function lab(t: TestContext) {
 
   const port = await freePort(), sessionPort = await freePort();
   const relayUrl = `wss://localhost:${sessionPort}/relay`;
-  const env: Record<string, string> = {
-    PATH: `${bin}:${process.env.PATH}`, HOME: home, MACHINE_SERVICE_STATE: state, MACHINE_SERVICE_PORT: String(port), PILOT_REPO: pilot, PILOT_IMAGES_STATE_DIR: pilotState, TART_HOME: tartHome, FAKE_ROOT: tartHome, FAKE_GUEST_HOME: guestHome,
+  const env = childEnvironment({
+    PATH: childPath(bin), HOME: home, MACHINE_SERVICE_STATE: state, MACHINE_SERVICE_PORT: String(port), PILOT_REPO: pilot, PILOT_IMAGES_STATE_DIR: pilotState, TART_HOME: tartHome, FAKE_ROOT: tartHome, FAKE_GUEST_HOME: guestHome,
     MACHINE_SERVICE_GUEST_LINK: 'relay', MACHINE_SERVICE_SESSION_PORT: String(sessionPort), MACHINE_SERVICE_RELAY_GUEST_URL: relayUrl, MACHINE_SERVICE_RELAY_URL: relayUrl,
     MACHINE_SERVICE_RELAY_REGISTER_TIMEOUT: '30', MACHINE_SERVICE_RELAY_AGENT_WAIT: '30', MACHINE_SERVICE_RELAY_AGENT: agentBin!,
-  };
+  });
   const children: ChildProcess[] = [];
   const logs: string[] = [];
   const startDaemon = async () => {
@@ -145,7 +146,7 @@ async function lab(t: TestContext) {
   const stopDaemon = async (child: ChildProcess) => { if (child.exitCode !== null) return; const exited = new Promise(done => child.on('exit', done)); child.kill('SIGTERM'); await Promise.race([exited, sleep(10000)]); if (child.exitCode === null) child.kill('SIGKILL'); };
   // The guest's relay agent, in the guest's "desktop session": it waits for the configuration the bootstrap writes.
   const agentLog = join(root, 'agent.log');
-  const agent = spawn(agentBin!, ['run'], { env: { PATH: process.env.PATH!, HOME: guestHome, SHELL: '/bin/sh' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  const agent = spawn(agentBin!, ['run'], { env: childEnvironment({ HOME: guestHome, SHELL: '/bin/sh' }), stdio: ['ignore', 'ignore', 'pipe'] });
   let agentText = ''; agent.stderr!.on('data', data => { agentText += data; });
   children.push(agent);
   t.after(async () => {
@@ -233,7 +234,7 @@ test('a relay run stages, runs and finishes through the broker, and its evidence
   const registryPath = join(l.root, 'AGENTS.md');
   await writeFile(registryPath, '# Test registry\n\n## Using VMs\n\n| Machine | OS | Task Name | Agent | Project | Start Date |\n| -- | -- | -- | -- | -- | -- |\n\n## End\n');
   const project = join(l.root, 'project'); await mkdir(project);
-  const manager = new RelayManager({ project, sessionId: randomUUID(), stateRoot: join(l.root, 'relay-state'), outputRoot: join(l.root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async () => true });
+  const manager = new RelayManager({ project, sessionId: randomUUID(), stateRoot: join(l.root, 'relay-state'), tartHome: join(l.root, 'tart'), tartPath: join(l.root, 'no-tart'), outputRoot: join(l.root, 'packages'), registry: new Registry(registryPath), vm, runtimeBundle: bundle, heartbeatMs: 60000, verifyDestroyed: async () => true });
   let guestRoot: string | undefined;
   t.after(async () => { await manager.release().catch(() => {}); await manager.cleanup('test teardown').catch(() => {}); if (guestRoot) await rm(guestRoot, { recursive: true, force: true }); });
 

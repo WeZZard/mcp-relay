@@ -4,8 +4,8 @@
  * MCP server (`src/server.ts`) and any other runtime's binding are thin
  * wrappers over these exports.
  */
-export { RelayManager, instructions, GUEST_NAME, DEFAULT_AFTER_INTERVAL_MS } from './manager.js';
-export type { ManagerOptions, AcquireInput, StageInput, RunInput, RunResult, Extraction, ConsoleAttemptInput, ConsoleOpenInput, GuestSelector, GuestStatus } from './manager.js';
+export { RelayManager, relayManagerFromProcess, instructions, GUEST_NAME, DEFAULT_AFTER_INTERVAL_MS } from './manager.js';
+export type { ManagerOptions, ManagerSettings, ManagerBackend, AcquireInput, StageInput, RunInput, RunResult, Extraction, ConsoleAttemptInput, ConsoleOpenInput, GuestSelector, GuestStatus } from './manager.js';
 export { Registry, RegistryError, resolveRegistry, validateRegistryText } from './registry.js';
 export type { RegistryRow, RegistryOptions, RegistryResolution } from './registry.js';
 export { relayContract, relayParameters, relayActions, validateRelayInput, toolInputSchema } from './schema.js';

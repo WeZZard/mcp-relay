@@ -1,9 +1,17 @@
 // Live check: starts this checkout's built MCP server over stdio and runs one
-// scripted sequence of relay tool calls against a real VM through the local
-// machine-service. It acquires, runs and finishes a real VM; run it deliberately.
+// scripted sequence of relay tool calls against a real VM. It acquires, runs
+// and finishes a real VM; run it deliberately.
 //
 //   npm run build
-//   node scripts/live-check.mjs scripts/live-checks/ubuntu.json <outDir>
+//   node scripts/live-check.mjs --environment <profile.json> <steps.json> <outDir>
+//
+// The instance is named, never defaulted (DC-6x-ISO-4): a selected environment
+// profile binds the machine-service origin, its Tart store and the relay's own
+// state, where the relay keeps the run's registry. A profile whose origin is
+// the installed instance's (loopback port 6240) is refused, so a live check
+// reaches a non-installed instance and never the operator's ~/AGENTS.md. The
+// server gets only PATH, HOME and the variables below, not this shell's
+// environment.
 //
 // A step is {tool, args, label?, expectError?, stopOnError?, capture?, show?}.
 // `capture` maps a name to a regular expression whose first group is taken
@@ -17,8 +25,17 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const [stepsFile, outArg] = process.argv.slice(2);
-if (!stepsFile || !outArg) { console.error('usage: node scripts/live-check.mjs <steps.json> <outDir>'); process.exit(2); }
+const usage = 'usage: node scripts/live-check.mjs --environment <profile.json> <steps.json> <outDir>';
+const argv = process.argv.slice(2);
+const at = argv.indexOf('--environment');
+const profilePath = at >= 0 ? argv[at + 1] : undefined;
+const [stepsFile, outArg] = at >= 0 ? argv.filter((_, index) => index !== at && index !== at + 1) : [];
+if (!profilePath || !stepsFile || !outArg) { console.error(usage); process.exit(2); }
+const profile = JSON.parse(await readFile(profilePath, 'utf8'));
+const origin = new URL(profile.vmServiceUrl);
+if (origin.port === '6240' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) {
+  console.error(`live-check: ${profile.vmServiceUrl} is the installed machine-service's origin; name a profile of a separate instance`); process.exit(2);
+}
 const outDir = resolve(outArg);
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'server.mjs');
 await mkdir(join(outDir, 'project'), { recursive: true });
@@ -28,7 +45,7 @@ const steps = JSON.parse(await readFile(stepsFile, 'utf8'));
 const session = process.env.LIVE_CHECK_SESSION ?? `live-check-${Date.now()}`;
 const transport = new StdioClientTransport({
   command: process.execPath, args: [server],
-  env: { ...process.env, MCP_RELAY_PROJECT: join(outDir, 'project'), MCP_RELAY_SESSION: session },
+  env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? '/var/empty', VM_ENVIRONMENT_FILE: resolve(profilePath), MCP_RELAY_PROJECT: join(outDir, 'project'), MCP_RELAY_SESSION: session },
   stderr: 'inherit',
 });
 const client = new Client({ name: 'mcp-relay-live-check', version: '1' });

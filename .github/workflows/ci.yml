@@ -16,12 +16,19 @@ jobs:
 
       # machctl backs tests/environment-parity.test.ts; that test skips itself
       # with a reason when the binary is absent, so this is best-effort, not
-      # a hard requirement.
+      # a hard requirement. It is built from the machine-service commit pinned
+      # in .github/machine-service.commit, never the default branch's moving
+      # head; `npm run pin:machine-service` moves the pin (DC-6x-ISO-5).
+      - name: Read the pinned machine-service commit
+        id: machine-service
+        run: echo "commit=$(tr -d '[:space:]' < .github/machine-service.commit)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # machine-service's repository, under its name before the rename;
           # GitHub redirects the old name once the repository is renamed.
           repository: WeZZard/vm-service
+          ref: ${{ steps.machine-service.outputs.commit }}
           path: .ci/machine-service
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -41,8 +48,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Use the same npm as the release job
-        run: npm install -g npm@latest
+      # Installed under the job's temporary directory and put first on the
+      # job's PATH, not over the runner's global npm (DC-6x-ISO-5).
+      - name: Use the same npm as the release job, for this job only
+        run: |
+          npm install --prefix "$RUNNER_TEMP/npm" npm@latest
+          echo "$RUNNER_TEMP/npm/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -52,7 +63,8 @@ jobs:
       - name: Build, typecheck, and test
         run: npm run check
         env:
-          MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
+          # The tests start from an empty environment; only MCP_RELAY_TEST_* inputs reach them (DC-6x-ISO-1).
+          MCP_RELAY_TEST_MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
 
       - name: Confirm generated files are committed
         run: |

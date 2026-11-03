@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import test from "node:test";
-import { AcquireIndeterminateError, MachineService, MachineServiceError, expectMachineService, type VmLease } from "../src/machine-service.js";
+import { AcquireIndeterminateError, MachineService, MachineServiceError, expectMachineService, machineServiceFromProcess, type VmLease } from "../src/machine-service.js";
 
 const lease: VmLease = {
   vm: "pilot-test-abc123", purpose: "test", image: "ubuntu2404", image_kind: "linux", env: null,
@@ -21,12 +21,17 @@ async function server(t: test.TestContext, handler: (req: IncomingMessage, res: 
 function json(res: ServerResponse, body: unknown) { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); }
 
 test("loopback origins only; bounded positive configuration", () => {
-  assert.equal(new MachineService().baseUrl, "http://localhost:6240");
+  // The client has no default origin; only the process factory supplies the installed one, and never under the test harness (DC-6x-ISO-2).
+  assert.throws(() => new MachineService({} as never), /needs its origin/);
+  assert.equal(machineServiceFromProcess({}, undefined).baseUrl, "http://localhost:6240");
+  assert.equal(machineServiceFromProcess({ MCP_RELAY_URL: "http://127.0.0.1:6249" }, undefined).baseUrl, "http://127.0.0.1:6249");
+  assert.throws(() => machineServiceFromProcess({ MCP_RELAY_ISOLATED: "1" }, undefined), /a test gets no default/);
+  for (const url of ["http://localhost:6240", "http://127.0.0.1:6240/", "http://[::1]:6240"]) assert.throws(() => machineServiceFromProcess({ MCP_RELAY_ISOLATED: "1", MCP_RELAY_URL: url }, undefined), /installed machine-service/, url);
   for (const url of ["http://example.com", "http://192.0.2.1:6240", "http://localhost/path", "http://a@localhost", "file:///etc/passwd", "http://localhost?x=1"]) {
     assert.throws(() => new MachineService(url), /loopback/);
   }
   assert.equal(new MachineService("http://[::1]:6240/").baseUrl, "http://[::1]:6240");
-  assert.throws(() => new MachineService({ timeoutMs: 0 }), /positive/);
+  assert.throws(() => new MachineService({ baseUrl: "http://127.0.0.1:9", timeoutMs: 0 }), /positive/);
 });
 
 test('application discovery uses only GET /applications and forwards cancellation', async t => {

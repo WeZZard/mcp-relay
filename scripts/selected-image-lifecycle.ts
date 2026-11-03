@@ -2,6 +2,8 @@
 import { setupSelectedCloneX11 } from './selected-image-x11.js';
 import { supportArgument, verifySupportDriver } from './selected-image-support.js';
 import { RelayManager } from '../src/manager.js';
+import { Registry } from '../src/registry.js';
+import { homedir } from 'node:os';
 import { relayCall } from '../src/surface.js';
 import { MachineService, MachineServiceError } from '../src/machine-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
@@ -26,7 +28,8 @@ async function audit<T>(kind:string,input:unknown,fn:()=>Promise<T>):Promise<T>{
 const fetchOriginal=globalThis.fetch;
 globalThis.fetch=async(input,init)=>{const url=String(input);assert(url.startsWith('http://127.0.0.1:6240/'));return audit('http',{url,method:init?.method??'GET',body:init?.body?JSON.parse(String(init.body)):undefined},async()=>{const response=await fetchOriginal(input,init);const bytes=await response.clone().text();await save(`http-response-${seq++}.json`,{url,status:response.status,body:bytes});return response;});};
 const vm=new MachineService({baseUrl:'http://127.0.0.1:6240',acquireTimeoutMs:420000});
-const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,stateRoot:join(root,'state'),outputRoot:join(root,'packages'),heartbeatMs:3000});
+// This live tool deliberately drives the installed instance, its Tart store and the operator's registry; it names each (DC-6x-ISO-2).
+const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,registry:new Registry(),stateRoot:join(root,'state'),tartHome:join(homedir(),'.tart'),tartPath:'tart',outputRoot:join(root,'packages'),heartbeatMs:3000});
 let lease:any,finished=false,failed:unknown,before:any;
 const call=async(input:any)=>audit('public-'+input.action,input,async()=>{const r=await relayCall(manager,input);return r.details??JSON.parse(r.text);});
 const tart=()=>JSON.parse(execFileSync('tart',['list','--format','json'],{encoding:'utf8',timeout:15000}));

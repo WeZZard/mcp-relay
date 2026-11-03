@@ -3782,15 +3782,195 @@ async function command(argv, options = {}) {
 }
 
 // src/machine-service.ts
-import { isIP as isIP2 } from "node:net";
-import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import { isIP as isIP3 } from "node:net";
+import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
 import { open as open2, rename, rm, stat } from "node:fs/promises";
 import { basename } from "node:path";
 
-// src/relay-client.ts
-import { createHash as createHash2, randomUUID as randomUUID2, X509Certificate } from "node:crypto";
-import { open } from "node:fs/promises";
+// src/environment.ts
+import { accessSync, constants, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createHash as createHash2 } from "node:crypto";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from "node:os";
 import { isIP } from "node:net";
+var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "machctlPath", "tartPath"];
+var mutable = ["tartHome", "serviceStateDir", "imageStateDir", "relayStateDir"];
+var LEGACY_PROFILE = "Environment profile is from before the machine-service rename, which reads only schemaVersion 2 with machctlPath: a profile at schemaVersion 1 or with vmctlPath is refused. Rename vmctlPath to machctlPath, naming the machctl executable, and set schemaVersion to 2.";
+function canonicalPath(value) {
+  if (typeof value !== "string" || !isAbsolute(value) || !value.trim() || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(value)) throw new Error("Environment paths must be absolute and contain no control characters");
+  let ancestor = resolve(value);
+  const suffix = [];
+  for (; ; ) {
+    try {
+      return join(realpathSync(ancestor), ...suffix);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      try {
+        if (lstatSync(ancestor).isSymbolicLink()) throw new Error("Dangling environment path symlink");
+      } catch (entryError) {
+        if (entryError.code !== "ENOENT") throw entryError;
+      }
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      suffix.unshift(relative(parent, ancestor));
+      ancestor = parent;
+    }
+  }
+}
+function overlaps(a, b) {
+  const below = (parent, child) => {
+    const r = relative(parent, child);
+    return r === "" || !r.startsWith("../") && r !== ".." && !isAbsolute(r);
+  };
+  return below(a, b) || below(b, a);
+}
+function endpoint(value) {
+  if (typeof value !== "string") throw new Error("vmServiceUrl must be a loopback HTTP origin with an explicit port");
+  const match = /^http:\/\/(localhost|127(?:\.\d{1,3}){3}|\[::1\]):([0-9]{1,5})\/?$/.exec(value);
+  if (!match || !["localhost", "[::1]"].includes(match[1]) && isIP(match[1]) !== 4) throw new Error("vmServiceUrl must be a loopback HTTP origin with an explicit port");
+  const port = Number(match[2]);
+  if (port < 1 || port > 65535) throw new Error("Environment port must be between 1 and 65535");
+  return `http://${match[1]}:${port}`;
+}
+function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) {
+  const canonical = canonicalPath(resolve(path));
+  const info = statSync(canonical);
+  if (!info.isFile() || info.size > 65536) throw new Error("Environment profile must be a regular JSON file under 64 KiB");
+  const bytes = readFileSync(canonical);
+  if (bytes.length > 65536) throw new Error("Environment profile exceeds 64 KiB");
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  const raw = JSON.parse(text);
+  let depth = 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') {
+      const start = i++;
+      for (; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+      let next = i + 1;
+      while (/\s/.test(text[next] ?? "") && next < text.length) next++;
+      if (depth === 1 && text[next] === ":") {
+        const key = JSON.parse(text.slice(start, i + 1));
+        if (seen.has(key)) throw new Error(`Duplicate environment profile key: ${key}`);
+        seen.add(key);
+      }
+    } else if (text[i] === "{" || text[i] === "[") depth++;
+    else if (text[i] === "}" || text[i] === "]") depth--;
+  }
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.schemaVersion === 1 || Object.hasOwn(raw, "vmctlPath"))) throw new Error(LEGACY_PROFILE);
+  const fields = ["schemaVersion", "id", "vmServiceUrl", ...paths].sort();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(fields)) throw new Error("Environment profile has missing or unknown fields");
+  const p = raw;
+  if (p.schemaVersion !== 2 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
+  const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
+  for (const key of paths) profile[key] = canonicalPath(p[key]);
+  if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, "images")).isDirectory()) throw new Error("Selected imageRepository must contain images/");
+  for (const key of ["machctlPath", "tartPath"]) {
+    if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
+    accessSync(profile[key], constants.X_OK);
+  }
+  const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
+  const names = ["machine-service", "vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
+  const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
+  for (const key of mutable) {
+    const value = profile[key];
+    try {
+      if (!statSync(value).isDirectory()) throw new Error(`${key} must be a directory`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (overlaps(value, profile.imageRepository) || defaults.some((root) => overlaps(value, root))) throw new Error(`${key} overlaps the repository or a legacy default store/state root`);
+    for (const other of mutable) if (key !== other && overlaps(value, profile[other])) throw new Error("Environment mutable roots must be disjoint");
+  }
+  const ordered = Object.fromEntries(Object.keys(profile).sort().map((k) => [k, profile[k]]));
+  const fingerprint = createHash2("sha256").update(JSON.stringify(ordered), "utf8").digest("hex");
+  const identity = Object.freeze({
+    id: profile.id,
+    fingerprint,
+    vmServiceUrl: profile.vmServiceUrl,
+    imageRepository: profile.imageRepository,
+    tartHome: profile.tartHome,
+    serviceStateDir: profile.serviceStateDir,
+    imageStateDir: profile.imageStateDir,
+    relayStateDir: profile.relayStateDir
+  });
+  return Object.freeze({ path: canonical, profile: Object.freeze(profile), identity });
+}
+function selectedEnvironment(env = process.env, home) {
+  if (env.VM_ENVIRONMENT_FILE === void 0) return void 0;
+  if (!env.VM_ENVIRONMENT_FILE.trim()) throw new Error("VM_ENVIRONMENT_FILE must not be blank");
+  return loadEnvironment(env.VM_ENVIRONMENT_FILE, env, home);
+}
+function environmentVariables(selected) {
+  const p = selected.profile;
+  const url = new URL(p.vmServiceUrl);
+  return {
+    VM_ENVIRONMENT_FILE: selected.path,
+    VM_ENVIRONMENT_FINGERPRINT: selected.identity.fingerprint,
+    PILOT_REPO: p.imageRepository,
+    TART_HOME: p.tartHome,
+    MACHINE_SERVICE_STATE: p.serviceStateDir,
+    PILOT_IMAGES_STATE_DIR: p.imageStateDir,
+    VM_RELAY_STATE_DIR: p.relayStateDir,
+    VM_RELAY_URL: p.vmServiceUrl,
+    MACHINE_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
+    MACHINE_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
+    MACHCTL: p.machctlPath,
+    TART: p.tartPath
+  };
+}
+function matchesEnvironment(actual, selected) {
+  if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
+  const identity = actual;
+  return Object.keys(identity).length === Object.keys(selected.identity).length && Object.entries(selected.identity).every(([key, value]) => identity[key] === value);
+}
+
+// src/config.ts
+import { homedir as homedir2 } from "node:os";
+import { isAbsolute as isAbsolute2, join as join2, normalize } from "node:path";
+function nonblank(value, label) {
+  if (!value.trim() || value.includes("\0")) throw new TypeError(`${label} must be nonblank text without NUL characters`);
+  return value;
+}
+function absolute(value, label) {
+  nonblank(value, label);
+  if (!isAbsolute2(value)) throw new TypeError(`${label} must be an absolute path`);
+  return normalize(value);
+}
+function localTartHost(platform = process.platform, arch = process.arch) {
+  return platform === "darwin" && arch === "arm64";
+}
+var INSTALLED_SERVICE_URL = "http://localhost:6240";
+var ISOLATION_VARIABLE = "MCP_RELAY_ISOLATED";
+function isolated(env = process.env) {
+  return env[ISOLATION_VARIABLE] === "1";
+}
+function installedOrigin(url) {
+  const parsed = new URL(url);
+  return parsed.port === new URL(INSTALLED_SERVICE_URL).port && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+}
+function serviceUrl(env = process.env, environment = selectedEnvironment(env)) {
+  const named2 = environment?.profile.vmServiceUrl ?? env.MCP_RELAY_URL;
+  if (!isolated(env)) return named2 ?? INSTALLED_SERVICE_URL;
+  if (named2 === void 0) throw new Error(`${ISOLATION_VARIABLE}=1: name the machine-service origin with MCP_RELAY_URL or VM_ENVIRONMENT_FILE; a test gets no default`);
+  if (installedOrigin(named2)) throw new Error(`${ISOLATION_VARIABLE}=1: ${named2} is the installed machine-service's origin, which no test may reach`);
+  return named2;
+}
+function relayStateRoot(options = {}) {
+  const env = options.env ?? process.env;
+  const selected = selectedEnvironment(env, options.home);
+  if (selected) return selected.profile.relayStateDir;
+  if (env.MCP_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_RELAY_STATE_DIR, "MCP_RELAY_STATE_DIR");
+  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-relay");
+  return join2(absolute(options.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-relay");
+}
+function pythonExecutable(env = process.env) {
+  return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
+}
+
+// src/relay-client.ts
+import { createHash as createHash3, randomUUID as randomUUID2, X509Certificate } from "node:crypto";
+import { open } from "node:fs/promises";
+import { isIP as isIP2 } from "node:net";
 import { rootCertificates } from "node:tls";
 
 // node_modules/ws/wrapper.mjs
@@ -4340,10 +4520,10 @@ var uploads = (kind) => kind === "exec" || kind === "script" || kind === "write"
 var streams = (kind) => kind === "exec" || kind === "script" || kind === "read" || kind === "read_tree";
 var reads = (kind) => kind === "read" || kind === "read_tree";
 function bufferSource(bytes) {
-  return { size: bytes.length, sha256: createHash2("sha256").update(bytes).digest("hex"), read: async (offset, length) => bytes.subarray(offset, offset + length) };
+  return { size: bytes.length, sha256: createHash3("sha256").update(bytes).digest("hex"), read: async (offset, length) => bytes.subarray(offset, offset + length) };
 }
 async function fileSource(path) {
-  const hash2 = createHash2("sha256");
+  const hash2 = createHash3("sha256");
   let size = 0;
   const file = await open(path, "r");
   try {
@@ -4400,7 +4580,7 @@ function decodeMessage(body) {
   throw new Error("not a relay message");
 }
 function caFingerprint(pem) {
-  return createHash2("sha256").update(new X509Certificate(pem).raw).digest("hex");
+  return createHash3("sha256").update(new X509Certificate(pem).raw).digest("hex");
 }
 function checkGrant(grant, advertised) {
   const g = grant;
@@ -4427,7 +4607,7 @@ function checkGrant(grant, advertised) {
 }
 function loopback(hostname) {
   const host = hostname.replace(/^\[|\]$/g, "");
-  return host === "localhost" || host === "::1" || isIP(host) === 4 && host.startsWith("127.");
+  return host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
 }
 function webSocketDial(url, caPem, handshakeMs = 1e4) {
   const ca = [...rootCertificates, caPem];
@@ -4546,12 +4726,12 @@ var RelayClient = class {
     return { executionId: id, replayed: result.replayed, outcome: result.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
   }
   track(executionId, op, kind, upload, sink) {
-    return { executionId, op, kind, upload, sink, hash: createHash2("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {
+    return { executionId, op, kind, upload, sink, hash: createHash3("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {
     }, fail: () => {
     }, done: false };
   }
   reset(call) {
-    call.hash = createHash2("sha256");
+    call.hash = createHash3("sha256");
     call.size = 0;
     call.kept = [];
     call.keptBytes = 0;
@@ -4835,6 +5015,10 @@ var RelayClient = class {
 };
 
 // src/machine-service.ts
+function machineServiceFromProcess(env = process.env, environment = selectedEnvironment(env), settings = {}) {
+  const baseUrl = serviceUrl(env, environment);
+  return new MachineService(environment ? { ...settings, baseUrl, environment } : { ...settings, baseUrl });
+}
 var MachineServiceError = class extends Error {
   constructor(message, status, responseBody, options) {
     super(message, options);
@@ -4910,13 +5094,17 @@ var MachineService = class {
   timeoutMs;
   acquireTimeoutMs;
   maxResponseBytes;
-  constructor(options = {}) {
+  transport;
+  constructor(options) {
     if (typeof options === "string") options = { baseUrl: options };
     this.environment = options.environment;
-    const url = new URL(options.baseUrl ?? options.environment?.profile.vmServiceUrl ?? "http://localhost:6240");
+    this.transport = options.transport ?? ((url2, init) => fetch(url2, init));
+    const named2 = options.baseUrl ?? options.environment?.profile.vmServiceUrl;
+    if (named2 === void 0) throw new TypeError("machine-service client needs its origin: a baseUrl or a selected environment");
+    const url = new URL(named2);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    const loopback2 = host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
+    const loopback2 = host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
     if (!loopback2 && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
       throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
@@ -5142,7 +5330,7 @@ var MachineService = class {
    * host path the instance could read (DC-31).
    */
   async pushBytes(vm, body, options = {}) {
-    const sha256 = createHash3("sha256").update(body.bytes).digest("hex");
+    const sha256 = createHash4("sha256").update(body.bytes).digest("hex");
     const client = await this.relayFor(vm);
     if (client) {
       const answer2 = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
@@ -5172,7 +5360,7 @@ var MachineService = class {
         throw error;
       }
     }
-    const hash2 = createHash3("sha256"), file = await open2(body.to, "wx", 384);
+    const hash2 = createHash4("sha256"), file = await open2(body.to, "wx", 384);
     let bytes = 0;
     try {
       const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "GET" }, { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS }, Number.MAX_SAFE_INTEGER, { idle: true, sink: async (chunk) => {
@@ -5231,7 +5419,7 @@ var MachineService = class {
     const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await this.transport(`${this.baseUrl}${path}`, {
         method: init.method,
         headers: { ...init.headers, ...this.environment ? { "X-VM-Environment-Fingerprint": this.environment.identity.fingerprint } : {} },
         ...init.body === void 0 ? {} : { body: init.body },
@@ -5291,174 +5479,6 @@ import { randomUUID as randomUUID4 } from "node:crypto";
 import { link, lstat, mkdir, open as open3, readFile, realpath, rename as rename2, unlink } from "node:fs/promises";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-
-// src/config.ts
-import { homedir as homedir2 } from "node:os";
-import { isAbsolute as isAbsolute2, join as join2, normalize } from "node:path";
-
-// src/environment.ts
-import { accessSync, constants, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { createHash as createHash4 } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { homedir } from "node:os";
-import { isIP as isIP3 } from "node:net";
-var paths = ["imageRepository", "tartHome", "serviceStateDir", "imageStateDir", "relayStateDir", "machctlPath", "tartPath"];
-var mutable = ["tartHome", "serviceStateDir", "imageStateDir", "relayStateDir"];
-var LEGACY_PROFILE = "Environment profile is from before the machine-service rename, which reads only schemaVersion 2 with machctlPath: a profile at schemaVersion 1 or with vmctlPath is refused. Rename vmctlPath to machctlPath, naming the machctl executable, and set schemaVersion to 2.";
-function canonicalPath(value) {
-  if (typeof value !== "string" || !isAbsolute(value) || !value.trim() || /[\x00-\x1f\x7f\uD800-\uDFFF]/u.test(value)) throw new Error("Environment paths must be absolute and contain no control characters");
-  let ancestor = resolve(value);
-  const suffix = [];
-  for (; ; ) {
-    try {
-      return join(realpathSync(ancestor), ...suffix);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-      try {
-        if (lstatSync(ancestor).isSymbolicLink()) throw new Error("Dangling environment path symlink");
-      } catch (entryError) {
-        if (entryError.code !== "ENOENT") throw entryError;
-      }
-      const parent = dirname(ancestor);
-      if (parent === ancestor) throw error;
-      suffix.unshift(relative(parent, ancestor));
-      ancestor = parent;
-    }
-  }
-}
-function overlaps(a, b) {
-  const below = (parent, child) => {
-    const r = relative(parent, child);
-    return r === "" || !r.startsWith("../") && r !== ".." && !isAbsolute(r);
-  };
-  return below(a, b) || below(b, a);
-}
-function endpoint(value) {
-  if (typeof value !== "string") throw new Error("vmServiceUrl must be a loopback HTTP origin with an explicit port");
-  const match = /^http:\/\/(localhost|127(?:\.\d{1,3}){3}|\[::1\]):([0-9]{1,5})\/?$/.exec(value);
-  if (!match || !["localhost", "[::1]"].includes(match[1]) && isIP3(match[1]) !== 4) throw new Error("vmServiceUrl must be a loopback HTTP origin with an explicit port");
-  const port = Number(match[2]);
-  if (port < 1 || port > 65535) throw new Error("Environment port must be between 1 and 65535");
-  return `http://${match[1]}:${port}`;
-}
-function loadEnvironment(path, env = process.env, home = env.HOME ?? homedir()) {
-  const canonical = canonicalPath(resolve(path));
-  const info = statSync(canonical);
-  if (!info.isFile() || info.size > 65536) throw new Error("Environment profile must be a regular JSON file under 64 KiB");
-  const bytes = readFileSync(canonical);
-  if (bytes.length > 65536) throw new Error("Environment profile exceeds 64 KiB");
-  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  const raw = JSON.parse(text);
-  let depth = 0;
-  const seen = /* @__PURE__ */ new Set();
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] === '"') {
-      const start = i++;
-      for (; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
-      let next = i + 1;
-      while (/\s/.test(text[next] ?? "") && next < text.length) next++;
-      if (depth === 1 && text[next] === ":") {
-        const key = JSON.parse(text.slice(start, i + 1));
-        if (seen.has(key)) throw new Error(`Duplicate environment profile key: ${key}`);
-        seen.add(key);
-      }
-    } else if (text[i] === "{" || text[i] === "[") depth++;
-    else if (text[i] === "}" || text[i] === "]") depth--;
-  }
-  if (raw && typeof raw === "object" && !Array.isArray(raw) && (raw.schemaVersion === 1 || Object.hasOwn(raw, "vmctlPath"))) throw new Error(LEGACY_PROFILE);
-  const fields = ["schemaVersion", "id", "vmServiceUrl", ...paths].sort();
-  if (!raw || typeof raw !== "object" || Array.isArray(raw) || JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(fields)) throw new Error("Environment profile has missing or unknown fields");
-  const p = raw;
-  if (p.schemaVersion !== 2 || typeof p.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(p.id)) throw new Error("Invalid environment schemaVersion or id");
-  const profile = { schemaVersion: 2, id: p.id, vmServiceUrl: endpoint(p.vmServiceUrl) };
-  for (const key of paths) profile[key] = canonicalPath(p[key]);
-  if (!statSync(profile.imageRepository).isDirectory() || !statSync(join(profile.imageRepository, "images")).isDirectory()) throw new Error("Selected imageRepository must contain images/");
-  for (const key of ["machctlPath", "tartPath"]) {
-    if (!statSync(profile[key]).isFile()) throw new Error(`${key} must be a regular executable file`);
-    accessSync(profile[key], constants.X_OK);
-  }
-  const state = env.XDG_STATE_HOME ? canonicalPath(env.XDG_STATE_HOME) : join(canonicalPath(home), ".local/state");
-  const names = ["machine-service", "vm-service", "pilot-images", "mcp-relay", "mcp-vm-relay"];
-  const defaults = [join(canonicalPath(home), ".tart"), ...names.map((n) => join(state, n)), ...names.map((n) => join(canonicalPath(home), ".local/state", n))].map(canonicalPath);
-  for (const key of mutable) {
-    const value = profile[key];
-    try {
-      if (!statSync(value).isDirectory()) throw new Error(`${key} must be a directory`);
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
-    if (overlaps(value, profile.imageRepository) || defaults.some((root) => overlaps(value, root))) throw new Error(`${key} overlaps the repository or a legacy default store/state root`);
-    for (const other of mutable) if (key !== other && overlaps(value, profile[other])) throw new Error("Environment mutable roots must be disjoint");
-  }
-  const ordered = Object.fromEntries(Object.keys(profile).sort().map((k) => [k, profile[k]]));
-  const fingerprint = createHash4("sha256").update(JSON.stringify(ordered), "utf8").digest("hex");
-  const identity = Object.freeze({
-    id: profile.id,
-    fingerprint,
-    vmServiceUrl: profile.vmServiceUrl,
-    imageRepository: profile.imageRepository,
-    tartHome: profile.tartHome,
-    serviceStateDir: profile.serviceStateDir,
-    imageStateDir: profile.imageStateDir,
-    relayStateDir: profile.relayStateDir
-  });
-  return Object.freeze({ path: canonical, profile: Object.freeze(profile), identity });
-}
-function selectedEnvironment(env = process.env, home) {
-  if (env.VM_ENVIRONMENT_FILE === void 0) return void 0;
-  if (!env.VM_ENVIRONMENT_FILE.trim()) throw new Error("VM_ENVIRONMENT_FILE must not be blank");
-  return loadEnvironment(env.VM_ENVIRONMENT_FILE, env, home);
-}
-function environmentVariables(selected) {
-  const p = selected.profile;
-  const url = new URL(p.vmServiceUrl);
-  return {
-    VM_ENVIRONMENT_FILE: selected.path,
-    VM_ENVIRONMENT_FINGERPRINT: selected.identity.fingerprint,
-    PILOT_REPO: p.imageRepository,
-    TART_HOME: p.tartHome,
-    MACHINE_SERVICE_STATE: p.serviceStateDir,
-    PILOT_IMAGES_STATE_DIR: p.imageStateDir,
-    VM_RELAY_STATE_DIR: p.relayStateDir,
-    VM_RELAY_URL: p.vmServiceUrl,
-    MACHINE_SERVICE_HOST: url.hostname.replace(/^\[|\]$/g, ""),
-    MACHINE_SERVICE_PORT: String(Number(p.vmServiceUrl.match(/:([0-9]+)$/)[1])),
-    MACHCTL: p.machctlPath,
-    TART: p.tartPath
-  };
-}
-function matchesEnvironment(actual, selected) {
-  if (!actual || typeof actual !== "object" || Array.isArray(actual)) return false;
-  const identity = actual;
-  return Object.keys(identity).length === Object.keys(selected.identity).length && Object.entries(selected.identity).every(([key, value]) => identity[key] === value);
-}
-
-// src/config.ts
-function nonblank(value, label) {
-  if (!value.trim() || value.includes("\0")) throw new TypeError(`${label} must be nonblank text without NUL characters`);
-  return value;
-}
-function absolute(value, label) {
-  nonblank(value, label);
-  if (!isAbsolute2(value)) throw new TypeError(`${label} must be an absolute path`);
-  return normalize(value);
-}
-function localTartHost(platform = process.platform, arch = process.arch) {
-  return platform === "darwin" && arch === "arm64";
-}
-function relayStateRoot(options = {}) {
-  const env = options.env ?? process.env;
-  const selected = selectedEnvironment(env, options.home);
-  if (selected) return selected.profile.relayStateDir;
-  if (env.MCP_RELAY_STATE_DIR !== void 0) return absolute(env.MCP_RELAY_STATE_DIR, "MCP_RELAY_STATE_DIR");
-  if (env.XDG_STATE_HOME !== void 0) return join2(absolute(env.XDG_STATE_HOME, "XDG_STATE_HOME"), "mcp-relay");
-  return join2(absolute(options.home ?? env.HOME ?? homedir2(), "home"), ".local", "state", "mcp-relay");
-}
-function pythonExecutable(env = process.env) {
-  return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
-}
-
-// src/registry.ts
 import { spawn as spawn2 } from "node:child_process";
 import { dirname as dirname2, join as join3, resolve as resolve3 } from "node:path";
 var RegistryError = class extends Error {
@@ -5827,7 +5847,7 @@ async function installationReport(options = {}) {
     return "Read-only local inventory available";
   });
   await check("machine-service", async () => {
-    const vm = options.vm ?? new MachineService({ baseUrl: environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment });
+    const vm = options.vm ?? machineServiceFromProcess(process.env, environment);
     const health = await vm.health({ timeoutMs: 5e3 });
     if (!health.ok) throw Error("Service health check failed");
     expectMachineService(health, vm.baseUrl);

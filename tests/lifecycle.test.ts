@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { hash } from '../src/util.js';
+import { childEnvironment, childPath } from './isolation.js';
 
 const server = resolve('dist/server.mjs');
 const registryText = '# Test registry\n\n## Using VMs\n\n| Machine | OS | Task Name | Agent | Project | Start Date |\n| -- | -- | -- | -- | -- | -- |\n| foreign | linux | keep-me | another agent | /project | yesterday |\n\n## End\nUnrelated text.\n';
@@ -103,7 +104,7 @@ async function fixture(t: TestContext) {
   });
   /** Start the shipped server with only the variables this test sets: no inherited environment selection, state or registry. */
   const start = async (url: string, sessionId: string | undefined = `lifecycle-${randomUUID()}`, extra: Record<string, string> = {}, { wrapped = false } = {}): Promise<Relay> => {
-    const env: Record<string, string> = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TART: tart, MCP_RELAY_URL: url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registry, MCP_RELAY_PROJECT: project, ...(sessionId ? { MCP_RELAY_SESSION: sessionId } : {}), ...extra };
+    const env = childEnvironment({ PATH: childPath(bin), HOME: root, TART: tart, TART_HOME: join(root, 'tart'), MCP_RELAY_URL: url, MCP_RELAY_STATE_DIR: join(root, 'state'), MCP_RELAY_REGISTRY: registry, MCP_RELAY_PROJECT: project, ...(sessionId ? { MCP_RELAY_SESSION: sessionId } : {}), ...extra });
     const child = spawn(process.execPath, wrapped ? ['-e', WRAPPER, server] : [server], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     children.push(child);
     let stdout = '', stderr = '', nextId = 1;

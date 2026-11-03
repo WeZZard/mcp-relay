@@ -3,29 +3,23 @@ import test from 'node:test';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve, relative, delimiter } from 'node:path';
+import { isAbsolute, join, resolve, relative } from 'node:path';
+import { childEnvironment } from './isolation.js';
 import { command } from '../src/util.js';
 import { environmentVariables, loadEnvironment } from '../src/environment.js';
 
 // machine-service's CLI is `machctl`, which replaced `vmctl` (machine-service
-// DC-35). Resolve it: an explicit `MACHCTL` override, then `PATH`, then the
-// sibling checkout's release build. A missing binary skips with a reason
-// instead of passing silently.
-function resolveMachctl(): string | undefined {
-  const explicit = process.env.MACHCTL;
-  if (explicit && existsSync(explicit)) return explicit;
-  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
-    const candidate = directory ? join(directory, 'machctl') : '';
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  const sibling = resolve('../machine-service/rust/target/release/machctl');
-  return existsSync(sibling) ? sibling : undefined;
-}
-const resolvedMachctl = resolveMachctl();
-const machctl = resolvedMachctl ?? 'machctl';
+// DC-35). The test runs one built from source, never one from PATH, which is
+// likely the installed binary bound to a real instance (DC-6x-ISO-3): the path
+// MCP_RELAY_TEST_MACHCTL names (CI builds it from its pinned machine-service
+// checkout), else the sibling checkout's release build. A missing binary skips
+// with a reason instead of passing silently.
+const machctlCandidate = process.env.MCP_RELAY_TEST_MACHCTL ?? resolve('../machine-service/rust/target/release/machctl');
+const resolvedMachctl = isAbsolute(machctlCandidate) && existsSync(machctlCandidate) ? machctlCandidate : undefined;
+const machctl = resolvedMachctl ?? machctlCandidate;
 const imageBootstrap = resolve('../pilot-images/host/environment.py');
 const missing = [
-  resolvedMachctl ? undefined : 'machctl (set MACHCTL, add it to PATH, or build machine-service/rust)',
+  resolvedMachctl ? undefined : `machctl built from source at ${machctlCandidate} (set MCP_RELAY_TEST_MACHCTL to an absolute path, or build ../machine-service/rust)`,
   existsSync(imageBootstrap) ? undefined : `pilot-images checkout at ${imageBootstrap}`,
 ]
   .filter((value): value is string => value !== undefined)
@@ -39,8 +33,8 @@ test('TypeScript, the machine-service CLI, and image bootstrap agree on canonica
   const path = join(root, 'environment.json');
   const profile = { schemaVersion: 2, id: 'cross-runtime', vmServiceUrl: 'http://127.0.0.1:6249', imageRepository: repo,
     tartHome: join(root, 'tart'), serviceStateDir: join(root, 'service'), imageStateDir: join(root, 'image-state'), relayStateDir: join(root, 'relay'), machctlPath: machctl, tartPath: tart };
-  const env = { ...process.env, HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'xdg'), VM_ENVIRONMENT_FILE: path, VM_ENVIRONMENT_FINGERPRINT: undefined,
-    TART_HOME: '/wrong', PILOT_REPO: '/wrong', MACHINE_SERVICE_STATE: '/wrong', MCP_RELAY_URL: 'http://127.0.0.1:1', PYTHONDONTWRITEBYTECODE: '1' };
+  const env = childEnvironment({ HOME: join(root, 'home'), XDG_STATE_HOME: join(root, 'xdg'), VM_ENVIRONMENT_FILE: path,
+    TART_HOME: '/wrong', PILOT_REPO: '/wrong', MACHINE_SERVICE_STATE: '/wrong', MCP_RELAY_URL: 'http://127.0.0.1:1', PYTHONDONTWRITEBYTECODE: '1' });
   const positive = [profile, { ...profile, vmServiceUrl: 'http://localhost:00080/' }, { ...profile, vmServiceUrl: 'http://[::1]:6249/' }];
   for (const value of positive) {
     await writeFile(path, JSON.stringify(value));

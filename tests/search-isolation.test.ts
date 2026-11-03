@@ -19,7 +19,7 @@ test('search does not recover a durable lease, acquire locks or access registry/
     throw new Error(`Unexpected VM access: ${String(key)}`);
   } }) as MachineService;
   const registry = new Proxy({}, { get() { throw new Error('Registry accessed'); } }) as Registry;
-  const manager = new RelayManager({ sessionId: 'search-only', project: root, stateRoot: root, vm, registry });
+  const manager = new RelayManager({ sessionId: 'search-only', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), vm, registry });
   await mkdir(manager.root, { mode: 0o700 });
   const original = JSON.stringify({ task: 'interrupted', lease: { vm: 'must-not-touch' } });
   await writeFile(join(manager.root, 'lease.json'), original, { mode: 0o600 });
@@ -60,7 +60,7 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
-  const manager = new RelayManager({ sessionId: 'active', project: root, stateRoot: root, outputRoot: join(root, 'packages'),
+  const manager = new RelayManager({ sessionId: 'active', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), outputRoot: join(root, 'packages'),
     registry: new Registry(registryPath), vm: new MachineService({ baseUrl: `http://127.0.0.1:${address.port}` }), heartbeatMs: 1000, verifyDestroyed: async () => true });
   t.after(async () => {
     t.mock.timers.reset();
@@ -127,7 +127,7 @@ test('catalog outage is an error with diagnostics, without cleanup or ownership 
   t.after(() => rm(root, { recursive: true, force: true }));
   const vm = { applications: async () => { throw new Error('catalog unavailable'); } } as unknown as MachineService;
   const registry = new Proxy({}, { get() { throw new Error('Registry accessed'); } }) as Registry;
-  const manager = new RelayManager({ sessionId: 'outage', project: root, stateRoot: root, vm, registry });
+  const manager = new RelayManager({ sessionId: 'outage', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), vm, registry });
   await assert.rejects(manager.search({ name: 'Firefox' }), /catalog unavailable/);
   assert.deepEqual(await readdir(manager.root), ['search-diagnostics']);
   const files = await readdir(join(manager.root, 'search-diagnostics'));

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { validateCatalog } from '../src/search.js';
+import { childEnvironment } from './isolation.js';
 
 interface Fixture { name: string; text: string; valid: boolean; repeat?: 'limit' | 'over' }
 const fixtures: Fixture[] = JSON.parse(readFileSync(new URL('./fixtures/catalog-text.json', import.meta.url), 'utf8'));
@@ -38,7 +39,7 @@ test('shared scalar metadata corpus: TypeScript and both pilot-images Python val
     }
   }
   const python = spawnSync('python3', [new URL('./catalog-text-python.py', import.meta.url).pathname], {
-    input: JSON.stringify(cases), encoding: 'utf8',
+    input: JSON.stringify(cases), encoding: 'utf8', env: childEnvironment(),
   });
   assert.equal(python.status, 0, python.stderr);
   assert.deepEqual(JSON.parse(python.stdout), { checks: cases.length * 2, validators: 2, provenanceChecks: 4, portableChecks: 4 });
