@@ -1,4 +1,4 @@
-import { MachineService, type VmBackend } from './machine-service.js';
+import { MachineService, MachineServiceError, type VmBackend } from './machine-service.js';
 import { ISOLATION_VARIABLE, isolated } from './config.js';
 import { browseService, type Advertised } from './mdns.js';
 
@@ -173,4 +173,87 @@ async function findOwner(target: { name?: string; machine_id?: string }, options
   if (distinct.length > 1) throw new Error(`Durable machine ${machine} is listed by more than one instance (${distinct.map(owner => owner.origin).join(', ')}); nothing was acquired`);
   const hint = mode === 'bonjour' ? 'Check the name with `machctl list`; the Mac\'s machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent.' : 'Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.';
   throw new Error(`No machine-service instance lists a durable machine ${target.name ? `named ${target.name}` : machine}${discoveryError ? `, and ${discoveryError}` : ''}${refused.length ? `; unconfirmed: ${refused.join('; ')}` : ''}; nothing was acquired. ${hint}`);
+}
+
+/**
+ * One machine-service instance that a catalog question or an image
+ * acquisition asks (machine-service FD-7): the loopback instance, or one
+ * that discovery found and its `/health` confirmed. An instance that did not
+ * answer stays in the list, unreachable with its error, so its silence never
+ * reads as an empty catalog.
+ */
+export interface FoundInstance {
+  /** The instance's current name, from its `/health`; else the name it was found under, else its origin's host. */
+  name: string;
+  machine_id?: string;
+  /** Names the instance went by before a rename (machine-service MI-3). */
+  former_names: string[];
+  origin: string;
+  local: boolean;
+  found_by: 'local' | 'bonjour' | 'consul';
+  backend: VmBackend;
+  reachable: boolean;
+  error?: string;
+}
+/** Every instance, the loopback one first and the others by name, and why discovery found nothing more when it could not look. */
+export interface Instances { instances: FoundInstance[]; discoveryError?: string }
+
+const parsed = (origin: string) => { try { return new URL(origin); } catch { return undefined; } };
+const portOf = (origin: string) => { const url = parsed(origin); return url ? url.port || (url.protocol === 'https:' ? '443' : '80') : origin; };
+/** A request that reached no instance at all, as opposed to one that an instance answered with an error. */
+const unanswered = (error: unknown) => error instanceof MachineServiceError && error.status === undefined;
+const formerNames = (health: { former_names?: unknown }) => Array.isArray(health.former_names) ? health.former_names.map(entry => text((entry as { name?: unknown })?.name)).filter(Boolean) : [];
+
+/**
+ * Every instance, as machctl finds them for a catalog question
+ * (machine-service FD-2, FD-7): the loopback instance, then each instance
+ * that discovery found, confirmed by its `/health`, the same instance counted
+ * once by its `machine_id` and port. With `localOnly`, such as under a
+ * selected environment, only the loopback instance. A discovery that fails,
+ * or that a test process may not run (DC-67), is reported as
+ * `discoveryError` beside the loopback instance, never thrown.
+ */
+export async function discoverInstances(options: DiscoveryOptions & { localOnly?: boolean }): Promise<Instances> {
+  const mode = options.mode ?? discoveryMode();
+  const make = options.backend ?? (origin => new MachineService({ baseUrl: origin, listed: true }));
+  const localOrigin = parsed(options.local.baseUrl)?.origin ?? String(options.local.baseUrl);
+  const ask = async (found: { origin: string; backend: VmBackend; local: boolean; found_by: FoundInstance['found_by']; expected?: string; machine_id?: string }): Promise<FoundInstance> => {
+    const fallback = found.expected ?? parsed(found.origin)?.host ?? found.origin;
+    const base = { origin: found.origin, local: found.local, found_by: found.found_by, backend: found.backend, former_names: [] as string[] };
+    try {
+      const health = await found.backend.health({ timeoutMs: TIMEOUT_MS }) as Health & { former_names?: unknown };
+      const why = confirmed(health, found.expected, found.machine_id);
+      const machine_id = text(health.machine_id) || found.machine_id;
+      if (why) return { ...base, name: fallback, ...(found.machine_id ? { machine_id: found.machine_id } : {}), reachable: false, error: `not confirmed: ${why}` };
+      return { ...base, name: text(health.instance) || fallback, ...(machine_id ? { machine_id } : {}), former_names: formerNames(health), reachable: true };
+    } catch (error) {
+      // The loopback instance is the configured one and is always asked (FD-2): its /health only names it, so
+      // only a request that reached nothing makes it unreachable; its other answers speak for themselves.
+      const reachable = found.local && !unanswered(error);
+      return { ...base, name: found.local ? 'local' : fallback, ...(found.machine_id ? { machine_id: found.machine_id } : {}), reachable, ...(reachable ? {} : { error: error instanceof Error ? error.message : String(error) }) };
+    }
+  };
+  const local = ask({ origin: localOrigin, backend: options.local, local: true, found_by: 'local' });
+  if (options.localOnly) return { instances: [await local] };
+  let found: Array<{ origin: string; expected?: string; machine_id?: string }> = [], discoveryError: string | undefined;
+  try { ({ found, error: discoveryError } = await candidates(options, mode)); }
+  catch (error) { discoveryError = error instanceof Error ? error.message : String(error); }
+  const others = found.filter((candidate, index) => candidate.origin !== localOrigin && found.findIndex(other => other.origin === candidate.origin) === index);
+  const asked = await Promise.all([local, ...others.map(candidate => ask({ ...candidate, backend: make(candidate.origin), local: false, found_by: mode }))]);
+  const identity = (instance: FoundInstance) => instance.machine_id ? `${instance.machine_id}:${portOf(instance.origin)}` : undefined;
+  const distinct = asked.filter((instance, index) => !identity(instance) || asked.findIndex(other => identity(other) === identity(instance)) === index);
+  const [first, ...rest] = distinct;
+  rest.sort((a, b) => a.name.localeCompare(b.name) || a.origin.localeCompare(b.origin));
+  return { instances: [first!, ...rest], ...(discoveryError ? { discoveryError } : {}) };
+}
+
+/** Whether `wanted` names the instance: its name, a former name, its `machine_id`, its origin or its host (machine-service FD-7). */
+export function namesInstance(instance: FoundInstance, wanted: string): boolean {
+  const url = parsed(instance.origin);
+  return [instance.name, instance.machine_id, instance.origin, url?.host, url?.hostname, ...instance.former_names].includes(wanted.replace(/\/+$/, ''));
+}
+
+/** What a result says about an instance: its name, `machine_id`, origin, whether it is the loopback one, and whether it answered. */
+export function instanceSummary(instance: FoundInstance) {
+  return { instance: instance.name, machine_id: instance.machine_id ?? null, origin: instance.origin, local: instance.local, reachable: instance.reachable, ...(instance.error ? { error: instance.error } : {}) };
 }

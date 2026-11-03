@@ -14,7 +14,11 @@ test('search does not recover a durable lease, acquire locks or access registry/
   const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-search-isolation-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls: string[] = [];
+  // Search asks each instance its name and its catalog questions only (DC-7x-FED-3).
   const vm = new Proxy({}, { get(_target, key) {
+    if (key === 'baseUrl') return 'http://127.0.0.1:9';
+    if (key === 'health') return async () => ({ ok: true, service: 'machine-service', instance: 'this-mac', machine_id: 'id-this-mac' });
+    if (key === 'images') return async () => ({ images: {}, capacity: {}, catalog: { status: 'current', generation: 3 } });
     if (key === 'applications') return async () => { calls.push('applications'); return { schemaVersion: 1, images: [] }; };
     throw new Error(`Unexpected VM access: ${String(key)}`);
   } }) as MachineService;
@@ -25,7 +29,9 @@ test('search does not recover a durable lease, acquire locks or access registry/
   await writeFile(join(manager.root, 'lease.json'), original, { mode: 0o600 });
   const response = await relayCall(() => manager, { action: 'search', name: 'Firefox' }, { toolCallId: 'isolation-call' });
   assert.equal(response.isError, false);
-  assert.deepEqual(JSON.parse(response.text), { applications: [], truncated: false });
+  assert.deepEqual(JSON.parse(response.text), { applications: [], truncated: false, discovery: JSON.parse(response.text).discovery,
+    instances: [{ instance: 'this-mac', machine_id: 'id-this-mac', origin: 'http://127.0.0.1:9', local: true, reachable: true, generation: 3, status: 'current' }] });
+  assert.match(JSON.parse(response.text).discovery, /MCP_RELAY_ISOLATED=1/);
   assert.deepEqual(calls, ['applications']);
   assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), original);
   assert.deepEqual((await readdir(manager.root)).sort(), ['lease.json', 'search-diagnostics']);
@@ -109,14 +115,16 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   };
   await pulse();
   requests.length = 0;
-  assert.deepEqual(await manager.search({ name: 'Firefox' }), { applications: [], truncated: false });
-  assert.deepEqual(requests, ['GET /applications']);
+  const found = await manager.search({ name: 'Firefox' });
+  assert.deepEqual([found.applications, found.truncated, found.instances.map(i => [i.local, i.reachable])], [[], false, [[true, true]]]);
+  // The instance's name, its catalog and its catalog's generation; no lease API (DC-7x-FED-3).
+  assert.deepEqual(requests.sort(), ['GET /applications', 'GET /health', 'GET /images']);
   await unchanged();
   await pulse();
   await writeFile(join(manager.root, 'search-diagnostics', 'foreign'), 'preserve');
   requests.length = 0;
   await assert.rejects(manager.search({ name: 'Firefox' }), /Unrecognized/);
-  assert.deepEqual(requests, ['GET /applications']);
+  assert.deepEqual(requests.sort(), ['GET /applications', 'GET /health', 'GET /images']);
   assert.equal(await readFile(join(manager.root, 'search-diagnostics', 'foreign'), 'utf8'), 'preserve');
   await unchanged();
   await pulse();

@@ -7,6 +7,9 @@ const reason = Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', desc
 const optionalReason = Type.Optional(Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', description: 'Optional intent, retained as evidence. Default: derived from the call.' }));
 const interval = Type.Number({ minimum: 0, maximum: 300000, description: 'Wait in milliseconds from the end of the call to the after-snapshot. Optional; the relay has a default.' });
 const id = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$' });
+/** The machine-service instance a question or an image acquisition asks, by its name, a former name, its machine_id or its origin (DC-7x-FED-2). */
+const instanceNamed = (description: string) => Type.String({ minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]*$', description });
+const instance = instanceNamed('Optional: ask only this machine-service instance, by its name, a former name, its machine_id or its origin. Default: every instance on the network.');
 /** The guest a call acts on: the name relay_acquire answered (DC-20). */
 const guest = Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,47}$', description: 'The guest this call acts on: the name relay_acquire answered.' });
 const snapshots = Type.Object({
@@ -25,16 +28,17 @@ const runBase = { action: Type.Literal('run'), guest, reason: optionalReason, st
 // Authoritative discriminated contract. Even if a provider only exposes the
 // object-shaped projection, every invocation is checked here before dispatch.
 export const relayContract = Type.Union([
-  Type.Object({ action: Type.Literal('search'), name: Type.String({ minLength: 1, maxLength: 256, pattern: '\\S' }), os: Type.Optional(StringEnum(['linux', 'macos'] as const)) }, closed),
-  Type.Object({ action: Type.Literal('acquisition-capabilities') }, closed),
+  Type.Object({ action: Type.Literal('search'), name: Type.String({ minLength: 1, maxLength: 256, pattern: '\\S' }), os: Type.Optional(StringEnum(['linux', 'macos'] as const)), instance: Type.Optional(instance) }, closed),
+  Type.Object({ action: Type.Literal('acquisition-capabilities'), instance: Type.Optional(instance) }, closed),
   Type.Object({ action: Type.Literal('console-resolve'), guest }, closed),
   Type.Object({ action: Type.Literal('console-open'), guest, console_id: id, attempt_id: id, userRequested: Type.Literal(true), reason, expected: Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S' }) }, closed),
   Type.Object({ action: Type.Literal('console-cancel'), guest, console_id: id, attempt_id: id }, closed),
-  Type.Object({ action: Type.Literal('probe'), scope: Type.Optional(StringEnum(['host', 'guest'] as const)), guest: Type.Optional(guest) }, closed),
+  Type.Object({ action: Type.Literal('probe'), scope: Type.Optional(StringEnum(['host', 'guest'] as const)), guest: Type.Optional(guest), instance: Type.Optional(instance) }, closed),
   Type.Object({ action: Type.Literal('acquire'),
     task: Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,35}$' }),
     image: Type.Optional(Type.String({ description: 'Image key from relay action=probe, e.g. ubuntu2404 or macos26, for a fresh VM. Give exactly one of image and machine.' })),
     machine: Type.Optional(Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$', description: 'A durable machine, a real Mac leased whole, by the name machctl list shows, e.g. Build-Mac-1. Give exactly one of image and machine.' })),
+    instance: Type.Optional(instanceNamed('Optional, with image only: acquire from this machine-service instance, by its name, a former name, its machine_id or its origin. Default: the relay chooses an instance that offers the image and has capacity, and says which and why.')),
     extractions: Type.Array(Type.Object({ path: Type.String({ description: 'Relative guest-workspace path; no traversal or symlinks.' }), name: Type.String({ description: 'Unique output basename.' }) }, closed), { maxItems: 100 }),
     vnc: Type.Optional(Type.Boolean({ description: 'Prepare guest console sharing, default false. Never opens a viewer automatically.' })),
     ttlHours: Type.Optional(Type.Number({ minimum: 0.1, maximum: 720 })),
@@ -106,6 +110,8 @@ export function validateRelayInput(value: unknown): asserts value is RelayInput 
   if (!Check(relayContract, value)) throw new Error('Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.');
   if (value.action === 'probe' && value.scope === 'guest' && value.guest === undefined) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === 'acquire' && (value.image === undefined) === (value.machine === undefined)) throw new Error('Invalid relay input: relay_acquire takes exactly one of image, a VM image, and machine, a durable machine\'s name.');
+  if (value.action === 'acquire' && value.machine !== undefined && value.instance !== undefined) throw new Error('Invalid relay input: instance chooses where an image is acquired; a durable machine names its own instance.');
+  if (value.action === 'probe' && value.scope === 'guest' && value.instance !== undefined) throw new Error('Invalid relay input: relay_probe with scope "guest" probes the guest that guest names, on its own instance; instance applies to scope "host".');
   if (value.action === 'run') {
     if (value.diagnostic && value.language !== 'shell') throw new Error('Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver.');
     if (value.diagnostic && value.snapshots?.group) throw new Error('Diagnostic scripts cannot join snapshot groups.');

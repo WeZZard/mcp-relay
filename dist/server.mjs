@@ -4018,11 +4018,11 @@ var require_fast_uri = __commonJS({
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
     var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
     var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-    function getParseError(parsed, matches) {
-      if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
+    function getParseError(parsed2, matches) {
+      if (matches[2] !== void 0 && parsed2.path && parsed2.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
       }
-      if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
+      if (typeof parsed2.port === "number" && (parsed2.port < 0 || parsed2.port > 65535)) {
         return "URI port is malformed.";
       }
       return void 0;
@@ -4045,12 +4045,12 @@ var require_fast_uri = __commonJS({
       const host = matches[4];
       return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
     }
-    function canonicalizeHost(parsed, options, schemeHandler, isIP5) {
-      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP5 === false && nonSimpleDomain(parsed.host)) {
+    function canonicalizeHost(parsed2, options, schemeHandler, isIP5) {
+      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed2.host && !isIPLiteral(parsed2.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP5 === false && nonSimpleDomain(parsed2.host)) {
         try {
-          parsed.host = new URL("http://" + parsed.host).hostname;
+          parsed2.host = new URL("http://" + parsed2.host).hostname;
         } catch (e) {
-          parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
+          parsed2.error = parsed2.error || "Host's domain name can not be converted to ASCII: " + e;
           return true;
         }
       }
@@ -4058,7 +4058,7 @@ var require_fast_uri = __commonJS({
     }
     function parseWithStatus(uri, opts) {
       const options = Object.assign({}, opts);
-      const parsed = {
+      const parsed2 = {
         scheme: void 0,
         userinfo: void 0,
         host: "",
@@ -4083,7 +4083,7 @@ var require_fast_uri = __commonJS({
       }
       const authorityMatch = uri.match(AUTHORITY_PREFIX);
       if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
-        parsed.error = "URI authority must not contain a literal backslash.";
+        parsed2.error = "URI authority must not contain a literal backslash.";
         malformedAuthorityOrPort = true;
       }
       const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
@@ -4092,104 +4092,104 @@ var require_fast_uri = __commonJS({
         const normalizedRegion = region.replace(/[\t\n\r]/g, "");
         if (normalizedRegion.length >= 2) {
           if (normalizedRegion.slice(0, 2) !== "//") {
-            parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+            parsed2.error = parsed2.error || "URI authority must not contain a literal backslash.";
             malformedAuthorityOrPort = true;
           } else if (region.length !== normalizedRegion.length) {
-            parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+            parsed2.error = parsed2.error || "URI authority introducer must not contain whitespace.";
             malformedAuthorityOrPort = true;
           }
         }
       }
       const matches = uri.match(URI_PARSE);
       if (matches) {
-        parsed.scheme = matches[1];
-        parsed.userinfo = matches[3];
-        parsed.host = matches[4];
-        parsed.port = parseInt(matches[5], 10);
-        parsed.path = matches[6] || "";
-        parsed.query = matches[7];
-        parsed.fragment = matches[8];
-        if (parsed.scheme !== void 0) {
-          const decodedScheme = unescape(parsed.scheme);
+        parsed2.scheme = matches[1];
+        parsed2.userinfo = matches[3];
+        parsed2.host = matches[4];
+        parsed2.port = parseInt(matches[5], 10);
+        parsed2.path = matches[6] || "";
+        parsed2.query = matches[7];
+        parsed2.fragment = matches[8];
+        if (parsed2.scheme !== void 0) {
+          const decodedScheme = unescape(parsed2.scheme);
           if (VALID_SCHEME.test(decodedScheme)) {
-            parsed.scheme = decodedScheme.toLowerCase();
+            parsed2.scheme = decodedScheme.toLowerCase();
           } else {
-            parsed.error = parsed.error || MALFORMED_SCHEME_ERROR;
+            parsed2.error = parsed2.error || MALFORMED_SCHEME_ERROR;
             malformedScheme = true;
           }
         }
         malformedPercentEncoding = hasMalformedComponentPercentEncoding(matches);
         if (malformedPercentEncoding) {
-          parsed.error = parsed.error || "URI contains malformed percent-encoding.";
+          parsed2.error = parsed2.error || "URI contains malformed percent-encoding.";
         }
-        if (isNaN(parsed.port)) {
-          parsed.port = matches[5];
+        if (isNaN(parsed2.port)) {
+          parsed2.port = matches[5];
         }
-        const parseError = getParseError(parsed, matches);
+        const parseError = getParseError(parsed2, matches);
         if (parseError !== void 0) {
-          parsed.error = parsed.error || parseError;
+          parsed2.error = parsed2.error || parseError;
           malformedAuthorityOrPort = true;
         }
-        if (parsed.host) {
-          const ipv4result = isIPv4(parsed.host);
+        if (parsed2.host) {
+          const ipv4result = isIPv4(parsed2.host);
           if (ipv4result === false) {
-            const bracketedIPLiteral = isIPLiteral(parsed.host);
-            const hasIPLiteralBracket = parsed.host.indexOf("[") !== -1 || parsed.host.indexOf("]") !== -1;
-            const ipv6result = normalizeIPv6(parsed.host);
+            const bracketedIPLiteral = isIPLiteral(parsed2.host);
+            const hasIPLiteralBracket = parsed2.host.indexOf("[") !== -1 || parsed2.host.indexOf("]") !== -1;
+            const ipv6result = normalizeIPv6(parsed2.host);
             isIP5 = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
             malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
-            parsed.host = isIP5 ? ipv6result.host : ipv6result.host.toLowerCase();
+            parsed2.host = isIP5 ? ipv6result.host : ipv6result.host.toLowerCase();
             if (malformedIPLiteral) {
-              parsed.error = parsed.error || "URI host is malformed.";
+              parsed2.error = parsed2.error || "URI host is malformed.";
               malformedAuthorityOrPort = true;
             }
           } else {
             isIP5 = true;
           }
         }
-        if (parsed.scheme === void 0 && parsed.userinfo === void 0 && parsed.host === void 0 && parsed.port === void 0 && parsed.query === void 0 && !parsed.path) {
-          parsed.reference = "same-document";
-        } else if (parsed.scheme === void 0) {
-          parsed.reference = "relative";
-        } else if (parsed.fragment === void 0) {
-          parsed.reference = "absolute";
+        if (parsed2.scheme === void 0 && parsed2.userinfo === void 0 && parsed2.host === void 0 && parsed2.port === void 0 && parsed2.query === void 0 && !parsed2.path) {
+          parsed2.reference = "same-document";
+        } else if (parsed2.scheme === void 0) {
+          parsed2.reference = "relative";
+        } else if (parsed2.fragment === void 0) {
+          parsed2.reference = "absolute";
         } else {
-          parsed.reference = "uri";
+          parsed2.reference = "uri";
         }
-        if (options.reference && options.reference !== "suffix" && options.reference !== parsed.reference) {
-          parsed.error = parsed.error || "URI is not a " + options.reference + " reference.";
+        if (options.reference && options.reference !== "suffix" && options.reference !== parsed2.reference) {
+          parsed2.error = parsed2.error || "URI is not a " + options.reference + " reference.";
         }
-        const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
+        const schemeHandler = getSchemeHandler(options.scheme || parsed2.scheme);
         if (!malformedIPLiteral) {
-          malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP5);
+          malformedHost = canonicalizeHost(parsed2, options, schemeHandler, isIP5);
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (uri.indexOf("%") !== -1) {
-            if (parsed.host !== void 0 && !malformedIPLiteral) {
-              const host = isIP5 ? parsed.host : normalizePercentEncoding(parsed.host, true);
-              parsed.host = reescapeHostDelimiters(host, isIP5);
+            if (parsed2.host !== void 0 && !malformedIPLiteral) {
+              const host = isIP5 ? parsed2.host : normalizePercentEncoding(parsed2.host, true);
+              parsed2.host = reescapeHostDelimiters(host, isIP5);
             }
           }
-          if (parsed.path) {
-            parsed.path = normalizePathEncoding(parsed.path);
+          if (parsed2.path) {
+            parsed2.path = normalizePathEncoding(parsed2.path);
           }
-          if (parsed.query) {
-            parsed.query = normalizeQueryFragmentEncoding(parsed.query);
+          if (parsed2.query) {
+            parsed2.query = normalizeQueryFragmentEncoding(parsed2.query);
           }
-          if (parsed.fragment) {
-            parsed.fragment = normalizeQueryFragmentEncoding(parsed.fragment);
+          if (parsed2.fragment) {
+            parsed2.fragment = normalizeQueryFragmentEncoding(parsed2.fragment);
           }
         }
         if (schemeHandler && schemeHandler.parse) {
-          schemeHandler.parse(parsed, options);
-          if (schemeHandler === SCHEMES.urn && parsed.nid === void 0) {
+          schemeHandler.parse(parsed2, options);
+          if (schemeHandler === SCHEMES.urn && parsed2.nid === void 0) {
             malformedSchemeSpecific = true;
           }
         }
       } else {
-        parsed.error = parsed.error || "URI can not be parsed.";
+        parsed2.error = parsed2.error || "URI can not be parsed.";
       }
-      return { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme };
+      return { parsed: parsed2, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme };
     }
     function parse7(uri, opts) {
       return parseWithStatus(uri, opts).parsed;
@@ -4198,9 +4198,9 @@ var require_fast_uri = __commonJS({
       return normalizeStringWithStatus(uri, opts).normalized;
     }
     function normalizeStringWithStatus(uri, opts) {
-      const { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = parseWithStatus(uri, opts);
+      const { parsed: parsed2, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = parseWithStatus(uri, opts);
       return {
-        normalized: malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? uri : serialize(parsed, opts),
+        normalized: malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? uri : serialize(parsed2, opts),
         malformedAuthorityOrPort,
         malformedPercentEncoding,
         malformedSchemeSpecific,
@@ -7251,8 +7251,8 @@ async function probeMedia(path) {
         return;
       }
       try {
-        const parsed = JSON.parse(stdout);
-        const video = parsed.streams?.find((s) => s.codec_name);
+        const parsed2 = JSON.parse(stdout);
+        const video = parsed2.streams?.find((s) => s.codec_name);
         if (!video) {
           resolve11({ decode: "damaged", decodeDiagnostic: "no decodable stream" });
           return;
@@ -7260,7 +7260,7 @@ async function probeMedia(path) {
         resolve11({
           decode: "playable",
           media: {
-            durationSeconds: parsed.format?.duration ? Number(parsed.format.duration) : void 0,
+            durationSeconds: parsed2.format?.duration ? Number(parsed2.format.duration) : void 0,
             width: video.width,
             height: video.height,
             codec: video.codec_name
@@ -19894,8 +19894,8 @@ var Protocol = class {
     const method = getMethodLiteral(requestSchema);
     this.assertRequestHandlerCapability(method);
     this._requestHandlers.set(method, (request, extra) => {
-      const parsed = parseWithCompat(requestSchema, request);
-      return Promise.resolve(handler(parsed, extra));
+      const parsed2 = parseWithCompat(requestSchema, request);
+      return Promise.resolve(handler(parsed2, extra));
     });
   }
   /**
@@ -19920,8 +19920,8 @@ var Protocol = class {
   setNotificationHandler(notificationSchema, handler) {
     const method = getMethodLiteral(notificationSchema);
     this._notificationHandlers.set(method, (notification) => {
-      const parsed = parseWithCompat(notificationSchema, notification);
-      return Promise.resolve(handler(parsed));
+      const parsed2 = parseWithCompat(notificationSchema, notification);
+      return Promise.resolve(handler(parsed2));
     });
   }
   /**
@@ -21054,8 +21054,8 @@ function isolated(env = process.env) {
   return env[ISOLATION_VARIABLE] === "1";
 }
 function installedOrigin(url) {
-  const parsed = new URL(url);
-  return parsed.port === new URL(INSTALLED_SERVICE_URL).port && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  const parsed2 = new URL(url);
+  return parsed2.port === new URL(INSTALLED_SERVICE_URL).port && ["localhost", "127.0.0.1", "[::1]"].includes(parsed2.hostname);
 }
 function serviceUrl(env = process.env, environment = selectedEnvironment(env)) {
   const named2 = environment?.profile.vmServiceUrl ?? env.MCP_RELAY_URL;
@@ -26014,8 +26014,8 @@ function UnionOptions(type) {
 
 // node_modules/typebox/build/type/engine/patterns/pattern.mjs
 function ParsePatternIntoTypes(pattern) {
-  const parsed = Pattern(pattern);
-  const result2 = guard_exports.IsEqual(parsed.length, 2) ? parsed[0] : [];
+  const parsed2 = Pattern(pattern);
+  const result2 = guard_exports.IsEqual(parsed2.length, 2) ? parsed2[0] : [];
   return result2;
 }
 
@@ -27290,8 +27290,8 @@ var Script = (input) => If(If(Module(input), ([_0, input2]) => [_0, input2], () 
 
 // node_modules/typebox/build/type/engine/patterns/template.mjs
 function ParseTemplateIntoTypes(template) {
-  const parsed = TemplateLiteralTypes(`\`${template}\``);
-  const result2 = guard_exports.IsEqual(parsed.length, 2) ? parsed[0] : Unreachable();
+  const parsed2 = TemplateLiteralTypes(`\`${template}\``);
+  const result2 = guard_exports.IsEqual(parsed2.length, 2) ? parsed2[0] : Unreachable();
   return result2;
 }
 
@@ -29260,8 +29260,8 @@ function Script2(...args) {
     1: (script) => [{}, script, {}]
   });
   const result2 = Script(input);
-  const parsed = guard_exports.IsArray(result2) && guard_exports.IsEqual(result2.length, 2) ? InstantiateType(context, State([], []), result2[0]) : Never();
-  return memory_exports.Update(parsed, {}, options);
+  const parsed2 = guard_exports.IsArray(result2) && guard_exports.IsEqual(result2.length, 2) ? InstantiateType(context, State([], []), result2[0]) : Never();
+  return memory_exports.Update(parsed2, {}, options);
 }
 
 // node_modules/typebox/build/typebox.mjs
@@ -32413,9 +32413,12 @@ function validateCatalog(value) {
   }
   if (value.images.reduce((n, image) => n + image.applications.length, 0) > 2e4) throw new Error("Application catalog exceeds installation limit");
 }
-function searchCatalog(value, query) {
+function checkQuery(query) {
   if (typeof query.name !== "string" || !query.name.trim()) throw new Error("Search name must be nonblank");
   if (query.os !== void 0 && query.os !== "linux" && query.os !== "macos") throw new Error("Invalid search OS");
+}
+var byRank = (a, b) => a.rank - b.rank || compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name) || compare(a.id, b.id);
+function matchCatalog(value, query) {
   validateCatalog(value);
   const needle = normalizeSearchName(query.name);
   const groups = /* @__PURE__ */ new Map();
@@ -32448,15 +32451,17 @@ function searchCatalog(value, query) {
       if (rank === 0) break;
     }
     return rank === 3 ? [] : [{ id: id2, name: group.name, rank, installations }];
-  }).sort((a, b) => a.rank - b.rank || compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name) || compare(a.id, b.id));
-  const result2 = { applications: [], truncated: false };
+  });
+  return matches.sort(byRank);
+}
+function budget(result2, matches) {
   let count = 0;
   for (const match of matches) {
     const group = { name: match.name, installations: [] };
     result2.applications.push(group);
     for (const installation of match.installations) {
       group.installations.push(installation);
-      const serialized = serializeSearchResult(result2);
+      const serialized = JSON.stringify(result2, null, 2);
       if (count === SEARCH_LIMITS.installations || Buffer.byteLength(serialized) > SEARCH_LIMITS.bytes || serialized.split("\n").length > SEARCH_LIMITS.lines) {
         group.installations.pop();
         if (!group.installations.length) result2.applications.pop();
@@ -32467,6 +32472,39 @@ function searchCatalog(value, query) {
     }
   }
   return result2;
+}
+function searchInstances(catalogs, query, discovery) {
+  checkQuery(query);
+  const merged = /* @__PURE__ */ new Map();
+  const reported = [];
+  for (const { catalog, ...entry } of catalogs) {
+    let matches2;
+    if (entry.reachable && !entry.error) {
+      try {
+        matches2 = matchCatalog(catalog, query);
+      } catch (error2) {
+        entry.error = `invalid application catalog: ${error2 instanceof Error ? error2.message : String(error2)}`;
+      }
+    }
+    reported.push(entry);
+    for (const match of matches2 ?? []) {
+      const known2 = merged.get(match.id) ?? { id: match.id, name: match.name, rank: match.rank, installations: [] };
+      known2.rank = Math.min(known2.rank, match.rank);
+      merged.set(match.id, known2);
+      for (const installation of match.installations) {
+        const same = known2.installations.find((other) => other.image === installation.image && other.version === installation.version && other.os === installation.os && other.architecture === installation.architecture);
+        const offer = { instance: entry.instance, machine_id: entry.machine_id, generation: entry.generation ?? null };
+        if (same) same.instances.push(offer);
+        else known2.installations.push({ ...installation, instances: [offer] });
+      }
+    }
+  }
+  if (!reported.some((entry) => entry.reachable && !entry.error)) {
+    throw new Error(`No machine-service instance answered with an application catalog: ${reported.map((entry) => `${entry.instance} (${entry.origin}): ${entry.error ?? "no answer"}`).join("; ")}${discovery ? `; ${discovery}` : ""}`);
+  }
+  const matches = [...merged.values()].map((match) => ({ ...match, installations: match.installations.sort((a, b) => compare(a.image, b.image) || compare(String(a.version), String(b.version))) })).sort(byRank);
+  const result2 = { applications: [], instances: reported, ...discovery ? { discovery } : {}, truncated: false };
+  return budget(result2, matches);
 }
 
 // src/search-diagnostics.ts
@@ -34114,6 +34152,60 @@ async function findOwner(target, options) {
   const hint = mode === "bonjour" ? "Check the name with `machctl list`; the Mac's machine-service must be bound to all interfaces to advertise itself, or set MACHINE_SERVICE_DISCOVERY=consul to use a Consul agent." : "Check the name with `machctl list`, and point CONSUL_HTTP_ADDR at a reachable Consul agent.";
   throw new Error(`No machine-service instance lists a durable machine ${target.name ? `named ${target.name}` : machine}${discoveryError ? `, and ${discoveryError}` : ""}${refused.length ? `; unconfirmed: ${refused.join("; ")}` : ""}; nothing was acquired. ${hint}`);
 }
+var parsed = (origin) => {
+  try {
+    return new URL(origin);
+  } catch {
+    return void 0;
+  }
+};
+var portOf = (origin) => {
+  const url = parsed(origin);
+  return url ? url.port || (url.protocol === "https:" ? "443" : "80") : origin;
+};
+var unanswered = (error2) => error2 instanceof MachineServiceError && error2.status === void 0;
+var formerNames = (health) => Array.isArray(health.former_names) ? health.former_names.map((entry) => text3(entry?.name)).filter(Boolean) : [];
+async function discoverInstances(options) {
+  const mode = options.mode ?? discoveryMode();
+  const make = options.backend ?? ((origin) => new MachineService({ baseUrl: origin, listed: true }));
+  const localOrigin = parsed(options.local.baseUrl)?.origin ?? String(options.local.baseUrl);
+  const ask = async (found2) => {
+    const fallback = found2.expected ?? parsed(found2.origin)?.host ?? found2.origin;
+    const base = { origin: found2.origin, local: found2.local, found_by: found2.found_by, backend: found2.backend, former_names: [] };
+    try {
+      const health = await found2.backend.health({ timeoutMs: TIMEOUT_MS });
+      const why = confirmed(health, found2.expected, found2.machine_id);
+      const machine_id = text3(health.machine_id) || found2.machine_id;
+      if (why) return { ...base, name: fallback, ...found2.machine_id ? { machine_id: found2.machine_id } : {}, reachable: false, error: `not confirmed: ${why}` };
+      return { ...base, name: text3(health.instance) || fallback, ...machine_id ? { machine_id } : {}, former_names: formerNames(health), reachable: true };
+    } catch (error2) {
+      const reachable = found2.local && !unanswered(error2);
+      return { ...base, name: found2.local ? "local" : fallback, ...found2.machine_id ? { machine_id: found2.machine_id } : {}, reachable, ...reachable ? {} : { error: error2 instanceof Error ? error2.message : String(error2) } };
+    }
+  };
+  const local = ask({ origin: localOrigin, backend: options.local, local: true, found_by: "local" });
+  if (options.localOnly) return { instances: [await local] };
+  let found = [], discoveryError;
+  try {
+    ({ found, error: discoveryError } = await candidates(options, mode));
+  } catch (error2) {
+    discoveryError = error2 instanceof Error ? error2.message : String(error2);
+  }
+  const others = found.filter((candidate, index) => candidate.origin !== localOrigin && found.findIndex((other) => other.origin === candidate.origin) === index);
+  const asked = await Promise.all([local, ...others.map((candidate) => ask({ ...candidate, backend: make(candidate.origin), local: false, found_by: mode }))]);
+  const identity = (instance2) => instance2.machine_id ? `${instance2.machine_id}:${portOf(instance2.origin)}` : void 0;
+  const distinct = asked.filter((instance2, index) => !identity(instance2) || asked.findIndex((other) => identity(other) === identity(instance2)) === index);
+  const [first, ...rest] = distinct;
+  rest.sort((a, b) => a.name.localeCompare(b.name) || a.origin.localeCompare(b.origin));
+  return { instances: [first, ...rest], ...discoveryError ? { discoveryError } : {} };
+}
+function namesInstance(instance2, wanted) {
+  const url = parsed(instance2.origin);
+  return [instance2.name, instance2.machine_id, instance2.origin, url?.host, url?.hostname, ...instance2.former_names].includes(wanted.replace(/\/+$/, ""));
+}
+function instanceSummary(instance2) {
+  return { instance: instance2.name, machine_id: instance2.machine_id ?? null, origin: instance2.origin, local: instance2.local, reachable: instance2.reachable, ...instance2.error ? { error: instance2.error } : {} };
+}
 
 // src/capture-gate.ts
 var object5 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
@@ -34146,6 +34238,7 @@ var CAPTURE_SOFTWARE = ["bundle:com.trycua.driver", "dpkg:cua-driver"];
 var durableRoot = (workspace, purpose) => join13(workspace, "work", `mcp-relay-${purpose}`);
 var DOWNLOAD_BOUND = 64;
 var DOWNLOAD_RETRY_DELAYS_MS = [1e3, 3e3];
+var CATALOG_TIMEOUT_MS = 35e3;
 var CAPACITY_RETRY_MS = 15e3;
 var CAPTURE_READY_WAIT_MS = 12e4;
 var CAPTURE_READY_RETRY_MS = 2e3;
@@ -34224,9 +34317,46 @@ var RelayManager = class {
   ownerLock;
   /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
   shuttingDown = false;
+  /** How this manager finds instances: its mode and its test seams (DC-35, DC-67). */
+  discoveryOptions() {
+    return { local: this.vm, ...this.options.discovery ? { mode: this.options.discovery } : {}, ...this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}, ...this.options.secondLookMs !== void 0 ? { secondLookMs: this.options.secondLookMs } : {} };
+  }
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
   durableOwner(machine, machineId) {
-    return (machineId ? findDurableOwnerById : findDurableOwner)(machineId ?? machine, { local: this.vm, ...this.options.discovery ? { mode: this.options.discovery } : {}, ...this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}, ...this.options.consul ? { consul: this.options.consul } : {}, ...this.options.durableBackend ? { backend: this.options.durableBackend } : {}, ...this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {} });
+    return (machineId ? findDurableOwnerById : findDurableOwner)(machineId ?? machine, this.discoveryOptions());
+  }
+  /**
+   * Every instance a question or an image acquisition asks (machine-service
+   * FD-7, DC-7x-FED-1): the loopback instance and every instance discovery
+   * confirms, or only the selected environment's. With `wanted`, only the
+   * instance it names; when none does, Bonjour looks once more (MI-5), and
+   * then the call is refused with the instances there are.
+   */
+  async instances(wanted, signal) {
+    const look = () => discoverInstances({ ...this.discoveryOptions(), localOnly: !!this.environment });
+    let found = await look();
+    if (wanted === void 0) return found;
+    if (typeof wanted !== "string" || !wanted.trim()) throw new Error("instance must name a machine-service instance");
+    let named2 = found.instances.filter((instance2) => namesInstance(instance2, wanted));
+    if (!named2.length && !this.environment && (this.options.discovery ?? discoveryMode()) === "bonjour") {
+      await new Promise((resolve11) => setTimeout(resolve11, this.options.secondLookMs ?? 2e3));
+      signal?.throwIfAborted();
+      found = await look();
+      named2 = found.instances.filter((instance2) => namesInstance(instance2, wanted));
+    }
+    if (!named2.length) throw new Error(`No machine-service instance is named ${JSON.stringify(wanted)}; the instances are ${found.instances.map((instance2) => `${instance2.name} (${instance2.machine_id ?? "no machine_id"}, ${instance2.reachable ? "reachable" : "unreachable"})`).join(", ")}${found.discoveryError ? `, and ${found.discoveryError}` : ""}${this.environment ? "; a selected environment asks only its own instance" : ""}`);
+    return { ...found, instances: named2 };
+  }
+  /** One instance's application catalog and its generation, or why there is none (DC-7x-FED-3). */
+  async catalogOf(instance2, signal) {
+    const entry = { instance: instance2.name, machine_id: instance2.machine_id ?? null, origin: instance2.origin, local: instance2.local, reachable: instance2.reachable };
+    if (!instance2.reachable) return { ...entry, error: instance2.error ?? "no answer" };
+    const [catalog, images] = await Promise.allSettled([(async () => instance2.backend.applications({ signal, timeoutMs: CATALOG_TIMEOUT_MS }))(), (async () => instance2.backend.images({ signal, timeoutMs: CATALOG_TIMEOUT_MS }))()]);
+    signal?.throwIfAborted();
+    const status = images.status === "fulfilled" ? images.value.catalog : void 0;
+    const facts = { generation: typeof status?.generation === "number" ? status.generation : null, status: typeof status?.status === "string" ? status.status : null };
+    if (catalog.status === "rejected") return { ...entry, ...facts, error: message(catalog.reason) };
+    return { ...entry, ...facts, catalog: catalog.value };
   }
   serialized(fn) {
     const next = this.queue.then(fn, fn);
@@ -34354,6 +34484,7 @@ var RelayManager = class {
   }
   bindingMatches(e) {
     if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
+    if (remoteVm(e)) return !this.environment && !!e.backend?.endpoint;
     if (e.backend) {
       const expected = this.binding();
       return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key2, value]) => e.backend[key2] === value);
@@ -34394,12 +34525,51 @@ var RelayManager = class {
     if (guest2 === void 0 && !this.guests.size) return { active: false };
     return this.named(guest2).status();
   }
-  search(query, signal, toolCallId) {
+  /**
+   * The instances an image acquisition may ask, in order (machine-service
+   * FD-7, DC-7x-FED-4): those whose offer of the image has its base built,
+   * and, for `vnc`, a VNC backend for its OS; acquirable offers first, the
+   * loopback instance first within each group, then the others by name.
+   * `wanted` pins one instance. Refused, before anything is reserved, when
+   * no instance offers the image.
+   */
+  async imageTargets(image, wanted, vnc, signal) {
+    const { instances, discoveryError } = await this.instances(wanted, signal);
+    const asked = await Promise.all(instances.map(async (instance2) => {
+      if (!instance2.reachable) return { instance: instance2, error: `unreachable (${instance2.error})` };
+      try {
+        const offer = (await instance2.backend.images({ timeoutMs: 5e3, signal })).images;
+        const facts = offer[image];
+        if (!facts?.base_available) return { instance: instance2, error: Object.keys(offer).length ? `offers ${Object.keys(offer).join(", ")}` : "offers no image" };
+        if (vnc && !(await this.readAcquisitionCapabilities(signal, instance2.backend)).options.vnc.backends[facts.kind].available) return { instance: instance2, error: `no VNC backend for ${facts.kind}` };
+        return { instance: instance2, acquirable: facts.concurrency?.acquirable !== false };
+      } catch (error2) {
+        if (signal?.aborted) throw error2;
+        return { instance: instance2, error: message(error2) };
+      }
+    }));
+    const offering = asked.filter((answer) => !answer.error).sort((a, b) => Number(!a.acquirable) - Number(!b.acquirable));
+    if (!offering.length) {
+      const why = asked.map((answer) => `${answer.instance.name}: ${answer.error}`).join("; ");
+      if (vnc && asked.some((answer) => answer.error?.startsWith("no VNC backend"))) throw new Error(`VNC backend unavailable for this image OS; ordinary acquisition was not attempted (${why})`);
+      throw new Error(`Image unavailable: ${image}: no machine-service instance offers it with its base built (${why})${discoveryError ? `; ${discoveryError}` : ""}; nothing was acquired`);
+    }
+    return offering.map(({ instance: instance2, acquirable }) => ({
+      backend: instance2.backend,
+      binding: instance2.local ? this.binding() : { endpoint: instance2.origin, instance: instance2.name, ...instance2.machine_id ? { machine_id: instance2.machine_id } : {} },
+      remote: !instance2.local,
+      reason: `chose ${image} (virtual, offer on ${instance2.name}${instance2.local ? ", the local instance" : ""}${acquirable ? "" : ", not acquirable now"})`
+    }));
+  }
+  /** relay_search over every instance's catalog, or the one `instance` names (DC-7x-FED-3). */
+  search(input, signal, toolCallId) {
     return this.serialized(async () => {
+      const query = { name: input.name, ...input.os === void 0 ? {} : { os: input.os } };
       let result2;
       try {
         signal?.throwIfAborted();
-        result2 = searchCatalog(await this.vm.applications({ signal }), query);
+        const { instances, discoveryError } = await this.instances(input.instance, signal);
+        result2 = searchInstances(await Promise.all(instances.map((instance2) => this.catalogOf(instance2, signal))), query, discoveryError);
       } catch (error2) {
         await recordSearch(this.root, query, { error: error2 }, { toolCallId });
         throw error2;
@@ -34408,7 +34578,7 @@ var RelayManager = class {
       return result2;
     });
   }
-  probe(scope = "host", guest2) {
+  probe(scope = "host", guest2, instance2) {
     if (scope === "guest") return this.onGuest(guest2, (found) => found.guarded(void 0, () => found.probe()));
     return this.serialized(async () => {
       let ownership;
@@ -34418,13 +34588,17 @@ var RelayManager = class {
         ownership = `This session's guests could not be loaded: ${message(error2)}`;
       }
       const local = await probeLocal();
-      let relay;
-      try {
-        const [health, images, leases] = await Promise.all([this.vm.health({ timeoutMs: 5e3 }), this.vm.images({ timeoutMs: 5e3 }), this.vm.list({ timeoutMs: 5e3 })]);
-        relay = { reachable: health.ok, images, capacity: leases.limits };
-      } catch (error2) {
-        relay = { reachable: false, diagnostic: String(error2) };
-      }
+      const { instances, discoveryError } = await this.instances(instance2);
+      const answers = await Promise.all(instances.map(async (found) => {
+        if (!found.reachable) return { ...instanceSummary(found), diagnostic: found.error };
+        try {
+          const [images, leases] = await Promise.all([found.backend.images({ timeoutMs: 5e3 }), found.backend.list({ timeoutMs: 5e3 })]);
+          return { ...instanceSummary(found), images, capacity: leases.limits };
+        } catch (error2) {
+          return { ...instanceSummary(found), reachable: false, diagnostic: String(error2) };
+        }
+      }));
+      const relay = { reachable: answers.some((answer) => answer.reachable), instances: answers, ...discoveryError ? { discovery: discoveryError } : {} };
       const facts = { scope: "host", local, relay, environment: this.environment?.identity, owned: this.status(), ...ownership ? { ownership } : {}, capabilities: { image: imageCapability } };
       await jsonFile(join13(this.root, "probes", `${Date.now()}-${randomUUID8()}.json`), facts);
       for (const found of this.guests.values()) await found.log("probe", void 0, facts).catch(() => {
@@ -34432,14 +34606,33 @@ var RelayManager = class {
       return facts;
     });
   }
-  async readAcquisitionCapabilities(signal) {
+  async readAcquisitionCapabilities(signal, backend = this.vm) {
     signal?.throwIfAborted();
     await this.assertBackend();
-    if (!this.vm.acquisitionCapabilities) throw new Error("Backend lacks acquisition-capabilities; upgrade machine-service for VNC");
-    return acquisitionCapabilities(await this.vm.acquisitionCapabilities({ signal, timeoutMs: 1e4 }));
+    if (!backend.acquisitionCapabilities) throw new Error("Backend lacks acquisition-capabilities; upgrade machine-service for VNC");
+    return acquisitionCapabilities(await backend.acquisitionCapabilities({ signal, timeoutMs: 1e4 }));
   }
-  acquisitionCapabilities(signal) {
-    return this.serialized(() => this.readAcquisitionCapabilities(signal));
+  /**
+   * Every instance's acquisition capabilities, each under its name, or the
+   * one `instance` names; refused only when no instance answers them
+   * (DC-7x-FED-3).
+   */
+  acquisitionCapabilities(signal, instance2) {
+    return this.serialized(async () => {
+      await this.assertBackend();
+      const { instances, discoveryError } = await this.instances(instance2, signal);
+      const answers = await Promise.all(instances.map(async (found) => {
+        if (!found.reachable) return { ...instanceSummary(found), diagnostic: found.error };
+        try {
+          return { ...instanceSummary(found), capabilities: await this.readAcquisitionCapabilities(signal, found.backend) };
+        } catch (error2) {
+          if (signal?.aborted) throw error2;
+          return { ...instanceSummary(found), diagnostic: message(error2) };
+        }
+      }));
+      if (!answers.some((answer) => "capabilities" in answer)) throw new Error(`No machine-service instance answered its acquisition capabilities: ${answers.map((answer) => `${answer.instance}: ${"diagnostic" in answer ? answer.diagnostic : "answered"}`).join("; ")}${discoveryError ? `; ${discoveryError}` : ""}`);
+      return { instances: answers, ...discoveryError ? { discovery: discoveryError } : {} };
+    });
   }
   consoleResolve(signal, guest2) {
     return this.onGuest(guest2, (found) => found.resolveConsole(signal));
@@ -34489,6 +34682,7 @@ var RelayManager = class {
       if (input.image === void 0 === (input.machine === void 0)) throw new Error("relay_acquire takes exactly one of image, a VM image, and machine, a durable machine's name");
       if (input.machine !== void 0 && (typeof input.machine !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.machine))) throw new Error("machine must be a durable machine's name, as machctl list shows it");
       if (input.machine !== void 0 && input.vnc) throw new Error("A durable machine has no console: view it with Screen Sharing, outside the relay; nothing was acquired");
+      if (input.machine !== void 0 && input.instance !== void 0) throw new Error("instance chooses where an image is acquired; a durable machine names its own instance, so nothing was acquired");
       if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error("Declare up to 100 extractions before work");
       const names = /* @__PURE__ */ new Set();
       for (const extraction of input.extractions) {
@@ -34645,6 +34839,17 @@ var RelayManager = class {
     await this.unlock();
   }
 };
+function remoteVm(e) {
+  return !!e && !e.machine && !!e.backend?.instance && e.backend.tartHome === void 0;
+}
+function remoteOwner(e) {
+  return !!e?.machine || remoteVm(e);
+}
+var portOf2 = (origin) => {
+  const url = new URL(origin);
+  return url.port || (url.protocol === "https:" ? "443" : "80");
+};
+var subject = (e) => e.machine ? `durable machine ${e.machine}` : `VM ${e.lease?.vm ?? e.image}`;
 async function readRecord(path) {
   try {
     return JSON.parse(await readFile9(path, "utf8"));
@@ -34683,15 +34888,15 @@ var Guest = class {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   downloads;
-  /** A durable machine's owner, once found (DC-29). */
+  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-7x-FED-5). */
   owner;
-  /** The backend this guest's lease lives on: the loopback instance, or a durable machine's owner. */
+  /** The backend this guest's lease lives on: the loopback instance, or the instance that owns it. */
   get vm() {
     const e = this.enclosure;
-    if (!e?.machine) return this.m.vm;
+    if (!remoteOwner(e)) return this.m.vm;
     if (this.owner) return this.owner;
-    if (!e.backend?.endpoint || e.backend.endpoint === this.m.vm.baseUrl) return this.owner = this.m.vm;
-    throw new Error(`The owner of durable machine ${e.machine} has not been found again in this process; nothing was sent`);
+    if (e.machine && (!e.backend?.endpoint || e.backend.endpoint === this.m.vm.baseUrl)) return this.owner = this.m.vm;
+    throw new Error(`The owner of ${subject(e)} has not been found again in this process; nothing was sent`);
   }
   /**
    * machine-service as the guest's only channel. Every call names the lease's
@@ -34702,7 +34907,7 @@ var Guest = class {
       const id2 = this.enclosure?.lease?.lease_id;
       return id2 ? { lease_id: id2 } : {};
     };
-    const durable = !!this.enclosure?.machine;
+    const durable = remoteOwner(this.enclosure);
     return {
       exec: async (name, argv, timeoutMs2 = 18e4, options) => {
         const result2 = await this.withOwner((backend) => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs2 / 1e3), ...options?.executionId ? { execution_id: options.executionId } : {}, ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs2 + 3e4, signal: options?.signal }), options);
@@ -34713,7 +34918,7 @@ var Guest = class {
         const bytes = await readFile9(local_path);
         return this.withOwner((backend) => {
           if (!backend.pushBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
-          return backend.pushBytes(this.enclosure.machine, { remote_path, bytes, ...identity() });
+          return backend.pushBytes(this.enclosure.machine ?? name, { remote_path, bytes, ...identity() });
         });
       },
       pull: async (name, remote_path, local_path, options) => {
@@ -34721,7 +34926,7 @@ var Guest = class {
         await rm5(local_path, { force: true });
         await this.withOwner((backend) => {
           if (!backend.pullBytes) throw new Error("Backend lacks byte transfers; upgrade machine-service");
-          return backend.pullBytes(this.enclosure.machine, { remote_path, to: local_path, ...identity() }, options);
+          return backend.pullBytes(this.enclosure.machine ?? name, { remote_path, to: local_path, ...identity() }, options);
         }, options);
         return { vm: name, pulled: remote_path, to: local_path };
       }
@@ -34729,7 +34934,21 @@ var Guest = class {
   }
   /** A saved machine ID survives renames; legacy ownership still requires its name and origin. */
   async findOwner(e, force = false) {
-    if (!e.machine || this.owner && !force) return;
+    if (!remoteOwner(e) || this.owner && !force) return;
+    if (!e.machine) {
+      try {
+        const saved = e.backend;
+        const { instances, discoveryError } = await this.m.instances();
+        const owner = instances.find((instance2) => instance2.reachable && (saved.machine_id ? instance2.machine_id === saved.machine_id && portOf2(instance2.origin) === portOf2(saved.endpoint) : instance2.origin === saved.endpoint && instance2.name === saved.instance));
+        if (!owner) throw new Error(`no reachable machine-service instance is ${saved.machine_id ? `machine_id ${saved.machine_id} at port ${portOf2(saved.endpoint)}` : `${saved.instance} at ${saved.endpoint}`}${discoveryError ? `, and ${discoveryError}` : ""}`);
+        this.owner = owner.backend;
+        e.backend = { ...saved, endpoint: owner.origin, instance: owner.name };
+        await this.save();
+      } catch (error2) {
+        await this.unknownOwner(e, error2);
+      }
+      return;
+    }
     try {
       const owner = await this.m.durableOwner(e.machine, e.backend?.machine_id);
       if (e.backend?.machine_id) {
@@ -34747,7 +34966,7 @@ var Guest = class {
   async unknownOwner(e, cause) {
     this.owner = void 0;
     e.guestState = "unknown";
-    const error2 = new Error(`Cannot confirm durable machine ${e.machine}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
+    const error2 = new Error(`Cannot confirm ${e.machine ? `durable machine ${e.machine}` : `the owner of ${subject(e)}`}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
     e.lastError = error2.message;
     await this.save();
     throw error2;
@@ -34755,12 +34974,12 @@ var Guest = class {
   /** Retry a durable request once after discovery confirms the saved machine ID. Acquisition never uses this. */
   async withOwner(operation, options = {}) {
     options.signal?.throwIfAborted();
-    if (this.enclosure?.machine && !this.owner) await this.findOwner(this.enclosure);
+    if (remoteOwner(this.enclosure) && !this.owner) await this.findOwner(this.enclosure);
     try {
       return await operation(this.vm);
     } catch (error2) {
       const e = this.enclosure;
-      if (!e?.machine || !e.backend?.machine_id || options.signal?.aborted || !originUnavailable(error2)) throw error2;
+      if (!remoteOwner(e) || !e.backend?.machine_id || options.signal?.aborted || !originUnavailable(error2)) throw error2;
       await this.findOwner(e, true);
       options.signal?.throwIfAborted();
       try {
@@ -35027,17 +35246,13 @@ var Guest = class {
   async acquire(input, network, signal) {
     const ttlHours = input.ttlHours ?? 4;
     let owner;
+    let targets;
     try {
       if (this.m.shuttingDown || this.closed) throw new Error("Relay manager is shutting down");
-      if (input.machine) owner = await this.m.durableOwner(input.machine);
-      else {
-        const image = input.image, images = await this.vm.images({ timeoutMs: 5e3, signal });
-        if (!images.images[image]?.base_available) throw new Error(`Image unavailable: ${image}`);
-        if (input.vnc) {
-          const capabilities = await this.m.readAcquisitionCapabilities(signal);
-          if (!capabilities.options.vnc.backends[images.images[image].kind].available) throw new Error("VNC backend unavailable for this image OS; ordinary acquisition was not attempted");
-        }
-      }
+      if (input.machine) {
+        owner = await this.m.durableOwner(input.machine);
+        targets = [{ backend: owner.backend, binding: { endpoint: owner.origin, instance: owner.instance, ...owner.machine_id ? { machine_id: owner.machine_id } : {} }, remote: true }];
+      } else targets = await this.m.imageTargets(input.image, input.instance, input.vnc === true, signal);
       await this.lock();
     } catch (error2) {
       await this.m.forget(this);
@@ -35048,10 +35263,16 @@ var Guest = class {
     const stamp = startedAt.slice(0, 19).replace(/[T:]/g, "-") + "-Z";
     const project = this.m.options.project, environment = this.m.environment;
     const hostRoot = join13(this.m.options.outputRoot ?? resolve9(project, "relay-evidence"), purpose);
-    const subject = input.machine ?? input.image;
-    const row = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? "macos (durable)" : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
-    const e = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance, ...owner.machine_id ? { machine_id: owner.machine_id } : {} } : this.m.binding(), purpose, task: input.task, image: subject, ...input.machine ? { machine: input.machine } : {}, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
-    if (owner) this.owner = owner.backend;
+    const subject2 = input.machine ?? input.image;
+    const first = targets[0];
+    const row = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : first.remote ? `${first.binding.instance} (machine-service ${first.binding.endpoint}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? "macos (durable)" : subject2, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve9(project), startDate: stamp };
+    const e = this.enclosure = { backend: first.binding, purpose, task: input.task, image: subject2, ...input.machine ? { machine: input.machine } : {}, project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    const bind = (target) => {
+      this.owner = target.remote ? target.backend : void 0;
+      e.backend = target.binding;
+      if (target.reason) e.chosen = { instance: target.binding.instance ?? null, machine_id: target.binding.machine_id ?? null, reason: target.reason };
+    };
+    bind(first);
     let refused = false;
     try {
       await this.save();
@@ -35069,38 +35290,52 @@ var Guest = class {
         if (error2.code !== "ENOENT") throw error2;
       }
       let firstRefusal, granted = 0;
-      for (; ; ) {
-        e.acquisitionInFlight = true;
-        await this.save();
-        const asked = Date.now();
-        try {
-          const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5;
-          const answer = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? "none", ttl_hours } : { purpose, image: input.image, env: input.env ?? "none", ttl_hours, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
-          e.lease = answer;
-          if (answer.relay) {
-            e.relay = answer.relay;
-            delete e.lease.relay;
-          }
-          if (e.machine) {
-            e.lease.vm = e.machine;
-            if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error("Durable owner machine_id mismatch"));
-            e.backend.machine_id ??= e.lease.machine_id;
-            e.guestRoot = durableRoot(e.lease.workspace, purpose);
-          }
-          e.acquisitionInFlight = false;
-          granted = asked;
-          break;
-        } catch (error2) {
-          if (signal?.aborted && error2 === signal.reason) e.acquisitionInFlight = false;
-          else if (error2 instanceof MachineServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
+      acquiring: for (; ; ) {
+        let capacity;
+        for (const [index, target] of targets.entries()) {
+          bind(target);
+          if (target.reason) await this.log("acquire-choice", void 0, { ...e.chosen, endpoint: target.binding.endpoint });
+          e.acquisitionInFlight = true;
+          await this.save();
+          const asked = Date.now();
+          try {
+            const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 36e5) / 36e5;
+            const answer = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? "none", ttl_hours } : { purpose, image: input.image, env: input.env ?? "none", ttl_hours, wait: true, network, ...input.vnc === void 0 ? {} : { vnc: input.vnc } }, { signal });
+            e.lease = answer;
+            if (answer.relay) {
+              e.relay = answer.relay;
+              delete e.lease.relay;
+            }
+            if (remoteOwner(e)) {
+              if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error(`${e.machine ? "Durable owner" : "VM owner"} machine_id mismatch`));
+              e.backend.machine_id ??= e.lease.machine_id;
+            }
+            if (e.machine) {
+              e.lease.vm = e.machine;
+              e.guestRoot = durableRoot(e.lease.workspace, purpose);
+            }
             e.acquisitionInFlight = false;
-            refused = true;
+            granted = asked;
+            break acquiring;
+          } catch (error2) {
+            if (signal?.aborted && error2 === signal.reason) e.acquisitionInFlight = false;
+            else if (error2 instanceof MachineServiceError && error2.status !== void 0 && error2.status >= 400 && error2.status < 500) {
+              e.acquisitionInFlight = false;
+              refused = true;
+            }
+            if (!refused || !(error2 instanceof MachineServiceError && error2.capacity)) throw error2;
+            firstRefusal ??= asked;
+            if (index + 1 < targets.length) {
+              await this.log("acquire-refused-for-capacity", void 0, { ...e.chosen, reason: error2.message });
+              refused = false;
+              continue;
+            }
+            capacity = error2;
           }
-          if (!refused || !(error2 instanceof MachineServiceError && error2.capacity) || this.m.capacityWaitMs <= 0) throw error2;
-          firstRefusal ??= asked;
-          await this.waitForCapacity(e, error2, firstRefusal, signal);
-          refused = false;
         }
+        if (this.m.capacityWaitMs <= 0) throw capacity;
+        await this.waitForCapacity(e, capacity, firstRefusal, signal);
+        refused = false;
       }
       const waitedForCapacityMs = firstRefusal === void 0 ? 0 : granted - firstRefusal;
       if (e.capacityWait) {
@@ -35118,7 +35353,7 @@ var Guest = class {
       this.startHeartbeat();
       await this.save();
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join13(e.guestRoot, "workspace"), declarations: input.extractions, ...e.machine ? { machine: e.machine, kind: "durable", network: "lan" } : { network }, waitedForCapacityMs };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join13(e.guestRoot, "workspace"), declarations: input.extractions, ...e.machine ? { machine: e.machine, kind: "durable", network: "lan" } : { network }, ...e.chosen ? { chosen: e.chosen } : {}, waitedForCapacityMs };
     } catch (error2) {
       if (refused && await this.withdraw(error2)) throw error2;
       await this.fail(error2);
@@ -35446,7 +35681,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
     return new ImageStore({
       owner: this.m.options.sessionId,
       enclosure: e.purpose,
-      backend: e.machine && e.backend?.machine_id ? { machine_id: e.backend.machine_id } : e.backend,
+      backend: remoteOwner(e) && e.backend?.machine_id ? { machine_id: e.backend.machine_id } : e.backend,
       catalogRoot: join13(this.m.root, "image-catalog", e.purpose),
       hostRoot: e.hostRoot,
       guestRoot: e.guestRoot,
@@ -35899,7 +36134,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
         if (!released) throw new Error("Lease release unconfirmed");
         if (e.machine) {
           if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`);
-        } else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but ${this.m.localTart ? "Tart" : "its /machines"} still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        } else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but ${this.m.localTart && !remoteVm(e) ? "Tart" : "its /machines"} still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true;
       await this.save().catch(() => {
@@ -35921,7 +36156,7 @@ VM state: ${JSON.stringify(this.status())}`, { cause: error2 });
   }
   async destroyed(vm) {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
-    if (!this.m.localTart) return !Object.hasOwn((await this.vm.list({ timeoutMs: 1e4 })).machines, vm);
+    if (!this.m.localTart || remoteVm(this.enclosure)) return !Object.hasOwn((await this.vm.list({ timeoutMs: 1e4 })).machines, vm);
     const environment = this.m.environment;
     const result2 = await command([this.m.tartPath, "list", "--format", "json"], { timeoutMs: 15e3, maxBytes: 4 * 1024 * 1024, env: { ...process.env, ...environment ? environmentVariables(environment) : {}, TART_HOME: this.m.tartHome } });
     if (result2.code !== 0) throw new Error(`Cannot verify VM destruction: ${result2.stderr}`);
@@ -35970,6 +36205,8 @@ var reason = typebox_exports.String({ minLength: 1, maxLength: 4e3, pattern: "\\
 var optionalReason = typebox_exports.Optional(typebox_exports.String({ minLength: 1, maxLength: 4e3, pattern: "\\S", description: "Optional intent, retained as evidence. Default: derived from the call." }));
 var interval = typebox_exports.Number({ minimum: 0, maximum: 3e5, description: "Wait in milliseconds from the end of the call to the after-snapshot. Optional; the relay has a default." });
 var id = typebox_exports.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$" });
+var instanceNamed = (description) => typebox_exports.String({ minLength: 1, maxLength: 256, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]*$", description });
+var instance = instanceNamed("Optional: ask only this machine-service instance, by its name, a former name, its machine_id or its origin. Default: every instance on the network.");
 var guest = typebox_exports.String({ pattern: "^[a-z0-9][a-z0-9-]{0,47}$", description: "The guest this call acts on: the name relay_acquire answered." });
 var snapshots = typebox_exports.Object({
   afterIntervalMs: typebox_exports.Optional(interval),
@@ -35985,17 +36222,18 @@ var language = StringEnum(["shell", "javascript", "typescript", "python"]);
 var timeoutMs = typebox_exports.Optional(typebox_exports.Integer({ minimum: 1, maximum: 36e5, description: "Execution timeout in milliseconds, default 120000, maximum 3600000. Independent of snapshot delay and lease TTL." }));
 var runBase = { action: typebox_exports.Literal("run"), guest, reason: optionalReason, step: typebox_exports.Optional(step), snapshots: typebox_exports.Optional(snapshots), timeoutMs };
 var relayContract = typebox_exports.Union([
-  typebox_exports.Object({ action: typebox_exports.Literal("search"), name: typebox_exports.String({ minLength: 1, maxLength: 256, pattern: "\\S" }), os: typebox_exports.Optional(StringEnum(["linux", "macos"])) }, closed2),
-  typebox_exports.Object({ action: typebox_exports.Literal("acquisition-capabilities") }, closed2),
+  typebox_exports.Object({ action: typebox_exports.Literal("search"), name: typebox_exports.String({ minLength: 1, maxLength: 256, pattern: "\\S" }), os: typebox_exports.Optional(StringEnum(["linux", "macos"])), instance: typebox_exports.Optional(instance) }, closed2),
+  typebox_exports.Object({ action: typebox_exports.Literal("acquisition-capabilities"), instance: typebox_exports.Optional(instance) }, closed2),
   typebox_exports.Object({ action: typebox_exports.Literal("console-resolve"), guest }, closed2),
   typebox_exports.Object({ action: typebox_exports.Literal("console-open"), guest, console_id: id, attempt_id: id, userRequested: typebox_exports.Literal(true), reason, expected: typebox_exports.String({ minLength: 1, maxLength: 4e3, pattern: "\\S" }) }, closed2),
   typebox_exports.Object({ action: typebox_exports.Literal("console-cancel"), guest, console_id: id, attempt_id: id }, closed2),
-  typebox_exports.Object({ action: typebox_exports.Literal("probe"), scope: typebox_exports.Optional(StringEnum(["host", "guest"])), guest: typebox_exports.Optional(guest) }, closed2),
+  typebox_exports.Object({ action: typebox_exports.Literal("probe"), scope: typebox_exports.Optional(StringEnum(["host", "guest"])), guest: typebox_exports.Optional(guest), instance: typebox_exports.Optional(instance) }, closed2),
   typebox_exports.Object({
     action: typebox_exports.Literal("acquire"),
     task: typebox_exports.String({ pattern: "^[a-z0-9][a-z0-9-]{0,35}$" }),
     image: typebox_exports.Optional(typebox_exports.String({ description: "Image key from relay action=probe, e.g. ubuntu2404 or macos26, for a fresh VM. Give exactly one of image and machine." })),
     machine: typebox_exports.Optional(typebox_exports.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", description: "A durable machine, a real Mac leased whole, by the name machctl list shows, e.g. Build-Mac-1. Give exactly one of image and machine." })),
+    instance: typebox_exports.Optional(instanceNamed("Optional, with image only: acquire from this machine-service instance, by its name, a former name, its machine_id or its origin. Default: the relay chooses an instance that offers the image and has capacity, and says which and why.")),
     extractions: typebox_exports.Array(typebox_exports.Object({ path: typebox_exports.String({ description: "Relative guest-workspace path; no traversal or symlinks." }), name: typebox_exports.String({ description: "Unique output basename." }) }, closed2), { maxItems: 100 }),
     vnc: typebox_exports.Optional(typebox_exports.Boolean({ description: "Prepare guest console sharing, default false. Never opens a viewer automatically." })),
     ttlHours: typebox_exports.Optional(typebox_exports.Number({ minimum: 0.1, maximum: 720 })),
@@ -36053,6 +36291,8 @@ function validateRelayInput(value) {
   if (!Check2(relayContract, value)) throw new Error("Invalid relay input: action is required; a call that acts on a guest names it with guest, the name relay_acquire answered; console-open requires nonblank reason. Supply only the fields for the selected action.");
   if (value.action === "probe" && value.scope === "guest" && value.guest === void 0) throw new Error('Invalid relay input: relay_probe with scope "guest" names the guest to probe with guest, the name relay_acquire answered.');
   if (value.action === "acquire" && value.image === void 0 === (value.machine === void 0)) throw new Error("Invalid relay input: relay_acquire takes exactly one of image, a VM image, and machine, a durable machine's name.");
+  if (value.action === "acquire" && value.machine !== void 0 && value.instance !== void 0) throw new Error("Invalid relay input: instance chooses where an image is acquired; a durable machine names its own instance.");
+  if (value.action === "probe" && value.scope === "guest" && value.instance !== void 0) throw new Error('Invalid relay input: relay_probe with scope "guest" probes the guest that guest names, on its own instance; instance applies to scope "host".');
   if (value.action === "run") {
     if (value.diagnostic && value.language !== "shell") throw new Error("Invalid relay input: only a shell script may be diagnostic, because a diagnostic run goes through machine-service without the receiver.");
     if (value.diagnostic && value.snapshots?.group) throw new Error("Diagnostic scripts cannot join snapshot groups.");
@@ -36074,28 +36314,28 @@ var relayTools = [
     action: "search",
     title: "Search installed applications",
     annotations: readOnly,
-    description: "Find an installed application in the image inventories by name, then choose an image yourself; optional before relay_acquire. Matches canonical names and aliases by exact, prefix and substring comparison, with an optional hard `os` filter (`linux`/`macos`). Returns each match's installed versions (which may be null), image keys, OS and architecture; a truncated result means whole installations were omitted, and an empty result is distinct from a catalog error. Never allocates, boots, installs, reserves capacity or chooses an image for you."
+    description: "Find an installed application in the image inventories by name, then choose an image yourself; optional before relay_acquire. Matches canonical names and aliases by exact, prefix and substring comparison, with an optional hard `os` filter (`linux`/`macos`). It asks every machine-service instance on the network, as `machctl list` finds them, or only the one `instance` names. Returns each match's installed versions (which may be null), image keys, OS and architecture, and for each installation the `instances` that offer it, each with its `machine_id` and its catalog `generation`; instances may differ, such as while one has not synced an image, so one image may be listed once per version. `instances` at the top lists every instance asked, and one that did not answer is listed as unreachable, never left out. A truncated result means whole installations were omitted, and an empty result is distinct from a catalog error. Never allocates, boots, installs, reserves capacity or chooses an image for you."
   },
   {
     name: "relay_probe",
     action: "probe",
     title: "Probe host and guest readiness",
     annotations: readOnly,
-    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, VM service availability, and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`/bin/sh`, `node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.'
+    description: 'Read-only host and service facts, used to pick an image; it reports current owned state on its own, so call it again after context compaction rather than trusting earlier messages. Default `scope: "host"` reports host permissions and activity, every machine-service instance with its images and capacity under its name and `machine_id` (an unreachable one is listed as unreachable; `instance` narrows to one), and every guest this session holds with its state, not guest readiness. `scope: "guest"` with `guest` (an already-acquired guest) reports whether Node.js, which staging requires, is available, and, as facts, whether each relay_script language\'s runtime runs (`/bin/sh`, `node`, `tsx`, `python3`), the software the image lists in the catalog, and whether this lease\'s runs take snapshots, without installing or starting anything, and never claims capture readiness. Acquire one guest for each machine the work needs; several may run at once. Continue each guest in order: relay_acquire, relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release, called explicitly for every guest before you return.'
   },
   {
     name: "relay_acquisition_capabilities",
     action: "acquisition-capabilities",
     title: "Read acquisition capabilities",
     annotations: readOnly,
-    description: "Read the backend's versioned VNC console options for the images it serves. Read-only: it neither acquires a VM nor recovers ownership of one."
+    description: "Read every machine-service instance's versioned VNC console options for the images it serves, each under its name and `machine_id`, or only the one `instance` names; an instance that did not answer is listed with its diagnostic. Read-only: it neither acquires a VM nor recovers ownership of one."
   },
   {
     name: "relay_acquire",
     action: "acquire",
     title: "Acquire a machine",
     annotations: acts(false),
-    description: "Acquire one machine, a guest, and start its ownership heartbeat: a fresh VM from `image` (a key from relay_probe or relay_search), or a durable machine, a real Mac leased whole, by `machine` (its name as machctl list shows it, such as Build-Mac-1). Give exactly one of them. A durable machine is on the home network and not isolated from it, a CI job on it holds its lease like any other client and never shares its desktop with yours, it has no console (`vnc` is refused), and its runs take snapshots only while its cua-driver daemon holds Screen Recording; every other call works on it as on a VM. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` or `machine`, and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, or the durable machine is leased by someone else, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
+    description: "Acquire one machine, a guest, and start its ownership heartbeat: a fresh VM from `image` (a key from relay_probe or relay_search), on an instance that offers it and has capacity, chosen as `machctl acquire` chooses: acquirable offers first, this Mac's own instance first among them; the result's `chosen` says which and why, and a capacity refusal passes to the next instance. `instance` pins the instance. Or a durable machine, a real Mac leased whole, by `machine` (its name as machctl list shows it, such as Build-Mac-1). Give exactly one of them. A durable machine is on the home network and not isolated from it, a CI job on it holds its lease like any other client and never shares its desktop with yours, it has no console (`vnc` is refused), and its runs take snapshots only while its cua-driver daemon holds Screen Recording; every other call works on it as on a VM. The result's `guest` is the guest's name in this session, such as `login-test-1`; every later call on this guest names it with `guest`. Requires `task` (a short slug), `image` or `machine`, and `extractions`: every output you intend to bring home, declared before any work (`[]` is allowed; nothing is extracted automatically). Optional `ttlHours` (default 4), `env` (a credential pack, never baked into images), `fullWorkspace` (opt in to deliver the whole workspace) and `vnc` (default false; only prepares console-sharing capacity, never opens a viewer). Acquire one guest for each machine the work needs: several guests may run at once, each with its own lease, evidence and finish, up to the session's limit (relay_status reports `maxGuests`, MCP_RELAY_MAX_GUESTS, default 4); an acquisition beyond it is refused with the names of the guests held. When the host is at capacity, such as at its limit on running macOS VMs, or the durable machine is leased by someone else, the acquisition waits for it, asking again every 15 s for up to MCP_RELAY_CAPACITY_WAIT (30 minutes by default), and the result's `waitedForCapacityMs` says how long it waited; once the wait runs out it is refused with the backend's reason and the time waited. The backend's other refusals pass through at once. Continue with relay_stage, relay_script, relay_image/relay_extract, then relay_finish or relay_release explicitly before you return; a failed step keeps the VM for repair rather than replaying uncertain input."
   },
   {
     name: "relay_stage",
@@ -36204,7 +36444,7 @@ async function relayCall(host, raw, options = {}) {
   let value;
   switch (raw.action) {
     case "acquisition-capabilities":
-      value = await manager.acquisitionCapabilities(signal);
+      value = await manager.acquisitionCapabilities(signal, raw.instance);
       break;
     case "console-resolve":
       value = await manager.consoleResolve(signal, raw.guest);
@@ -36216,10 +36456,10 @@ async function relayCall(host, raw, options = {}) {
       value = await manager.consoleCancel(raw, signal);
       break;
     case "search":
-      value = await manager.search({ name: raw.name, os: raw.os }, signal, toolCallId);
+      value = await manager.search({ name: raw.name, os: raw.os, ...raw.instance === void 0 ? {} : { instance: raw.instance } }, signal, toolCallId);
       break;
     case "probe":
-      value = await manager.probe(raw.scope, raw.guest);
+      value = await manager.probe(raw.scope, raw.guest, raw.instance);
       break;
     case "acquire": {
       const { action: _, ...input } = raw;

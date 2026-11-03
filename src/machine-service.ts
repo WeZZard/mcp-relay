@@ -63,6 +63,8 @@ export interface VmImages {
     active_purposes: string[];
   }>;
   capacity: { macos_running: number; macos_limit: number; host_macos_guests?: number; foreign_macos_guests?: number };
+  /** The instance's image catalog status (machine-service IC-5): its generation, and `current`, `stale` or `unavailable`. */
+  catalog?: { generation?: number; status?: string; built_at?: number; error?: string; failed_at?: number; file?: string };
 }
 export interface AcquireRequest {
   purpose: string;

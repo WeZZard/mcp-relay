@@ -54,7 +54,10 @@ test('closed console schemas preserve legacy acquisition and reject hidden comma
 
 test('capabilities are read-only and versioned, preserve independent unavailable platforms', async t => {
   const f = await fixture(t);
-  assert.equal((await f.manager.acquisitionCapabilities()).options.vnc.backends.macos.status, 'unavailable');
+  // Each instance's capabilities under its name (DC-7x-FED-3); this one is the loopback instance.
+  const answered = await f.manager.acquisitionCapabilities();
+  assert.equal(answered.instances.length, 1); assert.equal(answered.instances[0]!.local, true);
+  assert.equal((answered.instances[0] as any).capabilities.options.vnc.backends.macos.status, 'unavailable');
   assert.deepEqual(f.calls, ['capabilities']);
   await assert.rejects(readFile(join(f.manager.root, 'lease.json')), /ENOENT/);
   assert.throws(() => acquisitionCapabilities({ ...capabilities, schemaVersion: 2 }));
@@ -190,7 +193,7 @@ test('macOS limitations survive acquisition, resolve, open, duplicate open, canc
   const duplicate = await f.manager.consoleOpen(opening); check(duplicate);
   assert.equal(duplicate.attempt?.authentication, 'required');
   check(await f.manager.consoleCancel(opening)); check(f.manager.guestStatus().console);
-  const discovered = (await f.manager.acquisitionCapabilities()).options.vnc.backends.macos;
+  const discovered = ((await f.manager.acquisitionCapabilities()).instances[0] as any).capabilities.options.vnc.backends.macos;
   assert.equal(discovered.server_enforced_view_only, false); assert.equal(discovered.session_binding, 'viewer-selection-unverified');
 });
 

@@ -306,6 +306,22 @@ Failed or uncertain launches retain ownership; resolve or cancel the attempt
 rather than replaying it. Console tests use mocked backends; no live viewer,
 installation or platform acceptance is claimed here.
 
+## Every instance
+
+The relay asks every machine-service instance on the network, found as
+`machctl list` finds them, so a Mac whose own instance offers nothing still
+sees the Macs that host the VMs ([docs/instances.md](docs/instances.md)).
+
+- `relay_search` names, for each installation, the instances that offer it,
+  each with its `machine_id` and its catalog generation, and lists every
+  instance asked; an instance that did not answer is listed as unreachable.
+- `relay_probe` and `relay_acquisition_capabilities` answer per instance.
+- `relay_acquire` with `image` chooses an instance that offers the image and
+  has capacity, says which and why in `chosen`, and passes a capacity refusal
+  to the next instance. Every later call on the guest goes to that instance.
+- `instance` narrows any of these to one instance, by its name, a former name,
+  its `machine_id` or its origin. A selected environment asks only its own.
+
 ## Durable machines
 
 `relay_acquire` takes `machine` in place of `image` to lease a durable machine,
@@ -385,8 +401,8 @@ keeps the VM for a retry after space is freed.
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
-- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when discovery finds it.
-- `MACHINE_SERVICE_DISCOVERY`: how durable machines' instances are found, `bonjour` (the default: `dns-sd -Z` on macOS, `avahi-browse` on Linux, else the relay's own multicast query) or `consul`, as for machine-service and machctl.
+- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; an instance on another Mac is reached only when discovery finds it.
+- `MACHINE_SERVICE_DISCOVERY`: how the other instances are found, `bonjour` (the default: `dns-sd -Z` on macOS, `avahi-browse` on Linux, else the relay's own multicast query) or `consul`, as for machine-service and machctl.
 - `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, in Consul mode; default `http://127.0.0.1:8500`.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.
