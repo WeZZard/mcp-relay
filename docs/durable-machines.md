@@ -73,7 +73,7 @@ flowchart LR
 ## 7. What a durable machine is not
 
 - A durable machine is a real Mac on the home network. It is not isolated from the home network, and the network setting of DC-17 does not apply to it.
-- Its desktop may be shared with a CI job ([HY-5](../../vm-service/docs/arch/hygiene.md#hy-5-coexistence-with-the-ci-runner)).
+- A CI job on it holds its lease like any other client, so its desktop is never shared with a CI job during a lease ([HY-5](../../vm-service/docs/arch/hygiene.md#hy-5-the-lab-runners-hold-the-lease)).
 - It has no console operations.
 - The relay's instructions and relay_acquire's description say so.
 
