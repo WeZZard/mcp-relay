@@ -6,7 +6,7 @@
 //   node scripts/live-check.mjs --instance <root> --tart <path> <steps.json> <outDir>
 //
 // The instance is named, never defaulted (DC-64), and is a second instance
-// machine-service's launcher started under <root> (DC-7x-LIVE-3): its
+// machine-service's launcher started under <root> (DC-70): its
 // manifest, its daemon's environment and its /health mark are checked by
 // scripts/second-instance.mjs, as the lifecycle scripts check them, before
 // the server starts, and every machine it lists before and after the run is

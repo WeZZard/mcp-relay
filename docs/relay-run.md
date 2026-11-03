@@ -225,7 +225,7 @@ other than its own `si-<id>-` clones. The instance may read the operator's
 Tart store, as machine-service DC-246 says; the server gets the instance's
 origin, that store and the Tart at `--tart`, and keeps the run's registry
 under `<outDir>`, so a live check never leases from the installed service or
-writes the operator's registry (DC-7x-LIVE-3):
+writes the operator's registry (DC-70):
 
 ```sh
 npm run build

@@ -2,7 +2,7 @@
  * The live scripts drive only a second instance that machine-service's
  * launcher started, never the installed one, and touch only its own
  * `si-<id>-` clones; its Tart store may be the operator's (DC-66,
- * DC-7x-LIVE-1 to DC-7x-LIVE-3, machine-service DC-246).
+ * DC-71 to DC-70, machine-service DC-246).
  */
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';

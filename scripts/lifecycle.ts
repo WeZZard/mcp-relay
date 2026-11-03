@@ -1,6 +1,6 @@
 // The bounded real lifecycle the live scripts share: one selected image, the
 // public tool, production HTTP only, against a second instance
-// (DC-66, DC-7x-LIVE-1, DC-7x-LIVE-2).
+// (DC-66, DC-71, DC-72).
 //
 // `openLiveRun` checks the instance before anything is made: `--instance
 // <root>` names the launcher's root and `--tart` the absolute Tart that lists

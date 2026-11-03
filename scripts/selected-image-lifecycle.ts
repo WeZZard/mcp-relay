@@ -4,7 +4,7 @@
 //
 // It drives a second instance that machine-service's launcher started under
 // <root> (`second-instance start --root <root> --port N --session-port N
-// --tart-home <store>`), never the installed one (DC-66, DC-7x-LIVE-1): the
+// --tart-home <store>`), never the installed one (DC-66, DC-71): the
 // manifest's ports are not 6240 or 6241, its daemon carries the manifest's ID,
 // its store and auto-prune off, its /health carries the launcher's mark with
 // that ID, and the run touches only the instance's `si-<id>-` clones. The

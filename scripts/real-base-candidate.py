@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private trusted clone-derived observation candidate (DC-7x-LIVE-2).
+"""Private trusted clone-derived observation candidate (DC-72).
 
 Binds a candidate catalog for one sealed historical inventory into the
 catalog folders a second instance's daemon reads, which lie under the

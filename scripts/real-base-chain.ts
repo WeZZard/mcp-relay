@@ -1,7 +1,7 @@
 // The real-base chain: a candidate catalog bound to the real base, a public
 // search through it, and the production lifecycle on the image it selects,
 // with the clone's installation facts compared to the sealed historical
-// inventory before any guest setup (DC-7x-LIVE-2).
+// inventory before any guest setup (DC-72).
 //
 //   tsx scripts/real-base-chain.ts --run --instance <root> --tart <path> --support-driver <path>
 //
