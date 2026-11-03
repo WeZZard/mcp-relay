@@ -21,7 +21,7 @@ async function server(t: test.TestContext, handler: (req: IncomingMessage, res: 
 function json(res: ServerResponse, body: unknown) { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); }
 
 test("loopback origins only; bounded positive configuration", () => {
-  // The client has no default origin; only the process factory supplies the installed one, and never under the test harness (DC-6x-ISO-2).
+  // The client has no default origin; only the process factory supplies the installed one, and never under the test harness (DC-62).
   assert.throws(() => new MachineService({} as never), /needs its origin/);
   assert.equal(machineServiceFromProcess({}, undefined).baseUrl, "http://localhost:6240");
   assert.equal(machineServiceFromProcess({ MCP_RELAY_URL: "http://127.0.0.1:6249" }, undefined).baseUrl, "http://127.0.0.1:6249");

@@ -5,7 +5,7 @@
 //   npm run build
 //   node scripts/live-check.mjs --environment <profile.json> <steps.json> <outDir>
 //
-// The instance is named, never defaulted (DC-6x-ISO-4): a selected environment
+// The instance is named, never defaulted (DC-64): a selected environment
 // profile binds the machine-service origin, its Tart store and the relay's own
 // state, where the relay keeps the run's registry. A profile whose origin is
 // the installed instance's (loopback port 6240) is refused, so a live check

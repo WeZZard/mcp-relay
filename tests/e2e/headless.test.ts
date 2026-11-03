@@ -30,7 +30,7 @@ const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
  * or MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN. Each run gets its own HOME and
  * CLAUDE_CONFIG_DIR, so the operator's settings, installed plugins (an
  * installed mcp-relay among them) and MCP servers do not load beside the
- * plugin from this checkout (DC-6x-ISO-4).
+ * plugin from this checkout (DC-64).
  */
 const claudeExecutable = process.env.MCP_RELAY_TEST_CLAUDE;
 const credential: Record<string, string> = process.env.MCP_RELAY_TEST_ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: process.env.MCP_RELAY_TEST_ANTHROPIC_API_KEY }

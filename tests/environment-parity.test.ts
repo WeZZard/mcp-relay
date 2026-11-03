@@ -10,7 +10,7 @@ import { environmentVariables, loadEnvironment } from '../src/environment.js';
 
 // machine-service's CLI is `machctl`, which replaced `vmctl` (machine-service
 // DC-35). The test runs one built from source, never one from PATH, which is
-// likely the installed binary bound to a real instance (DC-6x-ISO-3): the path
+// likely the installed binary bound to a real instance (DC-63): the path
 // MCP_RELAY_TEST_MACHCTL names (CI builds it from its pinned machine-service
 // checkout), else the sibling checkout's release build. A missing binary skips
 // with a reason instead of passing silently.

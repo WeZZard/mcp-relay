@@ -132,7 +132,7 @@ async function main(args: string[]): Promise<void> {
   // A guest network the relay cannot honour refuses the server at startup (DC-17), as does a guest limit that is not a positive integer (DC-20) an exit behaviour other than pause or release (DC-21) and a capacity wait that is not whole seconds (DC-22).
   guestNetwork(); maxGuests(); onExit(); capacityWait();
   // Started by the test harness, the server names its machine-service origin
-  // at startup and is refused the installed instance's (DC-6x-ISO-1).
+  // at startup and is refused the installed instance's (DC-61).
   if (isolated()) serviceUrl();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);

@@ -1,4 +1,4 @@
-// Run the tests in an environment built from an empty allowlist (DC-6x-ISO-1).
+// Run the tests in an environment built from an empty allowlist (DC-61).
 //
 //   node scripts/test.mjs [node --test arguments...]
 //

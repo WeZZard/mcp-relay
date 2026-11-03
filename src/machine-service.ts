@@ -90,12 +90,12 @@ export interface PullResponse { vm: string; pulled: string; to: string }
 export interface ReleaseResponse { vm?: string; name?: string; released: boolean; reason: string; hygiene?: unknown }
 export interface BytesResponse { sha256: string; bytes: number }
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
-/** How the client sends a request: the platform's fetch in production, a stand-in in tests (DC-6x-ISO-2). */
+/** How the client sends a request: the platform's fetch in production, a stand-in in tests (DC-62). */
 export type Transport = (url: string, init: RequestInit) => Promise<Response>;
 /**
  * A client names its instance: the origin, or a selected environment that
  * binds one. There is no default origin here; `machineServiceFromProcess`
- * supplies the installed one to production (DC-6x-ISO-2).
+ * supplies the installed one to production (DC-62).
  */
 export type MachineServiceOptions = MachineServiceSettings & ({ baseUrl: string; environment?: SelectedEnvironment } | { baseUrl?: string; environment: SelectedEnvironment });
 export interface MachineServiceSettings {
@@ -113,7 +113,7 @@ export interface MachineServiceSettings {
 /**
  * The client a relay process uses: the selected environment's instance, else
  * MCP_RELAY_URL, else the installed one; under the test harness there is no
- * default and the installed instance is refused (config.serviceUrl, DC-6x-ISO-1).
+ * default and the installed instance is refused (config.serviceUrl, DC-61).
  */
 export function machineServiceFromProcess(env: NodeJS.ProcessEnv = process.env, environment = selectedEnvironment(env), settings: MachineServiceSettings = {}): MachineService {
   const baseUrl = serviceUrl(env, environment);

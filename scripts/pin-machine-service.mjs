@@ -1,4 +1,4 @@
-// Pin the machine-service commit CI builds machctl from (DC-6x-ISO-5).
+// Pin the machine-service commit CI builds machctl from (DC-65).
 //
 //   npm run pin:machine-service            # the default branch's head
 //   npm run pin:machine-service -- <sha>   # a named commit

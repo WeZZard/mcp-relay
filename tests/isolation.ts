@@ -1,5 +1,5 @@
 /**
- * The one way a test gives a process its environment (DC-6x-ISO-1): built from
+ * The one way a test gives a process its environment (DC-61): built from
  * an empty allowlist by scripts/isolation.mjs, plus what the test names. A
  * test never copies process.env into a child.
  */

@@ -1,5 +1,5 @@
 // The environment every test process gets: built from an empty allowlist,
-// never copied from the shell that started the tests (DC-6x-ISO-1).
+// never copied from the shell that started the tests (DC-61).
 //
 // The shell may select a real instance (VM_ENVIRONMENT_FILE), point at the
 // installed service (MCP_RELAY_URL, MACHINE_SERVICE_URL), at real tools

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MachineService, type Transport } from '../src/machine-service.js';
 
-/** The client's own transport, injected: no test replaces the platform's fetch, and the origin is one nothing listens on (DC-6x-ISO-2). */
+/** The client's own transport, injected: no test replaces the platform's fetch, and the origin is one nothing listens on (DC-62). */
 const ORIGIN = 'http://127.0.0.1:9';
 
 test('console HTTP contract sends only IDs, uses read-only capability GET and never retries', async () => {

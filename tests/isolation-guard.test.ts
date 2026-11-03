@@ -1,5 +1,5 @@
 /**
- * A hostile shell reaches nothing real (DC-6x-ISO-1 to DC-6x-ISO-4). The shell
+ * A hostile shell reaches nothing real (DC-61 to DC-64). The shell
  * selects an instance (VM_ENVIRONMENT_FILE), points MACHCTL and TART at
  * recording scripts that also lead PATH, and names the installed origin
  * (MCP_RELAY_URL, MACHINE_SERVICE_URL = localhost:6240). The "real instance" is
@@ -118,7 +118,7 @@ test('no test copies the runner environment into a child or finds a tool on the 
   assert.equal((spawnSync('machctl', ['--version'], { env: childEnvironment() }).error as NodeJS.ErrnoException | undefined)?.code, 'ENOENT');
 });
 
-test('CI builds machctl from the pinned machine-service commit and installs nothing over the runner (DC-6x-ISO-5)', async () => {
+test('CI builds machctl from the pinned machine-service commit and installs nothing over the runner (DC-65)', async () => {
   const ci = await readFile('.github/workflows/ci.yml', 'utf8');
   assert.match(await readFile('.github/machine-service.commit', 'utf8'), /^[0-9a-f]{40}\n$/);
   assert.match(ci, /ref: \$\{\{ steps\.machine-service\.outputs\.commit \}\}/);

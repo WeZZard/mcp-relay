@@ -222,7 +222,7 @@ environment profile names. The profile is required, and one whose origin is
 the installed instance's (loopback port 6240) is refused, so a live check
 never leases from the installed service or writes the operator's registry;
 the relay keeps the run's registry in the profile's own state directory
-(DC-6x-ISO-4):
+(DC-64):
 
 ```sh
 npm run build

@@ -30,10 +30,10 @@ export function localTartHost(platform: string = process.platform, arch: string 
 
 /** The origin an installed machine-service listens on, which the relay uses when nothing names another. */
 export const INSTALLED_SERVICE_URL = 'http://localhost:6240';
-/** The variable the test harness sets on every process it starts (scripts/isolation.mjs, DC-6x-ISO-1). */
+/** The variable the test harness sets on every process it starts (scripts/isolation.mjs, DC-61). */
 export const ISOLATION_VARIABLE = 'MCP_RELAY_ISOLATED';
 
-/** Whether the process was started by the test harness, which gives the relay no defaults (DC-6x-ISO-1). */
+/** Whether the process was started by the test harness, which gives the relay no defaults (DC-61). */
 export function isolated(env: NodeJS.ProcessEnv = process.env): boolean {
   return env[ISOLATION_VARIABLE] === '1';
 }
@@ -48,7 +48,7 @@ export function installedOrigin(url: string): boolean {
  * The machine-service origin a process uses: the selected environment's, then
  * MCP_RELAY_URL, then the installed instance's. A process the test harness
  * started gets no default and is refused the installed instance's origin
- * however it is named, so no test reaches the real service (DC-6x-ISO-1).
+ * however it is named, so no test reaches the real service (DC-61).
  */
 export function serviceUrl(env: NodeJS.ProcessEnv = process.env, environment = selectedEnvironment(env)): string {
   const named = environment?.profile.vmServiceUrl ?? env.MCP_RELAY_URL;

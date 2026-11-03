@@ -105,7 +105,7 @@ export interface RunResult {
  * binds them all; without one, each is named. The constructor supplies no
  * default and reads no process variable, so a test cannot reach the installed
  * service, ~/.tart or ~/AGENTS.md by leaving one out; `relayManagerFromProcess`
- * supplies production's defaults (DC-6x-ISO-2).
+ * supplies production's defaults (DC-62).
  */
 export type ManagerBackend =
   | { environment: SelectedEnvironment; vm?: VmBackend; registry?: Registry; stateRoot?: string; tartHome?: string; tartPath?: string }
@@ -221,7 +221,7 @@ export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so
  * and state, or else MCP_RELAY_URL (default the installed instance), the
  * registry's own resolution, the state root, TART_HOME (default ~/.tart) and
  * TART (default `tart`). Under the test harness the origin has no default
- * (config.serviceUrl, DC-6x-ISO-1).
+ * (config.serviceUrl, DC-61).
  */
 export function relayManagerFromProcess(settings: ManagerSettings, env: NodeJS.ProcessEnv = process.env): RelayManager {
   const environment = selectedEnvironment(env);
