@@ -30,7 +30,7 @@ import { durableCapture, type PermissionAnswer } from './capture-gate.js';
 export interface Extraction { path: string; name: string }
 /** Exactly one of `image`, a VM image, and `machine`, a durable machine's name (DC-29). */
 export interface AcquireInput { task: string; image?: string; machine?: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean;
-  /** The instance an image is acquired from; default the first instance that offers it and has capacity (DC-7x-FED-4). */
+  /** The instance an image is acquired from; default the first instance that offers it and has capacity (DC-77). */
   instance?: string }
 /**
  * `guest` names the guest a call acts on (DC-20). The MCP tools require it;
@@ -80,7 +80,7 @@ interface Enclosure {
   capacityWait?: { since: string; attempts: number; reason: string };
   /** The acquisition's broker grant, kept apart from the lease record that reconciliation replaces; only the answer carries it (RP-11). */
   relay?: RelayGrant;
-  /** The instance an image acquisition chose, and why (DC-7x-FED-4). */
+  /** The instance an image acquisition chose, and why (DC-77). */
   chosen?: { instance: string | null; machine_id: string | null; reason: string };
 }
 /** An instance an acquisition may ask: its backend, the binding its guest records, whether it is off this host's instance, and why it was chosen. */
@@ -291,7 +291,7 @@ export class RelayManager {
   }
   /**
    * Every instance a question or an image acquisition asks (machine-service
-   * FD-7, DC-7x-FED-1): the loopback instance and every instance discovery
+   * FD-7, DC-74): the loopback instance and every instance discovery
    * confirms, or only the selected environment's. With `wanted`, only the
    * instance it names; when none does, Bonjour looks once more (MI-5), and
    * then the call is refused with the instances there are.
@@ -310,7 +310,7 @@ export class RelayManager {
     if (!named.length) throw new Error(`No machine-service instance is named ${JSON.stringify(wanted)}; the instances are ${found.instances.map(instance => `${instance.name} (${instance.machine_id ?? 'no machine_id'}, ${instance.reachable ? 'reachable' : 'unreachable'})`).join(', ')}${found.discoveryError ? `, and ${found.discoveryError}` : ''}${this.environment ? '; a selected environment asks only its own instance' : ''}`);
     return { ...found, instances: named };
   }
-  /** One instance's application catalog and its generation, or why there is none (DC-7x-FED-3). */
+  /** One instance's application catalog and its generation, or why there is none (DC-76). */
   private async catalogOf(instance: FoundInstance, signal?: AbortSignal): Promise<InstanceCatalog> {
     const entry = { instance: instance.name, machine_id: instance.machine_id ?? null, origin: instance.origin, local: instance.local, reachable: instance.reachable };
     if (!instance.reachable) return { ...entry, error: instance.error ?? 'no answer' };
@@ -417,7 +417,7 @@ export class RelayManager {
   bindingMatches(e: Enclosure): boolean {
     // A durable machine's owner is found again from Consul when the guest is reconciled (DC-29).
     if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
-    // A VM on another instance is found again by its machine_id, as a durable machine is (DC-7x-FED-5).
+    // A VM on another instance is found again by its machine_id, as a durable machine is (DC-78).
     if (remoteVm(e)) return !this.environment && !!e.backend?.endpoint;
     if (e.backend) {
       const expected = this.binding();
@@ -456,7 +456,7 @@ export class RelayManager {
   }
   /**
    * The instances an image acquisition may ask, in order (machine-service
-   * FD-7, DC-7x-FED-4): those whose offer of the image has its base built,
+   * FD-7, DC-77): those whose offer of the image has its base built,
    * and, for `vnc`, a VNC backend for its OS; acquirable offers first, the
    * loopback instance first within each group, then the others by name.
    * `wanted` pins one instance. Refused, before anything is reserved, when
@@ -487,7 +487,7 @@ export class RelayManager {
       reason: `chose ${image} (virtual, offer on ${instance.name}${instance.local ? ', the local instance' : ''}${acquirable ? '' : ', not acquirable now'})`,
     }));
   }
-  /** relay_search over every instance's catalog, or the one `instance` names (DC-7x-FED-3). */
+  /** relay_search over every instance's catalog, or the one `instance` names (DC-76). */
   search(input: SearchQuery & { instance?: string }, signal?: AbortSignal, toolCallId?: string) { return this.serialized(async () => {
     // Deliberately bypass init/recovery, ownership locks, probes and lease APIs.
     const query: SearchQuery = { name: input.name, ...(input.os === undefined ? {} : { os: input.os }) };
@@ -510,7 +510,7 @@ export class RelayManager {
       let ownership: string | undefined;
       try { await this.load(); } catch (error) { ownership = `This session's guests could not be loaded: ${message(error)}`; }
       const local = await probeLocal();
-      // Every instance's images and capacity, each under its name; an unreachable one says so (DC-7x-FED-3).
+      // Every instance's images and capacity, each under its name; an unreachable one says so (DC-76).
       const { instances, discoveryError } = await this.instances(instance);
       const answers = await Promise.all(instances.map(async found => {
         if (!found.reachable) return { ...instanceSummary(found), diagnostic: found.error };
@@ -533,7 +533,7 @@ export class RelayManager {
   /**
    * Every instance's acquisition capabilities, each under its name, or the
    * one `instance` names; refused only when no instance answers them
-   * (DC-7x-FED-3).
+   * (DC-76).
    */
   acquisitionCapabilities(signal?: AbortSignal, instance?: string) { return this.serialized(async () => {
     await this.assertBackend();
@@ -701,7 +701,7 @@ export class RelayManager {
   }
 }
 
-/** A VM leased from another instance: its binding names that instance and no Tart store of this host (DC-7x-FED-5). */
+/** A VM leased from another instance: its binding names that instance and no Tart store of this host (DC-78). */
 function remoteVm(e?: Enclosure): boolean { return !!e && !e.machine && !!e.backend?.instance && e.backend.tartHome === undefined; }
 /** A lease whose owner is found by discovery: a durable machine, or a VM on another instance. */
 function remoteOwner(e?: Enclosure): boolean { return !!e?.machine || remoteVm(e); }
@@ -737,7 +737,7 @@ class Guest {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   readonly downloads: DownloadQueue;
-  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-7x-FED-5). */
+  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-78). */
   private owner?: VmBackend;
   /** The backend this guest's lease lives on: the loopback instance, or the instance that owns it. */
   get vm(): VmBackend {
@@ -784,7 +784,7 @@ class Guest {
   private async findOwner(e: Enclosure, force = false) {
     if (!remoteOwner(e) || (this.owner && !force)) return;
     if (!e.machine) {
-      // A VM's owner is the instance with its machine_id and port, else its name and origin (MI-5, DC-7x-FED-5).
+      // A VM's owner is the instance with its machine_id and port, else its name and origin (MI-5, DC-78).
       try {
         const saved = e.backend!;
         const { instances, discoveryError } = await this.m.instances();
@@ -1063,7 +1063,7 @@ class Guest {
     const row: RegistryRow = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : first.remote ? `${first.binding.instance} (machine-service ${first.binding.endpoint}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? 'macos (durable)' : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
     // A durable guest's root moves under the lease's workspace once the lease names it (DC-31).
     const e: Enclosure = this.enclosure = { backend: first.binding, purpose, task: input.task, image: subject, ...(input.machine ? { machine: input.machine } : {}), project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
-    // The owner is bound before each attempt, so a refusal is checked on the instance that refused (DC-7x-FED-4).
+    // The owner is bound before each attempt, so a refusal is checked on the instance that refused (DC-77).
     const bind = (target: Target) => { this.owner = target.remote ? target.backend : undefined; e.backend = target.binding; if (target.reason) e.chosen = { instance: target.binding.instance ?? null, machine_id: target.binding.machine_id ?? null, reason: target.reason }; };
     bind(first);
     let refused = false;
@@ -1077,7 +1077,7 @@ class Guest {
       // A host at capacity refuses before it reserves anything, so the same acquisition is asked again until the wait runs out (DC-22).
       let firstRefusal: number | undefined, granted = 0;
       acquiring: for (;;) {
-        // Each round asks the targets in order; a capacity refusal passes to the next, and once all refused the round waits (DC-22, DC-7x-FED-4).
+        // Each round asks the targets in order; a capacity refusal passes to the next, and once all refused the round waits (DC-22, DC-77).
         let capacity: MachineServiceError | undefined;
         for (const [index, target] of targets.entries()) {
           bind(target);
@@ -1775,7 +1775,7 @@ class Guest {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
     // A host with no local Tart (Ubuntu) leases from an instance elsewhere, whose
     // Tart store it cannot read: the instance's own inventory is asked instead.
-    // So is the instance that owns a VM on another Mac (DC-7x-FED-5).
+    // So is the instance that owns a VM on another Mac (DC-78).
     if (!this.m.localTart || remoteVm(this.enclosure)) return !Object.hasOwn((await this.vm.list({ timeoutMs: 10000 })).machines, vm);
     // Read-only host observation, not a second guest/transfer channel. The daemon
     // currently drops its lease even when Tart deletion fails; 404 is not proof.

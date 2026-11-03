@@ -7,7 +7,7 @@ const reason = Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', desc
 const optionalReason = Type.Optional(Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S', description: 'Optional intent, retained as evidence. Default: derived from the call.' }));
 const interval = Type.Number({ minimum: 0, maximum: 300000, description: 'Wait in milliseconds from the end of the call to the after-snapshot. Optional; the relay has a default.' });
 const id = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$' });
-/** The machine-service instance a question or an image acquisition asks, by its name, a former name, its machine_id or its origin (DC-7x-FED-2). */
+/** The machine-service instance a question or an image acquisition asks, by its name, a former name, its machine_id or its origin (DC-75). */
 const instanceNamed = (description: string) => Type.String({ minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/\\[\\]-]*$', description });
 const instance = instanceNamed('Optional: ask only this machine-service instance, by its name, a former name, its machine_id or its origin. Default: every instance on the network.');
 /** The guest a call acts on: the name relay_acquire answered (DC-20). */

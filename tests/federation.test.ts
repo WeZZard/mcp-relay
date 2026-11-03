@@ -12,7 +12,7 @@ import type { Advertised } from '../src/mdns.js';
 
 /**
  * The relay's questions and image acquisitions across instances
- * (machine-service FD-7; docs/instances.md; DC-7x-FED-1..6). A client Mac
+ * (machine-service FD-7; docs/instances.md; DC-74..6). A client Mac
  * whose own instance offers nothing, two VM hosts that offer Xcode in
  * different generations, and a stopped one, all found through the injected
  * Bonjour seam (DC-67): no test reaches a real network.
@@ -70,7 +70,7 @@ async function lab(t: TestContext, options: { refuseA?: boolean; aAcquirable?: b
   return { root, manager, make, laptop, macA, macB, backends, registryPath };
 }
 
-test('relay_search reports every instance: who offers each installation, each catalog generation, the unreachable one (DC-7x-FED-3)', async t => {
+test('relay_search reports every instance: who offers each installation, each catalog generation, the unreachable one (DC-76)', async t => {
   const f = await lab(t);
   const result = await f.manager.search({ name: 'Xcode', os: 'macos' });
   assert.deepEqual(result.instances.map(i => [i.instance, i.local, i.reachable, i.generation ?? null]), [['laptop', true, true, 1], ['mac-a', false, true, 7], ['mac-b', false, true, 6], ['mac-c', false, false, null]]);
@@ -102,7 +102,7 @@ test('a search with no catalog anywhere is an error, never an empty result (FD-7
   await assert.rejects(manager.search({ name: 'Xcode' }), /No machine-service instance answered with an application catalog: laptop .*image catalog unavailable/);
 });
 
-test('relay_probe and relay_acquisition_capabilities answer per instance (DC-7x-FED-3)', async t => {
+test('relay_probe and relay_acquisition_capabilities answer per instance (DC-76)', async t => {
   const f = await lab(t);
   const probe = await f.manager.probe('host') as any;
   assert.equal(probe.relay.reachable, true);
@@ -113,7 +113,7 @@ test('relay_probe and relay_acquisition_capabilities answer per instance (DC-7x-
   assert.deepEqual(answered.instances.map(i => [i.instance, 'capabilities' in i]), [['laptop', true], ['mac-a', true], ['mac-b', true], ['mac-c', false]]);
 });
 
-test('an image acquisition from a Mac that offers nothing chooses a host, says why, and works through it (DC-7x-FED-4, DC-7x-FED-5)', async t => {
+test('an image acquisition from a Mac that offers nothing chooses a host, says why, and works through it (DC-77, DC-78)', async t => {
   const f = await lab(t);
   const acquired = await f.manager.acquire({ task: 'xcode', image: 'macos27', extractions: [], ttlHours: 1 }) as any;
   assert.deepEqual(acquired.chosen, { instance: 'mac-a', machine_id: 'id-mac-a', reason: 'chose macos27 (virtual, offer on mac-a)' });
@@ -134,7 +134,7 @@ test('an image acquisition from a Mac that offers nothing chooses a host, says w
   assert.equal(f.macA.calls.filter(c => c.startsWith('release')).length, 1);
 });
 
-test('a capacity refusal passes to the next instance; an explicit instance pins the acquisition (DC-7x-FED-4)', async t => {
+test('a capacity refusal passes to the next instance; an explicit instance pins the acquisition (DC-77)', async t => {
   const f = await lab(t, { refuseA: true });
   const acquired = await f.manager.acquire({ task: 'busy', image: 'macos26', extractions: [], ttlHours: 1 }) as any;
   assert.equal(acquired.chosen.instance, 'mac-b');

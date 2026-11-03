@@ -34327,7 +34327,7 @@ var RelayManager = class {
   }
   /**
    * Every instance a question or an image acquisition asks (machine-service
-   * FD-7, DC-7x-FED-1): the loopback instance and every instance discovery
+   * FD-7, DC-74): the loopback instance and every instance discovery
    * confirms, or only the selected environment's. With `wanted`, only the
    * instance it names; when none does, Bonjour looks once more (MI-5), and
    * then the call is refused with the instances there are.
@@ -34347,7 +34347,7 @@ var RelayManager = class {
     if (!named2.length) throw new Error(`No machine-service instance is named ${JSON.stringify(wanted)}; the instances are ${found.instances.map((instance2) => `${instance2.name} (${instance2.machine_id ?? "no machine_id"}, ${instance2.reachable ? "reachable" : "unreachable"})`).join(", ")}${found.discoveryError ? `, and ${found.discoveryError}` : ""}${this.environment ? "; a selected environment asks only its own instance" : ""}`);
     return { ...found, instances: named2 };
   }
-  /** One instance's application catalog and its generation, or why there is none (DC-7x-FED-3). */
+  /** One instance's application catalog and its generation, or why there is none (DC-76). */
   async catalogOf(instance2, signal) {
     const entry = { instance: instance2.name, machine_id: instance2.machine_id ?? null, origin: instance2.origin, local: instance2.local, reachable: instance2.reachable };
     if (!instance2.reachable) return { ...entry, error: instance2.error ?? "no answer" };
@@ -34527,7 +34527,7 @@ var RelayManager = class {
   }
   /**
    * The instances an image acquisition may ask, in order (machine-service
-   * FD-7, DC-7x-FED-4): those whose offer of the image has its base built,
+   * FD-7, DC-77): those whose offer of the image has its base built,
    * and, for `vnc`, a VNC backend for its OS; acquirable offers first, the
    * loopback instance first within each group, then the others by name.
    * `wanted` pins one instance. Refused, before anything is reserved, when
@@ -34561,7 +34561,7 @@ var RelayManager = class {
       reason: `chose ${image} (virtual, offer on ${instance2.name}${instance2.local ? ", the local instance" : ""}${acquirable ? "" : ", not acquirable now"})`
     }));
   }
-  /** relay_search over every instance's catalog, or the one `instance` names (DC-7x-FED-3). */
+  /** relay_search over every instance's catalog, or the one `instance` names (DC-76). */
   search(input, signal, toolCallId) {
     return this.serialized(async () => {
       const query = { name: input.name, ...input.os === void 0 ? {} : { os: input.os } };
@@ -34615,7 +34615,7 @@ var RelayManager = class {
   /**
    * Every instance's acquisition capabilities, each under its name, or the
    * one `instance` names; refused only when no instance answers them
-   * (DC-7x-FED-3).
+   * (DC-76).
    */
   acquisitionCapabilities(signal, instance2) {
     return this.serialized(async () => {
@@ -34888,7 +34888,7 @@ var Guest = class {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   downloads;
-  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-7x-FED-5). */
+  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-78). */
   owner;
   /** The backend this guest's lease lives on: the loopback instance, or the instance that owns it. */
   get vm() {

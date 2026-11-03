@@ -54,7 +54,7 @@ test('closed console schemas preserve legacy acquisition and reject hidden comma
 
 test('capabilities are read-only and versioned, preserve independent unavailable platforms', async t => {
   const f = await fixture(t);
-  // Each instance's capabilities under its name (DC-7x-FED-3); this one is the loopback instance.
+  // Each instance's capabilities under its name (DC-76); this one is the loopback instance.
   const answered = await f.manager.acquisitionCapabilities();
   assert.equal(answered.instances.length, 1); assert.equal(answered.instances[0]!.local, true);
   assert.equal((answered.instances[0] as any).capabilities.options.vnc.backends.macos.status, 'unavailable');

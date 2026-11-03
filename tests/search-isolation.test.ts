@@ -14,7 +14,7 @@ test('search does not recover a durable lease, acquire locks or access registry/
   const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-search-isolation-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls: string[] = [];
-  // Search asks each instance its name and its catalog questions only (DC-7x-FED-3).
+  // Search asks each instance its name and its catalog questions only (DC-76).
   const vm = new Proxy({}, { get(_target, key) {
     if (key === 'baseUrl') return 'http://127.0.0.1:9';
     if (key === 'health') return async () => ({ ok: true, service: 'machine-service', instance: 'this-mac', machine_id: 'id-this-mac' });
@@ -117,7 +117,7 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   requests.length = 0;
   const found = await manager.search({ name: 'Firefox' });
   assert.deepEqual([found.applications, found.truncated, found.instances.map(i => [i.local, i.reachable])], [[], false, [[true, true]]]);
-  // The instance's name, its catalog and its catalog's generation; no lease API (DC-7x-FED-3).
+  // The instance's name, its catalog and its catalog's generation; no lease API (DC-76).
   assert.deepEqual(requests.sort(), ['GET /applications', 'GET /health', 'GET /images']);
   await unchanged();
   await pulse();

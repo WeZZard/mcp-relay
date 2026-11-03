@@ -1,4 +1,4 @@
-// Live regression of machine-service FD-7 (DC-7x-FED-6): relay_search and
+// Live regression of machine-service FD-7 (DC-79): relay_search and
 // relay_acquisition_capabilities from a Mac whose own instance offers
 // nothing. It is read-only; run it deliberately, on a Mac on the lab's
 // network:
