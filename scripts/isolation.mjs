@@ -12,15 +12,17 @@
 //
 // A test's own inputs cross from the shell only under the MCP_RELAY_TEST_
 // prefix, such as MCP_RELAY_TEST_MACHCTL; the test decides what each means.
-import { realpathSync } from 'node:fs';
+import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 
 export const ISOLATION_VARIABLE = 'MCP_RELAY_ISOLATED';
 /** The prefix of the shell variables the test runner passes on: the tests' own inputs. */
 export const TEST_INPUT_PREFIX = 'MCP_RELAY_TEST_';
 /** The directory of the explicit tool links scripts/test.mjs makes (node, python3), set on the runner. */
 export const TOOLS_VARIABLE = 'MCP_RELAY_TEST_TOOLS';
+/** The tests' python3: an absolute path the shell names, and the runner records once resolved. */
+export const PYTHON_VARIABLE = 'MCP_RELAY_TEST_PYTHON';
 /** The system directories, which hold no installed machctl, Tart or service. */
 export const SYSTEM_PATH = ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 /** HOME when a test names none: a directory that holds nothing of the operator's. */
@@ -47,4 +49,26 @@ export function isolatedEnvironment(variables = {}, tools = process.env[TOOLS_VA
 /** The test inputs the shell names, by the convention's prefix. */
 export function testInputs(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => name.startsWith(TEST_INPUT_PREFIX) && name !== TOOLS_VARIABLE && value !== undefined));
+}
+
+const executableFile = path => { try { accessSync(path, constants.X_OK); return statSync(path).isFile(); } catch { return false; } };
+
+/**
+ * The python3 the tests run (DC-6x-ISO2-4), resolved once at startup to the
+ * real file it names, so neither a later PATH nor a moved link can swap it:
+ * MCP_RELAY_TEST_PYTHON, which must be an absolute path to an executable,
+ * else the first python3 on the caller's PATH. CI must name it; a CI run
+ * (CI set) never looks on PATH. Throws, with what to set, otherwise.
+ */
+export function testPython(env = process.env) {
+  const named = env[PYTHON_VARIABLE];
+  if (named !== undefined) {
+    if (!isAbsolute(named)) throw new Error(`${PYTHON_VARIABLE} must be an absolute path; got ${JSON.stringify(named)}`);
+    if (!executableFile(named)) throw new Error(`${PYTHON_VARIABLE}=${named} is not an executable file`);
+    return realpathSync(named);
+  }
+  if (env.CI) throw new Error(`CI must name the tests' python3 with ${PYTHON_VARIABLE}, an absolute path; it is not taken from PATH`);
+  const found = (env.PATH ?? '').split(delimiter).filter(isAbsolute).map(directory => join(directory, 'python3')).find(executableFile);
+  if (!found) throw new Error(`no python3 on PATH; name one with ${PYTHON_VARIABLE}, an absolute path`);
+  return realpathSync(found);
 }

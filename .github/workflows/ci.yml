@@ -18,7 +18,7 @@ jobs:
       # with a reason when the binary is absent, so this is best-effort, not
       # a hard requirement. It is built from the machine-service commit pinned
       # in .github/machine-service.commit, never the default branch's moving
-      # head; `npm run pin:machine-service` moves the pin (DC-6x-ISO-5).
+      # head; `npm run pin:machine-service` moves the pin (DC-65).
       - name: Read the pinned machine-service commit
         id: machine-service
         run: echo "commit=$(tr -d '[:space:]' < .github/machine-service.commit)" >> "$GITHUB_OUTPUT"
@@ -49,7 +49,7 @@ jobs:
           cache: npm
 
       # Installed under the job's temporary directory and put first on the
-      # job's PATH, not over the runner's global npm (DC-6x-ISO-5).
+      # job's PATH, not over the runner's global npm (DC-65).
       - name: Use the same npm as the release job, for this job only
         run: |
           npm install --prefix "$RUNNER_TEMP/npm" npm@latest
@@ -63,8 +63,10 @@ jobs:
       - name: Build, typecheck, and test
         run: npm run check
         env:
-          # The tests start from an empty environment; only MCP_RELAY_TEST_* inputs reach them (DC-6x-ISO-1).
+          # The tests start from an empty environment; only MCP_RELAY_TEST_* inputs reach them (DC-61).
           MCP_RELAY_TEST_MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
+          # The tests' python3, named rather than taken from the runner's PATH (DC-6x-ISO2-4).
+          MCP_RELAY_TEST_PYTHON: /usr/bin/python3
 
       - name: Confirm generated files are committed
         run: |

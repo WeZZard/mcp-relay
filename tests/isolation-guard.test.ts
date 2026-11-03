@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import { execFile, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,6 +18,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { relayManagerFromProcess } from '../src/manager.js';
 import { childEnvironment } from './isolation.js';
+import { testPython } from '../scripts/isolation.mjs';
 
 const run = promisify(execFile);
 const server = resolve('dist/server.mjs');
@@ -125,4 +126,67 @@ test('CI builds machctl from the pinned machine-service commit and installs noth
   assert.match(ci, /< \.github\/machine-service\.commit/);
   assert.doesNotMatch(ci, /npm install (-g|--global)\b/);
   assert.doesNotMatch(ci, /^\s+MACHCTL:/m, 'machctl reaches the tests only as MCP_RELAY_TEST_MACHCTL');
+});
+
+test('in a test process durable-machine discovery runs only through an injected seam (DC-6x-ISO2-2)', { timeout: 60_000 }, async t => {
+  const h = await hostile(t);
+  // The LAN: a Consul agent that records any question, as the hostile listener does.
+  const saved = { mode: process.env.MACHINE_SERVICE_DISCOVERY, consul: process.env.CONSUL_HTTP_ADDR };
+  t.after(() => { for (const [name, value] of [['MACHINE_SERVICE_DISCOVERY', saved.mode], ['CONSUL_HTTP_ADDR', saved.consul]] as const) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
+  process.env.CONSUL_HTTP_ADDR = h.origin;
+  const env = { MCP_RELAY_ISOLATED: '1', HOME: join(h.root, 'home'), MCP_RELAY_URL: 'http://127.0.0.1:9', MCP_RELAY_STATE_DIR: join(h.root, 'state') };
+  for (const mode of ['bonjour', 'consul']) {
+    process.env.MACHINE_SERVICE_DISCOVERY = mode;
+    const manager = relayManagerFromProcess({ sessionId: `discovery-${mode}`, project: h.root }, env);
+    t.after(() => manager.cleanup('discovery guard'));
+    await assert.rejects(manager.durableOwner('Build-Mac-1'), new RegExp(`MCP_RELAY_ISOLATED=1: .*injected.*real ${mode} discovery`), mode);
+    await assert.rejects(manager.acquire({ machine: 'Build-Mac-1', task: 'discovery-guard', extractions: [], ttlHours: 0.5 } as any), /MCP_RELAY_ISOLATED=1: .*injected/, mode);
+  }
+  await h.heardNothing();
+  // A seam still works: the injected answer is the only one asked.
+  const asked: string[] = [];
+  const { findDurableOwner } = await import('../src/discovery.js');
+  const local = { baseUrl: 'http://127.0.0.1:9', health: async () => ({}), list: async () => ({ machines: {} }) } as any;
+  await assert.rejects(findDurableOwner('Build-Mac-1', { local, mode: 'consul', secondLookMs: 0, fetchJson: async url => { asked.push(url); return []; } }), /No machine-service instance lists/);
+  await assert.rejects(findDurableOwner('Build-Mac-1', { local, mode: 'bonjour', secondLookMs: 0, browse: async () => { asked.push('browse'); return []; } }), /No machine-service instance lists/);
+  assert.deepEqual(asked, [`${h.origin}/v1/health/service/machine-service`, 'browse', 'browse']);
+});
+
+test('the runner resolves the tests\' python3 once, to an absolute file, and records it (DC-6x-ISO2-4)', { timeout: 120_000 }, async t => {
+  const h = await hostile(t);
+  // A python3 reached through a link on the caller's PATH, and one named.
+  const real = join(h.root, 'python-real'); await mkdir(real);
+  await writeFile(join(real, 'python3'), '#!/bin/sh\nexit 0\n'); await chmod(join(real, 'python3'), 0o755);
+  const linked = join(h.root, 'python-linked'); await mkdir(linked);
+  await symlink(join(real, 'python3'), join(linked, 'python3'));
+  await writeFile(join(h.root, 'not-executable'), '');
+  assert.equal(testPython({ PATH: `relative:${linked}:/usr/bin` }), join(real, 'python3'), 'the first absolute PATH entry, resolved');
+  assert.equal(testPython({ PATH: '/usr/bin', MCP_RELAY_TEST_PYTHON: join(linked, 'python3') }), join(real, 'python3'), 'the named one, resolved');
+  assert.equal(testPython({ PATH: '', CI: 'true', MCP_RELAY_TEST_PYTHON: join(real, 'python3') }), join(real, 'python3'));
+  assert.throws(() => testPython({ PATH: linked, MCP_RELAY_TEST_PYTHON: 'python3' }), /must be an absolute path/);
+  assert.throws(() => testPython({ PATH: linked, MCP_RELAY_TEST_PYTHON: join(h.root, 'not-executable') }), /not an executable file/);
+  assert.throws(() => testPython({ PATH: linked, CI: 'true' }), /CI must name the tests' python3/);
+  assert.throws(() => testPython({ PATH: join(h.root, 'nothing') }), /no python3 on PATH/);
+  // The runner: the probe sees the resolved path, and the python3 on its PATH is that file.
+  const probe = join(h.root, 'python.test.mjs'), seen = join(h.root, 'python.json');
+  await writeFile(probe, `import { readlinkSync } from 'node:fs'; import { join } from 'node:path'; import { writeFileSync } from 'node:fs'; import test from 'node:test';
+test('probe', () => { writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ named: process.env.MCP_RELAY_TEST_PYTHON, link: readlinkSync(join(process.env.MCP_RELAY_TEST_TOOLS, 'python3')) })); });\n`);
+  await run(process.execPath, [resolve('scripts/test.mjs'), probe], { env: { ...h.shell, PATH: `${linked}:${childEnvironment().PATH}` } });
+  assert.deepEqual(JSON.parse(await readFile(seen, 'utf8')), { named: join(real, 'python3'), link: join(real, 'python3') });
+  await assert.rejects(run(process.execPath, [resolve('scripts/test.mjs'), probe], { env: { ...h.shell, PATH: `${linked}:${childEnvironment().PATH}`, CI: 'true' } }), (error: any) => {
+    assert.equal(error.code, 2); assert.match(error.stderr, /CI must name the tests' python3 with MCP_RELAY_TEST_PYTHON/); return true;
+  });
+  await h.heardNothing();
+});
+
+test('CI and the release name the tests\' python3 and install nothing over the runner (DC-6x-ISO2-3, DC-6x-ISO2-4)', async () => {
+  for (const workflow of ['ci.yml', 'release.yml']) {
+    const text = await readFile(join('.github/workflows', workflow), 'utf8');
+    assert.doesNotMatch(text, /npm install (-g|--global)\b/, workflow);
+    assert.match(text, /npm install --prefix "\$RUNNER_TEMP\/npm" npm@latest/, workflow);
+    assert.match(text, /^\s+MCP_RELAY_TEST_PYTHON: \/\S+$/m, `${workflow} names an absolute python3`);
+    assert.match(text, /^\s+MCP_RELAY_TEST_MACHCTL: /m, workflow);
+    assert.doesNotMatch(text, /^\s+MACHCTL:/m, `${workflow}: machctl reaches the tests only as MCP_RELAY_TEST_MACHCTL`);
+    assert.match(text, /ref: \$\{\{ steps\.machine-service\.outputs\.commit \}\}/, workflow);
+  }
 });

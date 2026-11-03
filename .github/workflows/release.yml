@@ -15,11 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The same machine-service commit CI tests against (DC-65).
+      - name: Read the pinned machine-service commit
+        id: machine-service
+        run: echo "commit=$(tr -d '[:space:]' < .github/machine-service.commit)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # machine-service's repository, under its name before the rename;
           # GitHub redirects the old name once the repository is renamed.
           repository: WeZZard/vm-service
+          ref: ${{ steps.machine-service.outputs.commit }}
           path: .ci/machine-service
 
       - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
@@ -39,8 +45,13 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Update npm for trusted publishing (OIDC)
-        run: npm install -g npm@latest
+      # Trusted publishing (OIDC) needs a newer npm than Node 22 ships. It is
+      # installed under the job's temporary directory and put first on the
+      # job's PATH, not over the runner's global npm, as in CI (DC-6x-ISO2-3).
+      - name: Update npm for trusted publishing (OIDC), for this job only
+        run: |
+          npm install --prefix "$RUNNER_TEMP/npm" npm@latest
+          echo "$RUNNER_TEMP/npm/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -62,7 +73,9 @@ jobs:
       - name: Build, typecheck, and test
         run: npm run check
         env:
-          MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
+          # The tests start from an empty environment; only MCP_RELAY_TEST_* inputs reach them (DC-61).
+          MCP_RELAY_TEST_MACHCTL: ${{ github.workspace }}/.ci/machine-service/rust/target/release/machctl
+          MCP_RELAY_TEST_PYTHON: /usr/bin/python3
 
       - name: Confirm generated files are up to date
         run: |

@@ -1,4 +1,5 @@
 import { MachineService, type VmBackend } from './machine-service.js';
+import { ISOLATION_VARIABLE, isolated } from './config.js';
 import { browseService, type Advertised } from './mdns.js';
 
 /**
@@ -10,6 +11,10 @@ import { browseService, type Advertised } from './mdns.js';
  * instance found that way is used only once its `/health` answers the ID it
  * was found under, and the relay talks to an origin off loopback only when
  * discovery found it.
+ *
+ * A process the test harness started (MCP_RELAY_ISOLATED=1) discovers only
+ * through an injected seam, `browse` or `fetchJson`: a real Bonjour browse or
+ * Consul query would find the instances on the LAN (DC-6x-ISO2-2).
  */
 
 /** How instances are found (machine-service DC-84). */
@@ -80,6 +85,9 @@ export function parseRegistrations(answer: unknown): Registration[] {
  * skipped.
  */
 async function candidates(options: DiscoveryOptions, mode: DiscoveryMode): Promise<{ found: Array<{ origin: string; expected?: string; machine_id?: string }>; error?: string }> {
+  if (isolated() && !(mode === 'bonjour' ? options.browse : options.fetchJson)) {
+    throw new Error(`${ISOLATION_VARIABLE}=1: a test finds durable machines only through an injected ${mode === 'bonjour' ? 'Bonjour browse' : 'Consul answer'}; real ${mode} discovery would reach the instances on the LAN`);
+  }
   if (mode === 'bonjour') {
     try {
       // The system's DNS-SD service, mDNSResponder (macOS) or Avahi (Linux), as

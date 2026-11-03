@@ -34031,6 +34031,9 @@ function parseRegistrations(answer) {
   });
 }
 async function candidates(options, mode) {
+  if (isolated() && !(mode === "bonjour" ? options.browse : options.fetchJson)) {
+    throw new Error(`${ISOLATION_VARIABLE}=1: a test finds durable machines only through an injected ${mode === "bonjour" ? "Bonjour browse" : "Consul answer"}; real ${mode} discovery would reach the instances on the LAN`);
+  }
   if (mode === "bonjour") {
     try {
       const advertised = await (options.browse ?? (() => browseService(SERVICE_TYPE)))();

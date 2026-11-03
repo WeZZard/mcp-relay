@@ -1,6 +1,17 @@
 // Bounded real integration: one explicit selected image, public tool, production HTTP only.
+//
+//   tsx scripts/selected-image-lifecycle.ts --run --instance <root> --tart <path> [--support-driver <path>]
+//
+// It drives a second instance that machine-service's launcher started under
+// <root> (`second-instance start --root <root> --port N --session-port N
+// --tart-home <store>`), never the installed one (DC-6x-ISO2-1): the
+// manifest's ports are not 6240 or 6241, its Tart store is not ~/.tart, its
+// /health carries the launcher's mark with the manifest's ID, and the run's
+// registry is its own, under the evidence root, never ~/AGENTS.md. The Tart
+// it lists that store with is the absolute path --tart names.
 import { setupSelectedCloneX11 } from './selected-image-x11.js';
 import { supportArgument, verifySupportDriver } from './selected-image-support.js';
+import { confirmMark, flagValue, ownRegistry, readSecondInstance } from './second-instance.js';
 import { RelayManager } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
 import { homedir } from 'node:os';
@@ -8,32 +19,42 @@ import { relayCall } from '../src/surface.js';
 import { MachineService, MachineServiceError } from '../src/machine-service.js';
 import { verifyDeliveredPackage } from '../src/package.js';
 import { verifyPackage } from '@wezzard/relay-driver-host-sdk';
-import { mkdir, readFile, writeFile, readdir, lstat, chmod } from 'node:fs/promises';
+import { access, constants, mkdir, readFile, writeFile, readdir, lstat, chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { join, resolve, dirname } from 'node:path';
+import { isAbsolute, join, resolve, dirname } from 'node:path';
 import assert from 'node:assert/strict';
 const project=resolve(import.meta.dirname,'..');
 if(!process.argv.includes('--run'))throw Error('Explicit --run required');
 const supportPath=supportArgument(process.argv.slice(2));
 // Validate before creating evidence or making any service call. No implicit fallback.
 const support=supportPath?await verifySupportDriver(project,supportPath):undefined;
+// The instance is named, never defaulted, and checked before anything is made (DC-6x-ISO2-1).
+const home=homedir();
+const instanceRoot=flagValue(process.argv.slice(2),'--instance'),tartPath=flagValue(process.argv.slice(2),'--tart');
+if(!instanceRoot)throw Error('--instance <root> is required: the root of a second instance started by machine-service\'s second-instance launcher');
+if(!tartPath||!isAbsolute(tartPath))throw Error('--tart <absolute path> is required: the Tart that lists the instance\'s store');
+await access(tartPath,constants.X_OK);
+const instance=await readSecondInstance(instanceRoot,home);
+const health=await (await fetch(instance.origin+'/health',{redirect:'error',signal:AbortSignal.timeout(10000)})).json();
+confirmMark(instance,health);
 const root=join(project,'test-evidence','selected-image-lifecycle-'+new Date().toISOString().replace(/[:.]/g,'-'));
 await mkdir(join(root,'audit'),{recursive:true});
+await writeFile(join(root,'instance.json'),JSON.stringify({instance,health,tartPath,vmPrefix:`si-${instance.id}-`},null,2)+'\n',{flag:'wx'});
 const sha=(b:Buffer|string)=>createHash('sha256').update(b).digest('hex');
 const save=async(n:string,v:unknown)=>writeFile(join(root,n),JSON.stringify(v,null,2)+'\n',{flag:'wx'});
 let seq=0;
 async function audit<T>(kind:string,input:unknown,fn:()=>Promise<T>):Promise<T>{const n=String(seq++).padStart(4,'0'),at=new Date().toISOString();try{const result=await fn();await save(`audit/${n}-${kind}.json`,{at,endedAt:new Date().toISOString(),input,result});return result;}catch(e){await save(`audit/${n}-${kind}.json`,{at,endedAt:new Date().toISOString(),input,error:String(e),stack:(e as Error).stack});throw e;}}
 // Transparent observation of the existing MachineService HTTP implementation; no alternative execution channel.
 const fetchOriginal=globalThis.fetch;
-globalThis.fetch=async(input,init)=>{const url=String(input);assert(url.startsWith('http://127.0.0.1:6240/'));return audit('http',{url,method:init?.method??'GET',body:init?.body?JSON.parse(String(init.body)):undefined},async()=>{const response=await fetchOriginal(input,init);const bytes=await response.clone().text();await save(`http-response-${seq++}.json`,{url,status:response.status,body:bytes});return response;});};
-const vm=new MachineService({baseUrl:'http://127.0.0.1:6240',acquireTimeoutMs:420000});
-// This live tool deliberately drives the installed instance, its Tart store and the operator's registry; it names each (DC-6x-ISO-2).
-const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,registry:new Registry(),stateRoot:join(root,'state'),tartHome:join(homedir(),'.tart'),tartPath:'tart',outputRoot:join(root,'packages'),heartbeatMs:3000});
+globalThis.fetch=async(input,init)=>{const url=String(input);assert(url.startsWith(instance.origin+'/'));return audit('http',{url,method:init?.method??'GET',body:init?.body?JSON.parse(String(init.body)):undefined},async()=>{const response=await fetchOriginal(input,init);const bytes=await response.clone().text();await save(`http-response-${seq++}.json`,{url,status:response.status,body:bytes});return response;});};
+const vm=new MachineService({baseUrl:instance.origin,acquireTimeoutMs:420000});
+// The second instance, its own Tart store and a registry of this run's own (DC-64, DC-6x-ISO2-1).
+const manager=new RelayManager({sessionId:'selected-image-'+Date.now(),project,vm,registry:new Registry({managedRoot:ownRegistry(join(root,'relay'),home)}),stateRoot:join(root,'state'),tartHome:instance.tartHome,tartPath,outputRoot:join(root,'packages'),heartbeatMs:3000});
 let lease:any,finished=false,failed:unknown,before:any;
 const call=async(input:any)=>audit('public-'+input.action,input,async()=>{const r=await relayCall(manager,input);return r.details??JSON.parse(r.text);});
-const tart=()=>JSON.parse(execFileSync('tart',['list','--format','json'],{encoding:'utf8',timeout:15000}));
-async function fingerprints(){const out:any={formula:'file metadata fingerprint = device,inode,size,mtimeNs; config/nvram SHA256; not disk-content hash',bases:{}};for(const base of ['pilot-ubuntu-base','pilot-macos26-base']){const files:any={};for(const f of ['config.json','disk.img','nvram.bin']){const path=join(process.env.HOME!,'.tart/vms',base,f);const s=await lstat(path,{bigint:true});files[f]={dev:String(s.dev),ino:String(s.ino),size:String(s.size),mtimeNs:String(s.mtimeNs),...(f==='disk.img'?{}:{sha256:sha(await readFile(path))})};}out.bases[base]=files;}return out;}
+const tart=()=>JSON.parse(execFileSync(tartPath,['list','--format','json'],{encoding:'utf8',timeout:15000,env:{PATH:'/usr/bin:/bin',HOME:home,TART_HOME:instance.tartHome}}));
+async function fingerprints(){const out:any={formula:'file metadata fingerprint = device,inode,size,mtimeNs; config/nvram SHA256; not disk-content hash',bases:{}};for(const base of ['pilot-ubuntu-base','pilot-macos26-base']){const files:any={};if(!await lstat(join(instance.tartHome,'vms',base)).then(()=>true,()=>false)){out.bases[base]='absent from the instance\'s store';continue;}for(const f of ['config.json','disk.img','nvram.bin']){const path=join(instance.tartHome,'vms',base,f);const s=await lstat(path,{bigint:true});files[f]={dev:String(s.dev),ino:String(s.ino),size:String(s.size),mtimeNs:String(s.mtimeNs),...(f==='disk.img'?{}:{sha256:sha(await readFile(path))})};}out.bases[base]=files;}return out;}
 const guest=async(argv:string[])=>{const r=await audit('guest-setup',{argv},()=>vm.exec(lease.vm,{argv,timeout:60}));if(r.rc!==0)throw Error(`Guest setup rc=${r.rc}: ${r.output}`);return r.output;};
 try{
  const selectedPath=join(project,'test-evidence/catalog-candidate-check/2026-09-13T17-05-26-088Z/firefox.json');const bytes=await readFile(selectedPath),search=JSON.parse(bytes.toString());

@@ -972,7 +972,7 @@
     "src/config.ts": "7b5c2952b25e1de3fc267fb90e9d3b3efdb63ed6b1fa6d45d0dc797b123d64c3",
     "src/console.ts": "d8258173a24449c2a394289b14983b9575c5ce753ab267d4e13213f3abfcb72d",
     "src/core.ts": "49915615db2971ec7a503ecc956f0d7334fa3b63303ef18aa8f9410307ad195b",
-    "src/discovery.ts": "03626043e838cdf2e0653863103a3eb0acbec2386cae5bc1e569e6f4daeb09b0",
+    "src/discovery.ts": "a34d482f3edbc44606b00bfb1633ad2588906600e99971f779ff5b8f4701a242",
     "src/doctor.ts": "3d7ebd3214bceb6121446a5a50b42d96a7635ac8c5ea6240cc9cb33f34ab1912",
     "src/downloads.ts": "4f37b5bb4fac96f9260a3a87c83bacf715b9add5ae9926d3fe0994000c70a8dd",
     "src/environment.ts": "5770e966e49d78ae069614078c667f94e70074b150f83111049529ff613aa215",

@@ -6,20 +6,21 @@
 // private directory linking this node, its npm and one python3, an empty HOME,
 // MCP_RELAY_ISOLATED=1, and the shell's MCP_RELAY_TEST_* inputs. Nothing else
 // in the shell, such as VM_ENVIRONMENT_FILE, MCP_RELAY_URL, MACHCTL, TART or
-// TART_HOME, reaches a test. python3 is the one MCP_RELAY_TEST_PYTHON names,
-// else the first on the shell's PATH: the tests need a Python 3 with fcntl,
-// not any machine-service tool.
+// TART_HOME, reaches a test. python3 is resolved once, here, to the real file
+// MCP_RELAY_TEST_PYTHON names (an absolute path; CI must name it), else to the
+// first on the shell's PATH, and the runner records it as MCP_RELAY_TEST_PYTHON
+// (DC-6x-ISO2-4): the tests need a Python 3 with fcntl, not any
+// machine-service tool.
 import { spawn } from 'node:child_process';
 import { accessSync, constants, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
-import { isolatedEnvironment, testInputs } from './isolation.mjs';
+import { dirname, join } from 'node:path';
+import { PYTHON_VARIABLE, isolatedEnvironment, testInputs, testPython } from './isolation.mjs';
 
 const executable = path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } };
-const python = process.env.MCP_RELAY_TEST_PYTHON
-  ?? (process.env.PATH ?? '').split(delimiter).filter(Boolean).map(directory => join(directory, 'python3')).find(executable);
-if (!python) { console.error('scripts/test.mjs: no python3; name one with MCP_RELAY_TEST_PYTHON'); process.exit(2); }
+let python;
+try { python = testPython(); } catch (error) { console.error(`scripts/test.mjs: ${error.message}`); process.exit(2); }
 
 const tools = mkdtempSync(join(tmpdir(), 'mcp-relay-test-tools-'));
 symlinkSync(process.execPath, join(tools, 'node'));
@@ -30,7 +31,7 @@ if (executable(npm)) symlinkSync(npm, join(tools, 'npm'));
 const cleanup = () => rmSync(tools, { recursive: true, force: true });
 
 const tsx = createRequire(import.meta.url).resolve('tsx/cli');
-const child = spawn(process.execPath, [tsx, '--test', ...process.argv.slice(2)], { stdio: 'inherit', env: isolatedEnvironment(testInputs(), tools) });
+const child = spawn(process.execPath, [tsx, '--test', ...process.argv.slice(2)], { stdio: 'inherit', env: isolatedEnvironment({ ...testInputs(), [PYTHON_VARIABLE]: python }, tools) });
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
 child.on('exit', (code, signal) => {
   cleanup();
