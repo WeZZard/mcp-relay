@@ -24,9 +24,9 @@ test('offline ordering contract: stage copies support before SDK start; SDK star
  const sdk=await readFile(resolve(project,'node_modules/@wezzard/relay-driver-host-sdk/dist/src/relay.js'),'utf8');
  const start=sdk.slice(sdk.indexOf('async start('),sdk.indexOf('async attach('));
  assert(!start.includes('doctor')); assert(!start.includes('.send('));
- const script=await readFile(resolve(project,'scripts/selected-image-lifecycle.ts'),'utf8');
- assert(script.indexOf("action:'stage'")<script.indexOf("['serve','--no-overlay']"));
+ const script=await readFile(resolve(project,'scripts/lifecycle.ts'),'utf8');
+ assert(script.indexOf("action: 'stage'")<script.indexOf("['serve','--no-overlay']"));
  assert(!script.includes('dangerously-bypass'));
  assert(!script.includes('new Transfer('));
- assert(script.includes("if(!support)await guest([driver,'--version'])"));
+ assert(script.includes("if (!support) await guest([driver, '--version'])"));
 });

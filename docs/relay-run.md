@@ -217,17 +217,20 @@ The default is the wait from the end of the call to the after-snapshot.
 ## Live checks
 
 To repeat them, build and run one step file per image. Each acquires, uses
-and finishes a real VM through the machine-service instance a selected
-environment profile names. The profile is required, and one whose origin is
-the installed instance's (loopback port 6240) is refused, so a live check
-never leases from the installed service or writes the operator's registry;
-the relay keeps the run's registry in the profile's own state directory
-(DC-64):
+and finishes a real VM through a second instance that machine-service's
+`second-instance` launcher started under `<root>`. The script reads the
+launcher's manifest and refuses an instance whose `/health` does not carry
+its mark, the installed instance's ports, and an instance that lists any VM
+other than its own `si-<id>-` clones. The instance may read the operator's
+Tart store, as machine-service DC-246 says; the server gets the instance's
+origin, that store and the Tart at `--tart`, and keeps the run's registry
+under `<outDir>`, so a live check never leases from the installed service or
+writes the operator's registry (DC-7x-LIVE-3):
 
 ```sh
 npm run build
-node scripts/live-check.mjs --environment <profile.json> scripts/live-checks/ubuntu.json <outDir>
-node scripts/live-check.mjs --environment <profile.json> scripts/live-checks/macos.json <outDir>
+node scripts/live-check.mjs --instance <root> --tart <path> scripts/live-checks/ubuntu.json <outDir>
+node scripts/live-check.mjs --instance <root> --tart <path> scripts/live-checks/macos.json <outDir>
 ```
 
 The script exits nonzero when any step's result differs from what its step
