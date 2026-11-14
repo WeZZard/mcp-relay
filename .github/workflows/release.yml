@@ -24,7 +24,7 @@ jobs:
         with:
           # machine-service's repository, under its name before the rename;
           # GitHub redirects the old name once the repository is renamed.
-          repository: WeZZard/vm-service
+          repository: WeZZard/machine-service
           ref: ${{ steps.machine-service.outputs.commit }}
           path: .ci/machine-service
 

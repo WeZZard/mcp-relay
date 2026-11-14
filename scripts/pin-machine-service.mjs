@@ -10,8 +10,8 @@ import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// machine-service's repository, under its name before the rename.
-const REPOSITORY = 'https://github.com/WeZZard/vm-service';
+// machine-service's repository (renamed from vm-service).
+const REPOSITORY = 'https://github.com/WeZZard/machine-service';
 const PIN = fileURLToPath(new URL('../.github/machine-service.commit', import.meta.url));
 const named = process.argv[2];
 const commit = named ?? execFileSync('git', ['ls-remote', REPOSITORY, 'HEAD'], { encoding: 'utf8' }).split(/\s/)[0];

@@ -7,18 +7,24 @@
  * relay agent itself as an image that ships it would. The relay agent runs
  * commands on this machine, as this user, in temporary folders.
  *
- * Build both binaries from vm-service and point MCP_RELAY_TEST_BROKER_BIN_DIR at them:
+ * Since machine-service DC-254 a daemon runs every external program from a
+ * table of absolute paths, never from PATH, so only a test build reads the
+ * fakes, from the folder MACHINE_SERVICE_TEST_TOOLS names; a test build of the
+ * relay agent runs its commands as fake launchd jobs through vm-service's fake
+ * launchctl. Build both as test builds from vm-service and point
+ * MCP_RELAY_TEST_BROKER_BIN_DIR at them:
  *
- *   cargo build -p machine-service -p relay-agent   # in vm-service/rust
+ *   cargo build -p machine-service --features service-layout/test-build,discovery/test-build   # in vm-service/rust
+ *   cargo build -p relay-agent --features service-layout/test-build
  *   MCP_RELAY_TEST_BROKER_BIN_DIR=<vm-service>/rust/target/debug npm run test:broker
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, statSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { arch, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
@@ -31,7 +37,7 @@ import { childEnvironment, childPath } from './isolation.js';
 const binDir = process.env.MCP_RELAY_TEST_BROKER_BIN_DIR;
 const daemonBin = binDir && join(binDir, 'machine-service');
 const agentBin = binDir && join(binDir, 'relay-agent');
-const skip = !binDir ? 'MCP_RELAY_TEST_BROKER_BIN_DIR is not set' : !existsSync(daemonBin!) || !existsSync(agentBin!) ? `machine-service or relay-agent is missing in ${binDir}` : false;
+const skip = !binDir ? 'MCP_RELAY_TEST_BROKER_BIN_DIR is not set' : !existsSync(daemonBin!) || !existsSync(agentBin!) ? `machine-service or relay-agent is missing in ${binDir}` : !existsSync(join(binDir, '../../crates/service-layout/tests/fixtures/launchd/launchctl')) ? `vm-service's fake launchctl is not beside ${binDir}` : false;
 const bundle = fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
 const sha = (data: Buffer | string) => createHash('sha256').update(data).digest('hex');
@@ -101,6 +107,54 @@ function statJson(path: string) {
   return `{"st_dev":${s.dev},"st_ino":${s.ino},"st_size":${s.size},"st_mtime_ns":${s.mtimeNs}}`;
 }
 
+/**
+ * A relay agent release in `folder`, as machine-service takes it since its
+ * DC-140 (MACHINE_SERVICE_RELAY_AGENT_RELEASE; no variable names an
+ * executable): one archive per platform holding `relay-agent`, the macOS one
+ * signed ad hoc with the release identifier, and SHA256SUMS. Its version is a
+ * pre-release, the only kind an ad hoc agent may have (machine-service
+ * DC-224). The Linux archive holds the same executable, because the fake
+ * guest runs on this Mac, as vm-service's own relay_e2e.rs does.
+ */
+async function relayRelease(folder: string, executable: string): Promise<string> {
+  const version = '0.0.0-adhoc', cpu = arch() === 'arm64' ? 'arm64' : 'x86_64';
+  await mkdir(folder, { recursive: true });
+  let sums = '';
+  for (const platform of [`darwin-${cpu}`, `linux-${cpu}`]) {
+    const stage = await mkdtemp(join(tmpdir(), 'mcp-relay-release-'));
+    const member = join(stage, 'relay-agent');
+    await copyFile(executable, member);
+    if (platform.startsWith('darwin')) execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', '--identifier', 'com.wezzard.relay-agent', member]);
+    const file = `relay-agent-${version}-${platform}.tar.gz`;
+    execFileSync('/usr/bin/tar', ['-C', stage, '-czf', join(folder, file), 'relay-agent']);
+    sums += `${sha(await readFile(join(folder, file)))}  ${file}\n`;
+    await rm(stage, { recursive: true, force: true });
+  }
+  await writeFile(join(folder, 'SHA256SUMS'), sums);
+  return folder;
+}
+
+/** The read-only system tools a test build may run, at their system paths (machine-service service-layout READ_ONLY_TOOLS). */
+const READ_ONLY_TOOLS = ['/usr/bin/codesign', '/usr/bin/tar', '/usr/bin/plutil', '/bin/sh', '/bin/zsh', '/usr/bin/sw_vers', '/usr/sbin/ioreg', '/usr/bin/ssh-keygen'];
+/** System tools a test build finds faked, as vm-service's FAKE_SYSTEM_TOOLS: each records its call and fails. */
+const FAKE_SYSTEM_TOOLS: Record<string, string> = {
+  pgrep: '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$0.calls"\nexit 1\n',
+  osascript: '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$0.calls"\nexit 1\n',
+  crontab: '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$0.calls"\necho \'crontab: no crontab\' >&2\nexit 1\n',
+};
+/** vm-service's fake launchctl, beside the test builds in its checkout. */
+const fakeLaunchctl = () => join(binDir!, '../../crates/service-layout/tests/fixtures/launchd/launchctl');
+
+/** A test build's tool folder (machine-service DC-254): the read-only system tools, the fakes, the test's tart, ssh and scp, and the fake launchctl. */
+async function toolTable(tools: string, shims: string): Promise<string> {
+  await mkdir(tools, { recursive: true });
+  for (const system of READ_ONLY_TOOLS) await symlink(system, join(tools, system.split('/').pop()!));
+  for (const [name, text] of Object.entries(FAKE_SYSTEM_TOOLS)) { await writeFile(join(tools, name), text); await chmod(join(tools, name), 0o755); }
+  for (const name of ['tart', 'ssh', 'scp']) await symlink(join(shims, name), join(tools, name));
+  await symlink(fakeLaunchctl(), join(tools, 'launchctl'));
+  return tools;
+}
+
 /** The layout of vm-service's LegacyFixture: state, pilot-images tree with ubuntu2404, Tart store, credential pack and shims. */
 async function lab(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-broker-')));
@@ -123,12 +177,21 @@ async function lab(t: TestContext) {
   await writeFile(join(pilotState, 'stores', namespace, 'base/ubuntu2404.json'), association);
   for (const [name, text] of [['tart', TART], ['ssh', SSH], ['scp', SCP]] as const) { await writeFile(join(bin, name), text); await chmod(join(bin, name), 0o755); }
 
+  const tools = await toolTable(join(root, 'tools'), bin), launchdState = join(root, 'launchd');
+  await mkdir(launchdState, { recursive: true });
+  await writeFile(join(root, 'instance-name'), 'test-instance\n');
+  // A test build's own lock, configuration, DNS-SD and process fixture, as vm-service's daemon_command gives it: it never touches the host-wide ones.
+  const testBuild = {
+    MACHINE_SERVICE_TEST_TOOLS: tools, FAKE_LAUNCHD_STATE: launchdState, MACHINE_SERVICE_NAME_FILE: join(root, 'instance-name'),
+    MACHINE_SERVICE_DURABLE_LOCK_DIR: join(root, 'lock'), MACHINE_SERVICE_CONFIG_DIR: join(root, 'config'),
+    MACHINE_SERVICE_TEST_BONJOUR: join(root, 'bonjour'), MACHINE_SERVICE_TEST_PROCESSES: join(root, 'processes.json'),
+  };
   const port = await freePort(), sessionPort = await freePort();
   const relayUrl = `wss://localhost:${sessionPort}/relay`;
   const env = childEnvironment({
-    PATH: childPath(bin), HOME: home, MACHINE_SERVICE_STATE: state, MACHINE_SERVICE_PORT: String(port), PILOT_REPO: pilot, PILOT_IMAGES_STATE_DIR: pilotState, TART_HOME: tartHome, FAKE_ROOT: tartHome, FAKE_GUEST_HOME: guestHome,
+    ...testBuild, PATH: childPath(bin), HOME: home, MACHINE_SERVICE_STATE: state, MACHINE_SERVICE_PORT: String(port), PILOT_REPO: pilot, PILOT_IMAGES_STATE_DIR: pilotState, TART_HOME: tartHome, FAKE_ROOT: tartHome, FAKE_GUEST_HOME: guestHome,
     MACHINE_SERVICE_GUEST_LINK: 'relay', MACHINE_SERVICE_SESSION_PORT: String(sessionPort), MACHINE_SERVICE_RELAY_GUEST_URL: relayUrl, MACHINE_SERVICE_RELAY_URL: relayUrl,
-    MACHINE_SERVICE_RELAY_REGISTER_TIMEOUT: '30', MACHINE_SERVICE_RELAY_AGENT_WAIT: '30', MACHINE_SERVICE_RELAY_AGENT: agentBin!,
+    MACHINE_SERVICE_RELAY_REGISTER_TIMEOUT: '30', MACHINE_SERVICE_RELAY_AGENT_WAIT: '30', MACHINE_SERVICE_RELAY_AGENT_RELEASE: await relayRelease(join(root, 'relay-agent-release'), agentBin!),
   });
   const children: ChildProcess[] = [];
   const logs: string[] = [];
@@ -146,10 +209,11 @@ async function lab(t: TestContext) {
   const stopDaemon = async (child: ChildProcess) => { if (child.exitCode !== null) return; const exited = new Promise(done => child.on('exit', done)); child.kill('SIGTERM'); await Promise.race([exited, sleep(10000)]); if (child.exitCode === null) child.kill('SIGKILL'); };
   // The guest's relay agent, in the guest's "desktop session": it waits for the configuration the bootstrap writes.
   const agentLog = join(root, 'agent.log');
-  const agent = spawn(agentBin!, ['run'], { env: childEnvironment({ HOME: guestHome, SHELL: '/bin/sh' }), stdio: ['ignore', 'ignore', 'pipe'] });
+  const agent = spawn(agentBin!, ['run'], { env: childEnvironment({ ...testBuild, HOME: guestHome, SHELL: '/bin/sh' }), stdio: ['ignore', 'ignore', 'pipe'] });
   let agentText = ''; agent.stderr!.on('data', data => { agentText += data; });
   children.push(agent);
   t.after(async () => {
+    if (process.env.MCP_RELAY_TEST_DUMP_LOGS) await writeFile(process.env.MCP_RELAY_TEST_DUMP_LOGS, `--- daemon log ---\n${logs.join('\n---\n')}\n--- service.log ---\n${await readFile(join(state, 'service.log'), 'utf8').catch(() => '')}\n--- agent log ---\n${agentText}\n--- ssh calls ---\n${await readFile(join(tartHome, 'ssh-calls.log'), 'utf8').catch(() => '')}\n`);
     for (const child of children) if (child.exitCode === null) { child.kill('SIGKILL'); }
     await rm(root, { recursive: true, force: true });
   });

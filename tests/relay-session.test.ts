@@ -208,6 +208,17 @@ test('the window drains within a third of the dead bound at the measured rate, p
   assert.equal(slow.window, MIN_WINDOW, 'at least one message');
 });
 
+test('the first window drains within a third of the dead bound on a slow link (machine-service DC-302)', () => {
+  // At 0.5 MB/s a 4 MiB first window takes 8.4 s to drain, more than a third
+  // of a 15 s dead bound, so its connection would be declared dead before the
+  // window measured the link; the 1 MiB floor drains in 2.1 s.
+  const deadMs = 15_000, rate = 0.5e6;
+  const w = new FlowWindow(deadMs);
+  assert.equal(w.window, MIN_WINDOW, 'the first window is the floor');
+  assert.ok(w.window / rate * 1000 < deadMs / 3, `drains in ${(w.window / rate).toFixed(1)} s`);
+  assert.ok((4 << 20) / rate * 1000 > deadMs / 3, 'a 4 MiB first window would not');
+});
+
 test('acknowledgements released in a burst do not inflate the window, and idle time is no measurement', () => {
   const w = new FlowWindow(15_000);
   let acked = 0, largest = 0;
@@ -232,9 +243,9 @@ test('a connection holds no more than its window in flight while acknowledgement
   const n = 12;
   for (let i = 0; i < n; i++) s.session.send(Buffer.alloc(MAX_BODY));
   const envelopes = () => broker.received.filter(r => r.kind === 'envelope').length;
-  await until(() => envelopes() >= 4, 3000, 'the first window');
+  await until(() => envelopes() >= 1, 3000, 'the first window');
   await sleep(100);
-  assert.equal(envelopes(), Math.floor(INITIAL_WINDOW / MAX_BODY), 'the initial window, no more');
+  assert.equal(envelopes(), Math.max(1, Math.floor(INITIAL_WINDOW / MAX_BODY)), 'the initial window, no more');
   broker.holdAcks = false;
   broker.ackNow();
   await until(() => envelopes() === n, 3000, 'the rest after the acknowledgement');

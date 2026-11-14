@@ -23,10 +23,17 @@ export const SESSION_VERSION = 1;
 export const MAX_HEARTBEAT_MS = 30_000;
 /** The replay buffer: bytes held unacknowledged before a sender waits (RP-12). */
 export const MAX_BUFFERED = 64 << 20;
-/** The in-flight window before the first measurement, on each connection (RP-2). */
-export const INITIAL_WINDOW = 4 << 20;
 /** The smallest in-flight window: one largest message. */
 export const MIN_WINDOW = MAX_MESSAGE;
+/**
+ * The in-flight window before the first measurement, on each connection
+ * (RP-2): the floor, as machine-service's own sessions start (its DC-302).
+ * A first window of 4 MiB drains in more than a third of a 15 s dead bound on
+ * any link slower than about 0.84 MB/s, so the connection is declared dead
+ * before the window measures the link, and every new connection starts at
+ * 4 MiB again.
+ */
+export const INITIAL_WINDOW = MIN_WINDOW;
 
 export interface Timing {
   /** Send an `ack` after this long without sending anything; the broker's `heartbeat_ms` lowers it, never above 30 s. */
