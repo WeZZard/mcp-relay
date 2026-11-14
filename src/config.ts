@@ -151,20 +151,23 @@ export function registryDiagnosticsPath(options: ConfigOptions = {}): string {
  * How the relay reaches a broker that sits behind an edge it cannot reach by
  * ordinary DNS or public roots, such as the relay acceptance's network rig
  * (machine-service TL-7), the way curl's --resolve and --cacert do:
- * MCP_RELAY_BROKER_RESOLVE=<host name>=<IP address> resolves that one name to
- * that address, and MCP_RELAY_BROKER_CA=<absolute path of a PEM file> trusts
+ * MCP_RELAY_BROKER_RESOLVE=<host name>=<IP address>[:<port>] connects that one
+ * name to that address, and to that port when one is given, and MCP_RELAY_BROKER_CA=<absolute path of a PEM file> trusts
  * one more authority besides the public roots and the instance's own. Both
  * are unset in ordinary use.
  */
-export interface BrokerRoute { resolve?: { host: string; address: string }; caPem?: string }
+export interface BrokerRoute { resolve?: { host: string; address: string; port?: number }; caPem?: string }
 export function brokerRoute(env: NodeJS.ProcessEnv = process.env): BrokerRoute {
   const route: BrokerRoute = {};
   const resolve = env.MCP_RELAY_BROKER_RESOLVE;
   if (resolve !== undefined && resolve !== '') {
     const at = resolve.indexOf('=');
-    const host = resolve.slice(0, at).toLowerCase(), address = resolve.slice(at + 1);
-    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP(address) === 0) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>, not ${JSON.stringify(resolve)}`);
-    route.resolve = { host, address };
+    const host = resolve.slice(0, at).toLowerCase(), target = resolve.slice(at + 1);
+    // An address alone, an IPv4 address and port, or a bracketed IPv6 address and port.
+    const withPort = /^\[([^\]]+)\]:(\d+)$/.exec(target) ?? /^([^:\[\]]+):(\d+)$/.exec(target);
+    const address = withPort ? withPort[1]! : target, port = withPort ? Number(withPort[2]) : undefined;
+    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP(address) === 0 || (port !== undefined && !(port > 0 && port < 65536))) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>[:<port>], not ${JSON.stringify(resolve)}`);
+    route.resolve = port === undefined ? { host, address } : { host, address, port };
   }
   const ca = env.MCP_RELAY_BROKER_CA;
   if (ca !== undefined && ca !== '') {

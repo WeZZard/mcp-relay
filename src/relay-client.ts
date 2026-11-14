@@ -15,9 +15,8 @@
  */
 import { createHash, randomUUID, X509Certificate, type Hash } from 'node:crypto';
 import { open } from 'node:fs/promises';
-import { lookup as dnsLookup } from 'node:dns';
-import { isIP, type LookupFunction } from 'node:net';
-import { rootCertificates } from 'node:tls';
+import { isIP } from 'node:net';
+import { connect as tlsConnect, rootCertificates, type ConnectionOptions as TlsConnectionOptions } from 'node:tls';
 import WebSocket from 'ws';
 import { brokerRoute, type BrokerRoute } from './config.js';
 import { MAX_BUFFERED, MAX_MESSAGE, ResumableSession, type Dial, type SessionEnd, type Timing } from './relay-session.js';
@@ -170,17 +169,15 @@ function stderrLine(line: string) { process.stderr.write(`${line}\n`); }
 
 export function webSocketDial(url: string, caPem: string, handshakeMs = 10000, route: BrokerRoute = {}): Dial {
   const ca = [...rootCertificates, caPem, ...(route.caPem ? [route.caPem] : [])];
-  // The route's one name resolves to its address; every other name goes to the system's resolver (curl's --resolve).
-  const resolveTo = route.resolve;
-  const lookup: LookupFunction | undefined = resolveTo ? (hostname, options, callback) => {
-    if (hostname.toLowerCase() !== resolveTo.host) return dnsLookup(hostname, options, callback);
-    const family = isIP(resolveTo.address);
-    if ((options as { all?: boolean }).all) (callback as unknown as (e: null, a: { address: string; family: number }[]) => void)(null, [{ address: resolveTo.address, family }]);
-    else callback(null, resolveTo.address, family);
+  // The route's one name connects to its address, and port when given, keeping the name as the TLS server name (curl's --resolve, --connect-to).
+  const to = route.resolve;
+  const createConnection = to ? (options: TlsConnectionOptions) => {
+    if (String(options.host).toLowerCase() !== to.host) return tlsConnect({ ...options, path: undefined });
+    return tlsConnect({ ...options, path: undefined, servername: to.host, host: to.address, port: to.port ?? options.port });
   } : undefined;
   return handlers => new Promise((resolve, reject) => {
     // ws hands its options to tls.connect, which takes the ALPN list.
-    const tlsOptions: WebSocket.ClientOptions & { ALPNProtocols: string[]; lookup?: LookupFunction } = { ca, ...(lookup ? { lookup } : {}), ALPNProtocols: ['http/1.1'], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
+    const tlsOptions: WebSocket.ClientOptions & { ALPNProtocols: string[] } = { ca, ...(createConnection ? { createConnection: createConnection as unknown as WebSocket.ClientOptions['createConnection'] } : {}), ALPNProtocols: ['http/1.1'], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new WebSocket(url, [], tlsOptions);
     let open = false;
     socket.on('open', () => {

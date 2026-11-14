@@ -10266,7 +10266,7 @@ var require_websocket = __commonJS({
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
-      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
+      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect2 : netConnect);
       opts.defaultPort = opts.defaultPort || defaultPort;
       opts.port = parsedUrl.port || defaultPort;
       opts.host = parsedUrl.hostname.startsWith("[") ? parsedUrl.hostname.slice(1, -1) : parsedUrl.hostname;
@@ -10473,7 +10473,7 @@ var require_websocket = __commonJS({
       options.path = options.socketPath;
       return net.connect(options);
     }
-    function tlsConnect(options) {
+    function tlsConnect2(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
         options.servername = net.isIP(options.host) ? "" : options.host;
@@ -21112,9 +21112,11 @@ function brokerRoute(env = process.env) {
   const resolve11 = env.MCP_RELAY_BROKER_RESOLVE;
   if (resolve11 !== void 0 && resolve11 !== "") {
     const at = resolve11.indexOf("=");
-    const host = resolve11.slice(0, at).toLowerCase(), address = resolve11.slice(at + 1);
-    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP2(address) === 0) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>, not ${JSON.stringify(resolve11)}`);
-    route.resolve = { host, address };
+    const host = resolve11.slice(0, at).toLowerCase(), target = resolve11.slice(at + 1);
+    const withPort = /^\[([^\]]+)\]:(\d+)$/.exec(target) ?? /^([^:\[\]]+):(\d+)$/.exec(target);
+    const address = withPort ? withPort[1] : target, port = withPort ? Number(withPort[2]) : void 0;
+    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP2(address) === 0 || port !== void 0 && !(port > 0 && port < 65536)) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>[:<port>], not ${JSON.stringify(resolve11)}`);
+    route.resolve = port === void 0 ? { host, address } : { host, address, port };
   }
   const ca = env.MCP_RELAY_BROKER_CA;
   if (ca !== void 0 && ca !== "") {
@@ -21500,9 +21502,8 @@ import { basename } from "node:path";
 // src/relay-client.ts
 import { createHash as createHash3, randomUUID, X509Certificate } from "node:crypto";
 import { open as open2 } from "node:fs/promises";
-import { lookup as dnsLookup } from "node:dns";
 import { isIP as isIP3 } from "node:net";
-import { rootCertificates } from "node:tls";
+import { connect as tlsConnect, rootCertificates } from "node:tls";
 
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -22146,15 +22147,13 @@ function stderrLine(line) {
 }
 function webSocketDial(url, caPem, handshakeMs = 1e4, route = {}) {
   const ca = [...rootCertificates, caPem, ...route.caPem ? [route.caPem] : []];
-  const resolveTo = route.resolve;
-  const lookup2 = resolveTo ? (hostname, options, callback) => {
-    if (hostname.toLowerCase() !== resolveTo.host) return dnsLookup(hostname, options, callback);
-    const family = isIP3(resolveTo.address);
-    if (options.all) callback(null, [{ address: resolveTo.address, family }]);
-    else callback(null, resolveTo.address, family);
+  const to = route.resolve;
+  const createConnection = to ? (options) => {
+    if (String(options.host).toLowerCase() !== to.host) return tlsConnect({ ...options, path: void 0 });
+    return tlsConnect({ ...options, path: void 0, servername: to.host, host: to.address, port: to.port ?? options.port });
   } : void 0;
   return (handlers) => new Promise((resolve11, reject) => {
-    const tlsOptions = { ca, ...lookup2 ? { lookup: lookup2 } : {}, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
+    const tlsOptions = { ca, ...createConnection ? { createConnection } : {}, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new wrapper_default(url, [], tlsOptions);
     let open10 = false;
     socket.on("open", () => {

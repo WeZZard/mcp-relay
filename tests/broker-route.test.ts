@@ -34,7 +34,9 @@ test('the broker route parses its two settings and refuses malformed ones', t =>
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   assert.deepEqual(brokerRoute({}), {});
   assert.deepEqual(brokerRoute({ MCP_RELAY_BROKER_RESOLVE: 'Broker.Relay-Rig.test=127.0.0.1' }), { resolve: { host: NAME, address: '127.0.0.1' } });
-  for (const bad of ['broker.relay-rig.test', '=127.0.0.1', 'broker.relay-rig.test=not-an-address', 'bad host=127.0.0.1']) {
+  assert.deepEqual(brokerRoute({ MCP_RELAY_BROKER_RESOLVE: `${NAME}=127.0.0.1:40123` }), { resolve: { host: NAME, address: '127.0.0.1', port: 40123 } });
+  assert.deepEqual(brokerRoute({ MCP_RELAY_BROKER_RESOLVE: `${NAME}=[::1]:40123` }), { resolve: { host: NAME, address: '::1', port: 40123 } });
+  for (const bad of ['broker.relay-rig.test', '=127.0.0.1', 'broker.relay-rig.test=not-an-address', 'bad host=127.0.0.1', 'broker.relay-rig.test=127.0.0.1:0', 'broker.relay-rig.test=127.0.0.1:70000']) {
     assert.throws(() => brokerRoute({ MCP_RELAY_BROKER_RESOLVE: bad }), /MCP_RELAY_BROKER_RESOLVE/, bad);
   }
   writeFileSync(join(dir, 'not.pem'), 'hello');
@@ -60,6 +62,16 @@ test('with the route, the relay dials a broker name that DNS does not know, behi
   for (let i = 0; i < 100 && !echoed; i++) await new Promise(done => setTimeout(done, 20));
   assert.equal(echoed, 'hello');
   link.close();
+
+  // The route's port wins over the URL's, as the rig's chain listens on a port of its own.
+  const elsewhere = `wss://${NAME}:1/relay`;
+  const routed = brokerRoute({ MCP_RELAY_BROKER_RESOLVE: `${NAME}=127.0.0.1:${port}`, MCP_RELAY_BROKER_CA: ca });
+  let again = '';
+  const second = await webSocketDial(elsewhere, instanceCa, 5000, routed)({ message: data => { again = String(data); }, closed: () => {} });
+  second.send('again');
+  for (let i = 0; i < 100 && !again; i++) await new Promise(done => setTimeout(done, 20));
+  assert.equal(again, 'again');
+  second.close();
 
   await assert.rejects(webSocketDial(url, instanceCa, 5000, {})({ message: () => {}, closed: () => {} }), 'no route: the name does not resolve');
   await assert.rejects(webSocketDial(url, instanceCa, 5000, { resolve: route.resolve! })({ message: () => {}, closed: () => {} }), /certificate|self.signed|unable to verify/i, 'no edge authority: the certificate is refused');
