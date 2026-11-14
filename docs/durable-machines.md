@@ -6,12 +6,12 @@ This document is the design for DC-28 to DC-38 in [decisions.md](decisions.md#du
 
 - A durable machine is a real Mac that machine-service exposes for exclusive leases. A lease on it is a session with a scratch workspace, not a fresh VM ([DM](../../vm-service/docs/arch/durable-machine.md)).
 - The relay tools work on a durable machine as on a VM (DC-28). An agent names the machine instead of an image, and every other call, its order and its evidence stay the same.
-- The relay reaches a VM through the loopback machine-service on its own host. A durable machine is usually owned by an instance on another Mac.
+- The relay reaches a VM through the instance that offers its image, which may be on another Mac ([instances.md](instances.md)). A durable machine is usually owned by an instance on another Mac.
 
 ```mermaid
 flowchart LR
   A[Agent] --> R[Relay]
-  R -->|image| L[loopback machine-service] --> VM[VM]
+  R -->|image| L[an instance that offers the image] --> VM[VM]
   R -->|machine| C[Consul agent]
   C -->|machine-service registrations| R
   R -->|lease_id on every call| I[machine-service on the durable Mac] --> M[the Mac's GUI session]
@@ -21,7 +21,7 @@ flowchart LR
 ## 2. Choosing a machine (DC-29, DC-35, DC-37)
 
 - `relay_acquire` takes exactly one of `image` and `machine`. `machine` is the durable machine's name as `machctl list` shows it, such as `Mac-A`.
-- The relay finds the instance that owns the machine, as machctl does ([FD-2](../../vm-service/docs/arch/federation.md#fd-2-discovery)):
+- The relay finds the instance that owns the machine, as machctl does, with the same discovery that its questions and image acquisitions use ([instances.md §2](instances.md#2-finding-the-instances-dc-7x-fed-1)) ([FD-2](../../vm-service/docs/arch/federation.md#fd-2-discovery)):
   1. It asks the loopback instance at `MCP_RELAY_URL` (default `http://localhost:6240`) for `/health` and `GET /machines`.
   2. It finds the other instances in the mode `MACHINE_SERVICE_DISCOVERY` chooses, as machine-service and machctl do (machine-service DC-84):
      - `bonjour`, the default: on macOS, the system's DNS-SD service, as machctl uses it: the relay reads `dns-sd -Z _machine-service._tcp local.` for 1.5 seconds, which answers from mDNSResponder's live view of the network, and resolves each host through the system resolver (DC-40). Where there is no `dns-sd`, the relay sends its own Multicast DNS query for `_machine-service._tcp.local` (RFC 6762 §5.1) to 224.0.0.251:5353 from an ephemeral port, asks it twice within 2 seconds (RFC 6762 §5.2), and sends one follow-up for any SRV, TXT or A record the answers left out. Each instance's TXT record states its `instance` and, when supported, its `machine_id`, still at `txtvers=1`. When no owner is found, the relay looks once more after 2 seconds (machine-service MI-5).
@@ -73,7 +73,7 @@ flowchart LR
 ## 7. What a durable machine is not
 
 - A durable machine is a real Mac on the home network. It is not isolated from the home network, and the network setting of DC-17 does not apply to it.
-- Its desktop may be shared with a CI job ([HY-5](../../vm-service/docs/arch/hygiene.md#hy-5-coexistence-with-the-ci-runner)).
+- A CI job on it holds its lease like any other client, so its desktop is never shared with a CI job during a lease ([HY-5](../../vm-service/docs/arch/hygiene.md#hy-5-the-lab-runners-hold-the-lease)).
 - It has no console operations.
 - The relay's instructions and relay_acquire's description say so.
 

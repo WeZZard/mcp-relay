@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, cp, access, statfs } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { GUEST_NETWORKS, capacityWait, guestNetwork, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
+import { GUEST_NETWORKS, capacityWait, guestNetwork, localTartHost, maxGuests, relayStateRoot, type GuestNetwork } from './config.js';
 import { fileURLToPath } from 'node:url';
 import { Relay, type Session, type SnapshotsRequest, type StepDescription } from '@wezzard/relay-driver-host-sdk';
-import { MachineService, MachineServiceError, expectMachineService, type VmLease, type VmBackend, type RequestOptions } from './machine-service.js';
+import { MachineService, MachineServiceError, expectMachineService, machineServiceFromProcess, type VmLease, type VmBackend, type RequestOptions } from './machine-service.js';
 import { canonicalPath, environmentVariables, matchesEnvironment, selectedEnvironment, type SelectedEnvironment } from './environment.js';
 import { homedir } from 'node:os';
 import { Registry, type RegistryRow } from './registry.js';
+import type { RelayGrant } from './relay-client.js';
 import { Transfer, assertHostPath, transientTransfer, type FileFact, type VmChannel } from './transfer.js';
 import type { ArchiveEntry, ArchiveRequest } from './archive.js';
 import { VmTransport } from './transport.js';
@@ -15,20 +16,22 @@ import { command, hash, jsonFile, within } from './util.js';
 import { deliverPackage, type DeliveryResult } from './package.js';
 import { probeLocal } from './probe.js';
 import { acquireOwnerLock, type OwnerLock } from './owner-lock.js';
-import { searchCatalog, validateCatalog, type SearchQuery } from './search.js';
+import { searchInstances, validateCatalog, type InstanceCatalog, type SearchQuery } from './search.js';
 import { recordSearch } from './search-diagnostics.js';
 import { acquisitionCapabilities, consoleStatus, type ConsoleStatus } from './console.js';
 import { ImageStore, imageCapability, type ImageDescriptor, type ImageTarget, type ImageResult } from './images.js';
 import { DownloadQueue, type DownloadJob, type StepResult } from './downloads.js';
 import type { LocalSource } from './transfer.js';
 import { refreshEvidenceState } from './evidence-merge.js';
-import { findDurableOwner, findDurableOwnerById, type DiscoveryMode, type DurableOwner } from './discovery.js';
+import { discoverInstances, discoveryMode, findDurableOwner, findDurableOwnerById, instanceSummary, namesInstance, type DiscoveryMode, type DiscoveryOptions, type DurableOwner, type FoundInstance, type Instances } from './discovery.js';
 import type { Advertised } from './mdns.js';
 import { durableCapture, type PermissionAnswer } from './capture-gate.js';
 
 export interface Extraction { path: string; name: string }
 /** Exactly one of `image`, a VM image, and `machine`, a durable machine's name (DC-29). */
-export interface AcquireInput { task: string; image?: string; machine?: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean }
+export interface AcquireInput { task: string; image?: string; machine?: string; extractions: Extraction[]; ttlHours?: number; fullWorkspace?: boolean; env?: string; vnc?: boolean;
+  /** The instance an image is acquired from; default the first instance that offers it and has capacity (DC-77). */
+  instance?: string }
 /**
  * `guest` names the guest a call acts on (DC-20). The MCP tools require it;
  * a caller of the manager itself may leave it out while the session holds
@@ -75,7 +78,13 @@ interface Enclosure {
   consoleAttemptIds?: string[];
   /** The host was at capacity and the acquisition waits to be asked again (DC-22). */
   capacityWait?: { since: string; attempts: number; reason: string };
+  /** The acquisition's broker grant, kept apart from the lease record that reconciliation replaces; only the answer carries it (RP-11). */
+  relay?: RelayGrant;
+  /** The instance an image acquisition chose, and why (DC-77). */
+  chosen?: { instance: string | null; machine_id: string | null; reason: string };
 }
+/** An instance an acquisition may ask: its backend, the binding its guest records, whether it is off this host's instance, and why it was chosen. */
+interface Target { backend: VmBackend; binding: BackendBinding; remote: boolean; reason?: string }
 /** What relay_status, relay_probe and every guest result report about one guest. */
 export interface GuestStatus {
   /** The guest's name in this session; absent only when the session holds no guest. */
@@ -86,6 +95,9 @@ export interface GuestStatus {
   downloads?: ReturnType<DownloadQueue['counts']>;
   /** The acquisition waits for a host at capacity: since when, how many refusals, and machine-service's reason (DC-22). */
   waitingForCapacity?: { since: string; attempts: number; reason: string };
+  /** How the guest's operations travel, as machine-service reports it: `relay`, or `ssh-fallback`, which runs outside the desktop session (docs/relay-agent-link.md §6). */
+  link?: 'relay' | 'ssh-fallback';
+  linkReason?: string;
 }
 /** A run's result: its execution identity and outcome, the after-snapshot delivery, and kind-specific facts. */
 export interface RunResult {
@@ -94,8 +106,19 @@ export interface RunResult {
   imageDelivery: Omit<ImageResult, 'content'> & { content?: ImageResult['content'] };
   [key: string]: any;
 }
-export interface ManagerOptions {
-  sessionId: string; project: string; stateRoot?: string; outputRoot?: string; registry?: Registry; vm?: VmBackend; environment?: SelectedEnvironment; tartHome?: string; tartPath?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>;
+/**
+ * Where a manager's backend, store and state are: a selected environment
+ * binds them all; without one, each is named. The constructor supplies no
+ * default and reads no process variable, so a test cannot reach the installed
+ * service, ~/.tart or ~/AGENTS.md by leaving one out; `relayManagerFromProcess`
+ * supplies production's defaults (DC-62).
+ */
+export type ManagerBackend =
+  | { environment: SelectedEnvironment; vm?: VmBackend; registry?: Registry; stateRoot?: string; tartHome?: string; tartPath?: string }
+  | { environment?: undefined; vm: VmBackend; registry: Registry; stateRoot: string; tartHome: string; tartPath: string };
+export type ManagerOptions = ManagerSettings & ManagerBackend;
+export interface ManagerSettings {
+  sessionId: string; project: string; outputRoot?: string; runtimeBundle?: string; heartbeatMs?: number; verifyDestroyed?: (vm: string) => Promise<boolean>; localTart?: boolean;
   /** How far each renewal extends the lease at machine-service; default RENEWAL_WINDOW_MS. */
   renewalWindowMs?: number;
   /** The network every guest is acquired on; default MCP_RELAY_GUEST_NETWORK, read at each acquisition (DC-17). */
@@ -120,6 +143,8 @@ export interface ManagerOptions {
   durableBackend?: (origin: string) => VmBackend;
   /** Test seam: Consul's answer. */
   consulFetch?: (url: string) => Promise<unknown>;
+  /** Test seam: the pause before Bonjour's second look for a named instance; default 2000 ms (MI-5). */
+  secondLookMs?: number;
   /** Test seam: free space of the evidence volume; default `fs.promises.statfs`. */
   statfs?: (path: string) => Promise<{ bavail: number | bigint; bsize: number | bigint }>;
   /** Background downloads a run may leave queued; default DOWNLOAD_BOUND. */
@@ -150,6 +175,8 @@ export const durableRoot = (workspace: string, purpose: string) => join(workspac
 export const DOWNLOAD_BOUND = 64;
 /** Waits before a background download's second and third attempts (DC-5). */
 export const DOWNLOAD_RETRY_DELAYS_MS = [1000, 3000] as const;
+/** The budget of one catalog question to an instance that answered its `/health`: it may wait 30 s for a rebuild (machine-service IC-3). */
+const CATALOG_TIMEOUT_MS = 35000;
 /** How often an acquisition waiting for capacity is asked again (DC-22). */
 export const CAPACITY_RETRY_MS = 15000;
 /** An image starts cua-driver's daemon at login, which can follow the guest's readiness by tens of seconds (DC-24). */
@@ -186,7 +213,7 @@ function originUnavailable(error: unknown): boolean {
  * rules also lives in the `relay_probe` and `relay_acquire` descriptions,
  * because not every MCP client surfaces server instructions to the model.
  */
-export const instructions = 'This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job may share its desktop, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host\'s display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
+export const instructions = 'This server offers fourteen tools for guests, machines that run the work you choose to run there: VMs from an image, or durable machines, real Macs named with `machine`: relay_search, relay_probe, relay_acquisition_capabilities, relay_acquire, relay_stage, the run tool relay_script, relay_image, relay_extract, relay_finish, relay_release, relay_console_resolve, relay_console_open, relay_console_cancel and relay_status. relay_script runs a shell, JavaScript, TypeScript or Python script, given inline or as a project file; a command is a shell script, and the script drives whatever the image lists, such as cua-driver, Playwright or Chrome DevTools, through their own libraries or command lines. Staging needs only Node.js in the guest, and a run takes before and after snapshots only when the image lists capture software (cua-driver). Evidence is automatic, and a run\'s after-image is returned as pending and downloaded in the background, so call relay_image with the imageId when you need to see it. Acquire one guest for each machine your work needs; several guests may run at once, up to the session\'s limit that relay_status reports. relay_acquire answers each guest\'s name, `guest`, and every call that acts on a guest names it with `guest`. Calls on different guests run at the same time; calls on one guest keep their order. Work each guest in order: relay_probe, then relay_acquire, then relay_stage, then relay_script, then relay_image or relay_extract as needed, then relay_finish or relay_release; finishing or releasing one guest leaves the others running. Always call relay_finish or relay_release explicitly for every guest before you return an answer; ending the session never finishes a guest: it pauses lease renewal and keeps the VMs or, where the relay is set up to, releases them, and the backend\'s own expiry is the last-resort safeguard. A refused, uncertain or nonzero operation keeps the VM so you can diagnose and submit a corrected operation; never replay input whose effect is uncertain. A tool result, an attached image or a verified evidence package, is evidence for a human reviewer, never the review itself. A durable machine is a real Mac on the home network, leased whole for one session: it is not isolated from the home network, a CI job on it holds its lease like any other client and never shares its desktop with yours, and its runs take snapshots only while its cua-driver daemon holds Screen Recording. The relay never targets its own host\'s display and offers no video or spawn API. Every tool\'s text result is capped at 50 KiB / 2000 lines; a larger result is retained whole in a local file the result names.';
 
 /** relay_release's diagnostic when this session owns no lease. */
 export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so nothing was released. Each server process has its own session identity (a new random one unless MCP_RELAY_SESSION sets it); a lease acquired under another identity is not visible here. Restart the server with that MCP_RELAY_SESSION to reconcile and release it, or let the backend TTL expire it.';
@@ -199,11 +226,27 @@ export const NO_OWNED_LEASE = 'This session owns no lease: it holds no guest, so
  * same time. The session's own queue orders what spans guests: loading the
  * state, admitting an acquisition, search, the host probe and shutdown.
  */
+/**
+ * The manager a relay process runs: the selected environment's backend, store
+ * and state, or else MCP_RELAY_URL (default the installed instance), the
+ * registry's own resolution, the state root, TART_HOME (default ~/.tart) and
+ * TART (default `tart`). Under the test harness the origin has no default
+ * (config.serviceUrl, DC-61).
+ */
+export function relayManagerFromProcess(settings: ManagerSettings, env: NodeJS.ProcessEnv = process.env): RelayManager {
+  const environment = selectedEnvironment(env);
+  if (environment) return new RelayManager({ ...settings, environment });
+  return new RelayManager({ ...settings, vm: machineServiceFromProcess(env, undefined), registry: new Registry({ env }), stateRoot: relayStateRoot({ env }),
+    tartHome: env.TART_HOME ?? join(env.HOME ?? homedir(), '.tart'), tartPath: env.TART ?? 'tart' });
+}
+
 export class RelayManager {
   readonly vm: VmBackend;
   readonly environment?: SelectedEnvironment;
   readonly tartHome: string;
   readonly tartPath: string;
+  /** Whether destruction is verified in this host's Tart inventory; else in machine-service's (DC-53). */
+  readonly localTart: boolean;
   readonly registry: Registry;
   readonly root: string;
   /** The most guests this session holds at once (DC-20). */
@@ -222,22 +265,62 @@ export class RelayManager {
   /** Set once shutdown has paused the guests: no new acquisition or guest operation starts. */
   shuttingDown = false;
   constructor(readonly options: ManagerOptions) {
-    this.environment = options.environment ?? selectedEnvironment();
-    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome ?? process.env.TART_HOME ?? join(process.env.HOME ?? homedir(), '.tart'));
-    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath ?? process.env.TART ?? 'tart';
+    this.environment = options.environment;
+    const unnamed = this.environment ? [] : (['vm', 'registry', 'stateRoot', 'tartHome', 'tartPath'] as const).filter(key => options[key] === undefined);
+    if (unnamed.length) throw new TypeError(`A relay manager without a selected environment needs ${unnamed.join(', ')}; relayManagerFromProcess supplies production's defaults`);
+    this.tartHome = this.environment?.profile.tartHome ?? canonicalPath(options.tartHome!);
+    this.tartPath = this.environment?.profile.tartPath ?? options.tartPath!;
+    this.localTart = options.localTart ?? (!!this.environment || localTartHost());
     if (this.environment && ((options.stateRoot && canonicalPath(options.stateRoot) !== this.environment.profile.relayStateDir) || (options.tartHome && canonicalPath(options.tartHome) !== this.tartHome) || (options.tartPath && canonicalPath(options.tartPath) !== this.tartPath))) throw new Error('Injected paths conflict with the selected environment');
     this.maxGuests = options.maxGuests ?? maxGuests();
     if (!Number.isSafeInteger(this.maxGuests) || this.maxGuests < 1) throw new Error('maxGuests must be a positive integer');
     this.capacityWaitMs = options.capacityWaitMs ?? capacityWait() * 1000;
     this.capacityRetryMs = options.capacityRetryMs ?? CAPACITY_RETRY_MS;
     if (!Number.isFinite(this.capacityWaitMs) || this.capacityWaitMs < 0 || !Number.isFinite(this.capacityRetryMs) || this.capacityRetryMs <= 0) throw new Error('capacityWaitMs must be nonnegative and capacityRetryMs positive');
-    this.vm = options.vm ?? new MachineService({ baseUrl: this.environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL, environment: this.environment });
-    this.registry = options.registry ?? new Registry(this.environment ? { managedRoot: this.environment.profile.relayStateDir } : {});
-    this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot ?? relayStateRoot(), hash(options.sessionId).slice(0, 32));
+    this.vm = options.vm ?? new MachineService({ environment: options.environment! });
+    this.registry = options.registry ?? new Registry({ managedRoot: options.environment!.profile.relayStateDir });
+    this.root = join(this.environment?.profile.relayStateDir ?? options.stateRoot!, hash(options.sessionId).slice(0, 32));
+  }
+  /** How this manager finds instances: its mode and its test seams (DC-35, DC-67). */
+  private discoveryOptions(): DiscoveryOptions {
+    return { local: this.vm, ...(this.options.discovery ? { mode: this.options.discovery } : {}), ...(this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}), ...(this.options.consul ? { consul: this.options.consul } : {}), ...(this.options.durableBackend ? { backend: this.options.durableBackend } : {}), ...(this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}), ...(this.options.secondLookMs !== undefined ? { secondLookMs: this.options.secondLookMs } : {}) };
   }
   /** The instance that owns a durable machine, found as machctl finds it (DC-29). */
   durableOwner(machine: string, machineId?: string): Promise<DurableOwner> {
-    return (machineId ? findDurableOwnerById : findDurableOwner)(machineId ?? machine, { local: this.vm, ...(this.options.discovery ? { mode: this.options.discovery } : {}), ...(this.options.bonjourBrowse ? { browse: this.options.bonjourBrowse } : {}), ...(this.options.consul ? { consul: this.options.consul } : {}), ...(this.options.durableBackend ? { backend: this.options.durableBackend } : {}), ...(this.options.consulFetch ? { fetchJson: this.options.consulFetch } : {}) });
+    return (machineId ? findDurableOwnerById : findDurableOwner)(machineId ?? machine, this.discoveryOptions());
+  }
+  /**
+   * Every instance a question or an image acquisition asks (machine-service
+   * FD-7, DC-74): the loopback instance and every instance discovery
+   * confirms, or only the selected environment's. With `wanted`, only the
+   * instance it names; when none does, Bonjour looks once more (MI-5), and
+   * then the call is refused with the instances there are.
+   */
+  async instances(wanted?: string, signal?: AbortSignal): Promise<Instances> {
+    const look = () => discoverInstances({ ...this.discoveryOptions(), localOnly: !!this.environment });
+    let found = await look();
+    if (wanted === undefined) return found;
+    if (typeof wanted !== 'string' || !wanted.trim()) throw new Error('instance must name a machine-service instance');
+    let named = found.instances.filter(instance => namesInstance(instance, wanted));
+    if (!named.length && !this.environment && (this.options.discovery ?? discoveryMode()) === 'bonjour') {
+      await new Promise(resolve => setTimeout(resolve, this.options.secondLookMs ?? 2000));
+      signal?.throwIfAborted();
+      found = await look(); named = found.instances.filter(instance => namesInstance(instance, wanted));
+    }
+    if (!named.length) throw new Error(`No machine-service instance is named ${JSON.stringify(wanted)}; the instances are ${found.instances.map(instance => `${instance.name} (${instance.machine_id ?? 'no machine_id'}, ${instance.reachable ? 'reachable' : 'unreachable'})`).join(', ')}${found.discoveryError ? `, and ${found.discoveryError}` : ''}${this.environment ? '; a selected environment asks only its own instance' : ''}`);
+    return { ...found, instances: named };
+  }
+  /** One instance's application catalog and its generation, or why there is none (DC-76). */
+  private async catalogOf(instance: FoundInstance, signal?: AbortSignal): Promise<InstanceCatalog> {
+    const entry = { instance: instance.name, machine_id: instance.machine_id ?? null, origin: instance.origin, local: instance.local, reachable: instance.reachable };
+    if (!instance.reachable) return { ...entry, error: instance.error ?? 'no answer' };
+    // An instance may wait 30 s for a catalog rebuild before it answers (machine-service IC-3).
+    const [catalog, images] = await Promise.allSettled([(async () => instance.backend.applications({ signal, timeoutMs: CATALOG_TIMEOUT_MS }))(), (async () => instance.backend.images({ signal, timeoutMs: CATALOG_TIMEOUT_MS }))()]);
+    signal?.throwIfAborted();
+    const status = images.status === 'fulfilled' ? images.value.catalog : undefined;
+    const facts = { generation: typeof status?.generation === 'number' ? status.generation : null, status: typeof status?.status === 'string' ? status.status : null };
+    if (catalog.status === 'rejected') return { ...entry, ...facts, error: message(catalog.reason) };
+    return { ...entry, ...facts, catalog: catalog.value };
   }
   private serialized<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.queue.then(fn, fn); this.queue = next.catch(() => {}); return next;
@@ -334,6 +417,8 @@ export class RelayManager {
   bindingMatches(e: Enclosure): boolean {
     // A durable machine's owner is found again from Consul when the guest is reconciled (DC-29).
     if (e.machine) return !!e.backend?.endpoint && !!e.backend.instance;
+    // A VM on another instance is found again by its machine_id, as a durable machine is (DC-78).
+    if (remoteVm(e)) return !this.environment && !!e.backend?.endpoint;
     if (e.backend) {
       const expected = this.binding();
       return Object.keys(e.backend).length === Object.keys(expected).length && Object.entries(expected).every(([key, value]) => e.backend![key as keyof BackendBinding] === value);
@@ -369,12 +454,48 @@ export class RelayManager {
     if (guest === undefined && !this.guests.size) return { active: false };
     return this.named(guest).status();
   }
-  search(query: SearchQuery, signal?: AbortSignal, toolCallId?: string) { return this.serialized(async () => {
+  /**
+   * The instances an image acquisition may ask, in order (machine-service
+   * FD-7, DC-77): those whose offer of the image has its base built,
+   * and, for `vnc`, a VNC backend for its OS; acquirable offers first, the
+   * loopback instance first within each group, then the others by name.
+   * `wanted` pins one instance. Refused, before anything is reserved, when
+   * no instance offers the image.
+   */
+  async imageTargets(image: string, wanted: string | undefined, vnc: boolean, signal?: AbortSignal): Promise<Target[]> {
+    const { instances, discoveryError } = await this.instances(wanted, signal);
+    const asked = await Promise.all(instances.map(async instance => {
+      if (!instance.reachable) return { instance, error: `unreachable (${instance.error})` };
+      try {
+        const offer = (await instance.backend.images({ timeoutMs: 5000, signal })).images;
+        const facts = offer[image];
+        if (!facts?.base_available) return { instance, error: Object.keys(offer).length ? `offers ${Object.keys(offer).join(', ')}` : 'offers no image' };
+        if (vnc && !(await this.readAcquisitionCapabilities(signal, instance.backend)).options.vnc.backends[facts.kind].available) return { instance, error: `no VNC backend for ${facts.kind}` };
+        return { instance, acquirable: facts.concurrency?.acquirable !== false };
+      } catch (error) { if (signal?.aborted) throw error; return { instance, error: message(error) }; }
+    }));
+    const offering = asked.filter(answer => !answer.error).sort((a, b) => Number(!a.acquirable) - Number(!b.acquirable));
+    if (!offering.length) {
+      const why = asked.map(answer => `${answer.instance.name}: ${answer.error}`).join('; ');
+      if (vnc && asked.some(answer => answer.error?.startsWith('no VNC backend'))) throw new Error(`VNC backend unavailable for this image OS; ordinary acquisition was not attempted (${why})`);
+      throw new Error(`Image unavailable: ${image}: no machine-service instance offers it with its base built (${why})${discoveryError ? `; ${discoveryError}` : ''}; nothing was acquired`);
+    }
+    return offering.map(({ instance, acquirable }) => ({
+      backend: instance.backend,
+      binding: instance.local ? this.binding() : { endpoint: instance.origin, instance: instance.name, ...(instance.machine_id ? { machine_id: instance.machine_id } : {}) },
+      remote: !instance.local,
+      reason: `chose ${image} (virtual, offer on ${instance.name}${instance.local ? ', the local instance' : ''}${acquirable ? '' : ', not acquirable now'})`,
+    }));
+  }
+  /** relay_search over every instance's catalog, or the one `instance` names (DC-76). */
+  search(input: SearchQuery & { instance?: string }, signal?: AbortSignal, toolCallId?: string) { return this.serialized(async () => {
     // Deliberately bypass init/recovery, ownership locks, probes and lease APIs.
+    const query: SearchQuery = { name: input.name, ...(input.os === undefined ? {} : { os: input.os }) };
     let result;
     try {
       signal?.throwIfAborted();
-      result = searchCatalog(await this.vm.applications({ signal }), query);
+      const { instances, discoveryError } = await this.instances(input.instance, signal);
+      result = searchInstances(await Promise.all(instances.map(instance => this.catalogOf(instance, signal))), query, discoveryError);
     } catch (error) {
       await recordSearch(this.root, query, { error }, { toolCallId });
       throw error;
@@ -382,16 +503,21 @@ export class RelayManager {
     await recordSearch(this.root, query, { result }, { toolCallId });
     return result;
   }); }
-  probe(scope: 'host' | 'guest' = 'host', guest?: string) {
+  probe(scope: 'host' | 'guest' = 'host', guest?: string, instance?: string) {
     if (scope === 'guest') return this.onGuest(guest, found => found.guarded(undefined, () => found.probe()));
     return this.serialized(async () => {
       // The host facts list every guest the session holds, after a restart too; loading is host-only.
       let ownership: string | undefined;
       try { await this.load(); } catch (error) { ownership = `This session's guests could not be loaded: ${message(error)}`; }
       const local = await probeLocal();
-      let relay;
-      try { const [health, images, leases] = await Promise.all([this.vm.health({ timeoutMs: 5000 }), this.vm.images({ timeoutMs: 5000 }), this.vm.list({ timeoutMs: 5000 })]); relay = { reachable: health.ok, images, capacity: leases.limits }; }
-      catch (error) { relay = { reachable: false, diagnostic: String(error) }; }
+      // Every instance's images and capacity, each under its name; an unreachable one says so (DC-76).
+      const { instances, discoveryError } = await this.instances(instance);
+      const answers = await Promise.all(instances.map(async found => {
+        if (!found.reachable) return { ...instanceSummary(found), diagnostic: found.error };
+        try { const [images, leases] = await Promise.all([found.backend.images({ timeoutMs: 5000 }), found.backend.list({ timeoutMs: 5000 })]); return { ...instanceSummary(found), images, capacity: leases.limits }; }
+        catch (error) { return { ...instanceSummary(found), reachable: false, diagnostic: String(error) }; }
+      }));
+      const relay = { reachable: answers.some(answer => answer.reachable), instances: answers, ...(discoveryError ? { discovery: discoveryError } : {}) };
       const facts = { scope: 'host', local, relay, environment: this.environment?.identity, owned: this.status(), ...(ownership ? { ownership } : {}), capabilities: { image: imageCapability } };
       await jsonFile(join(this.root, 'probes', `${Date.now()}-${randomUUID()}.json`), facts);
       // Each guest's evidence records the host facts its agent saw.
@@ -399,12 +525,27 @@ export class RelayManager {
       return facts;
     });
   }
-  async readAcquisitionCapabilities(signal?: AbortSignal) {
+  async readAcquisitionCapabilities(signal?: AbortSignal, backend: VmBackend = this.vm) {
     signal?.throwIfAborted(); await this.assertBackend();
-    if (!this.vm.acquisitionCapabilities) throw new Error('Backend lacks acquisition-capabilities; upgrade machine-service for VNC');
-    return acquisitionCapabilities(await this.vm.acquisitionCapabilities({ signal, timeoutMs: 10000 }));
+    if (!backend.acquisitionCapabilities) throw new Error('Backend lacks acquisition-capabilities; upgrade machine-service for VNC');
+    return acquisitionCapabilities(await backend.acquisitionCapabilities({ signal, timeoutMs: 10000 }));
   }
-  acquisitionCapabilities(signal?: AbortSignal) { return this.serialized(() => this.readAcquisitionCapabilities(signal)); }
+  /**
+   * Every instance's acquisition capabilities, each under its name, or the
+   * one `instance` names; refused only when no instance answers them
+   * (DC-76).
+   */
+  acquisitionCapabilities(signal?: AbortSignal, instance?: string) { return this.serialized(async () => {
+    await this.assertBackend();
+    const { instances, discoveryError } = await this.instances(instance, signal);
+    const answers = await Promise.all(instances.map(async found => {
+      if (!found.reachable) return { ...instanceSummary(found), diagnostic: found.error };
+      try { return { ...instanceSummary(found), capabilities: await this.readAcquisitionCapabilities(signal, found.backend) }; }
+      catch (error) { if (signal?.aborted) throw error; return { ...instanceSummary(found), diagnostic: message(error) }; }
+    }));
+    if (!answers.some(answer => 'capabilities' in answer)) throw new Error(`No machine-service instance answered its acquisition capabilities: ${answers.map(answer => `${answer.instance}: ${'diagnostic' in answer ? answer.diagnostic : 'answered'}`).join('; ')}${discoveryError ? `; ${discoveryError}` : ''}`);
+    return { instances: answers, ...(discoveryError ? { discovery: discoveryError } : {}) };
+  }); }
   consoleResolve(signal?: AbortSignal, guest?: string) { return this.onGuest(guest, found => found.resolveConsole(signal)); }
   consoleOpen(input: ConsoleOpenInput, signal?: AbortSignal) {
     return this.onGuest(input.guest, found => {
@@ -442,6 +583,7 @@ export class RelayManager {
       if ((input.image === undefined) === (input.machine === undefined)) throw new Error('relay_acquire takes exactly one of image, a VM image, and machine, a durable machine\'s name');
       if (input.machine !== undefined && (typeof input.machine !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(input.machine))) throw new Error('machine must be a durable machine\'s name, as machctl list shows it');
       if (input.machine !== undefined && input.vnc) throw new Error('A durable machine has no console: view it with Screen Sharing, outside the relay; nothing was acquired');
+      if (input.machine !== undefined && input.instance !== undefined) throw new Error('instance chooses where an image is acquired; a durable machine names its own instance, so nothing was acquired');
       if (!Array.isArray(input.extractions) || input.extractions.length > 100) throw new Error('Declare up to 100 extractions before work');
       const names = new Set<string>();
       for (const extraction of input.extractions) {
@@ -559,6 +701,14 @@ export class RelayManager {
   }
 }
 
+/** A VM leased from another instance: its binding names that instance and no Tart store of this host (DC-78). */
+function remoteVm(e?: Enclosure): boolean { return !!e && !e.machine && !!e.backend?.instance && e.backend.tartHome === undefined; }
+/** A lease whose owner is found by discovery: a durable machine, or a VM on another instance. */
+function remoteOwner(e?: Enclosure): boolean { return !!e?.machine || remoteVm(e); }
+const portOf = (origin: string) => { const url = new URL(origin); return url.port || (url.protocol === 'https:' ? '443' : '80'); };
+/** What a guest's lease names: its durable machine, or its VM. */
+const subject = (e: Enclosure) => e.machine ? `durable machine ${e.machine}` : `VM ${e.lease?.vm ?? e.image}`;
+
 async function readRecord(path: string): Promise<Enclosure | null> {
   try { return JSON.parse(await readFile(path, 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
@@ -587,15 +737,15 @@ class Guest {
   closed = false;
   /** After-image downloads, outside the serialized section (docs/screenshot-delivery.md §10). */
   readonly downloads: DownloadQueue;
-  /** A durable machine's owner, once found (DC-29). */
+  /** The owner of a durable machine or of a VM on another instance, once found (DC-29, DC-78). */
   private owner?: VmBackend;
-  /** The backend this guest's lease lives on: the loopback instance, or a durable machine's owner. */
+  /** The backend this guest's lease lives on: the loopback instance, or the instance that owns it. */
   get vm(): VmBackend {
     const e = this.enclosure;
-    if (!e?.machine) return this.m.vm;
+    if (!remoteOwner(e)) return this.m.vm;
     if (this.owner) return this.owner;
-    if (!e.backend?.endpoint || e.backend.endpoint === this.m.vm.baseUrl) return this.owner = this.m.vm;
-    throw new Error(`The owner of durable machine ${e.machine} has not been found again in this process; nothing was sent`);
+    if (e!.machine && (!e!.backend?.endpoint || e!.backend.endpoint === this.m.vm.baseUrl)) return this.owner = this.m.vm;
+    throw new Error(`The owner of ${subject(e!)} has not been found again in this process; nothing was sent`);
   }
   /**
    * machine-service as the guest's only channel. Every call names the lease's
@@ -603,10 +753,11 @@ class Guest {
    */
   get channel(): VmChannel {
     const identity = () => { const id = this.enclosure?.lease?.lease_id; return id ? { lease_id: id } : {}; };
-    const durable = !!this.enclosure?.machine;
+    // Off this host's instance every file goes as bytes (FD-4, DC-31).
+    const durable = remoteOwner(this.enclosure);
     return {
       exec: async (name, argv, timeoutMs = 180000, options) => {
-        const result = await this.withOwner(backend => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs / 1000), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal }), options);
+        const result = await this.withOwner(backend => backend.exec(this.enclosure?.machine ?? name, { argv, timeout: Math.ceil(timeoutMs / 1000), ...(options?.executionId ? { execution_id: options.executionId } : {}), ...identity() }, { timeoutMs: options?.timeoutMs ?? timeoutMs + 30000, signal: options?.signal }), options);
         return { stdout: result.output, stderr: result.output, code: result.rc };
       },
       push: async (name, local_path, remote_path) => {
@@ -614,7 +765,7 @@ class Guest {
         const bytes = await readFile(local_path);
         return this.withOwner(backend => {
           if (!backend.pushBytes) throw new Error('Backend lacks byte transfers; upgrade machine-service');
-          return backend.pushBytes(this.enclosure!.machine!, { remote_path, bytes, ...identity() });
+          return backend.pushBytes(this.enclosure!.machine ?? name, { remote_path, bytes, ...identity() });
         });
       },
       pull: async (name, remote_path, local_path, options) => {
@@ -623,7 +774,7 @@ class Guest {
         await rm(local_path, { force: true });
         await this.withOwner(backend => {
           if (!backend.pullBytes) throw new Error('Backend lacks byte transfers; upgrade machine-service');
-          return backend.pullBytes(this.enclosure!.machine!, { remote_path, to: local_path, ...identity() }, options);
+          return backend.pullBytes(this.enclosure!.machine ?? name, { remote_path, to: local_path, ...identity() }, options);
         }, options);
         return { vm: name, pulled: remote_path, to: local_path };
       },
@@ -631,7 +782,20 @@ class Guest {
   }
   /** A saved machine ID survives renames; legacy ownership still requires its name and origin. */
   private async findOwner(e: Enclosure, force = false) {
-    if (!e.machine || (this.owner && !force)) return;
+    if (!remoteOwner(e) || (this.owner && !force)) return;
+    if (!e.machine) {
+      // A VM's owner is the instance with its machine_id and port, else its name and origin (MI-5, DC-78).
+      try {
+        const saved = e.backend!;
+        const { instances, discoveryError } = await this.m.instances();
+        const owner = instances.find(instance => instance.reachable && (saved.machine_id ? instance.machine_id === saved.machine_id && portOf(instance.origin) === portOf(saved.endpoint) : instance.origin === saved.endpoint && instance.name === saved.instance));
+        if (!owner) throw new Error(`no reachable machine-service instance is ${saved.machine_id ? `machine_id ${saved.machine_id} at port ${portOf(saved.endpoint)}` : `${saved.instance} at ${saved.endpoint}`}${discoveryError ? `, and ${discoveryError}` : ''}`);
+        this.owner = owner.backend;
+        e.backend = { ...saved, endpoint: owner.origin, instance: owner.name };
+        await this.save();
+      } catch (error) { await this.unknownOwner(e, error); }
+      return;
+    }
     try {
       const owner = await this.m.durableOwner(e.machine, e.backend?.machine_id);
       if (e.backend?.machine_id) {
@@ -647,22 +811,22 @@ class Guest {
   private async unknownOwner(e: Enclosure, cause: unknown): Promise<never> {
     this.owner = undefined;
     e.guestState = 'unknown';
-    const error = new Error(`Cannot confirm durable machine ${e.machine}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
+    const error = new Error(`Cannot confirm ${e.machine ? `durable machine ${e.machine}` : `the owner of ${subject(e)}`}: ${message(cause)}; ownership retained, guest state unknown`, { cause });
     e.lastError = error.message; await this.save(); throw error;
   }
   /** Retry a durable request once after discovery confirms the saved machine ID. Acquisition never uses this. */
   private async withOwner<T>(operation: (backend: VmBackend) => Promise<T>, options: RequestOptions = {}): Promise<T> {
     options.signal?.throwIfAborted();
-    if (this.enclosure?.machine && !this.owner) await this.findOwner(this.enclosure);
+    if (remoteOwner(this.enclosure) && !this.owner) await this.findOwner(this.enclosure!);
     try { return await operation(this.vm); }
     catch (error) {
       const e = this.enclosure;
-      if (!e?.machine || !e.backend?.machine_id || options.signal?.aborted || !originUnavailable(error)) throw error;
-      await this.findOwner(e, true);
+      if (!remoteOwner(e) || !e!.backend?.machine_id || options.signal?.aborted || !originUnavailable(error)) throw error;
+      await this.findOwner(e!, true);
       options.signal?.throwIfAborted();
       try { return await operation(this.vm); }
       catch (retryError) {
-        if (!options.signal?.aborted && originUnavailable(retryError)) return this.unknownOwner(e, retryError);
+        if (!options.signal?.aborted && originUnavailable(retryError)) return this.unknownOwner(e!, retryError);
         throw retryError;
       }
     }
@@ -723,7 +887,7 @@ class Guest {
   }
   status(): GuestStatus {
     const e = this.enclosure;
-    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...(e.capacityWait ? { waitingForCapacity: e.capacityWait } : {}) } : { guest: this.name, active: false };
+    return e ? { guest: this.name, task: e.task, backend: e.backend, vm: e.lease?.vm, lease_id: e.lease?.lease_id, console: e.consoleObservation, consoleAttempt: e.consoleAttempt, purpose: e.purpose, staged: e.staged, lastError: e.lastError ?? e.failed, released: e.released, active: e.active ?? false, guestState: e.guestState ?? 'unknown', previousEvidence: e.previousEvidence, recordingResetPending: !!e.pendingReset, expiresAt: e.expiresAt ?? e.lease?.ttl_expires_at, output: e.hostRoot, downloads: this.downloads.counts(), ...(e.capacityWait ? { waitingForCapacity: e.capacityWait } : {}), ...(e.lease?.link ? { link: e.lease.link } : {}), ...(e.lease?.link_reason ? { linkReason: e.lease.link_reason } : {}) } : { guest: this.name, active: false };
   }
   private async reconcile() {
     const e = this.enclosure; if (!e) return;
@@ -750,6 +914,7 @@ class Guest {
         if (lease.console.status === 'revoked') e.consoleObservation = lease.console;
       }
       e.lease = e.machine ? { ...lease, vm: e.machine } : lease; e.guestState = lease.state; e.expiresAt = lease.ttl_expires_at;
+      this.vm.useRelay?.(e.lease.vm, { link: e.lease.link, relay: e.relay });
       if (e.failed) { e.lastError = e.failed; delete e.failed; }
       await this.save();
     } catch (error) {
@@ -879,17 +1044,13 @@ class Guest {
   async acquire(input: AcquireInput, network: GuestNetwork, signal?: AbortSignal) {
     const ttlHours = input.ttlHours ?? 4;
     let owner: DurableOwner | undefined;
+    let targets: Target[];
     try {
       if (this.m.shuttingDown || this.closed) throw new Error('Relay manager is shutting down');
-      if (input.machine) owner = await this.m.durableOwner(input.machine);
-      else {
-        const image = input.image!, images = await this.vm.images({ timeoutMs: 5000, signal });
-        if (!images.images[image]?.base_available) throw new Error(`Image unavailable: ${image}`);
-        if (input.vnc) {
-          const capabilities = await this.m.readAcquisitionCapabilities(signal);
-          if (!capabilities.options.vnc.backends[images.images[image]!.kind].available) throw new Error('VNC backend unavailable for this image OS; ordinary acquisition was not attempted');
-        }
-      }
+      if (input.machine) {
+        owner = await this.m.durableOwner(input.machine);
+        targets = [{ backend: owner.backend, binding: { endpoint: owner.origin, instance: owner.instance, ...(owner.machine_id ? { machine_id: owner.machine_id } : {}) }, remote: true }];
+      } else targets = await this.m.imageTargets(input.image!, input.instance, input.vnc === true, signal);
       await this.lock();
     } catch (error) { await this.m.forget(this); throw error; }
     const purpose = `relay-${input.task}-${randomUUID().slice(0, 8)}`;
@@ -898,10 +1059,13 @@ class Guest {
     const project = this.m.options.project, environment = this.m.environment;
     const hostRoot = join(this.m.options.outputRoot ?? resolve(project, 'relay-evidence'), purpose);
     const subject = input.machine ?? input.image!;
-    const row: RegistryRow = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? 'macos (durable)' : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
+    const first = targets[0]!;
+    const row: RegistryRow = { machine: owner ? `${input.machine} (durable, ${owner.origin}; ${purpose})` : environment ? `${environment.profile.vmServiceUrl} (${environment.profile.id}; ${purpose})` : first.remote ? `${first.binding.instance} (machine-service ${first.binding.endpoint}; ${purpose})` : `127.0.0.1 (machine-service ${purpose})`, os: owner ? 'macos (durable)' : subject, taskName: purpose, agent: `mcp-relay ${this.m.options.sessionId}`, project: resolve(project), startDate: stamp };
     // A durable guest's root moves under the lease's workspace once the lease names it (DC-31).
-    const e: Enclosure = this.enclosure = { backend: owner ? { endpoint: owner.origin, instance: owner.instance, ...(owner.machine_id ? { machine_id: owner.machine_id } : {}) } : this.m.binding(), purpose, task: input.task, image: subject, ...(input.machine ? { machine: input.machine } : {}), project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
-    if (owner) this.owner = owner.backend;
+    const e: Enclosure = this.enclosure = { backend: first.binding, purpose, task: input.task, image: subject, ...(input.machine ? { machine: input.machine } : {}), project, startedAt, guestRoot: `/var/tmp/${stamp}-mcp-relay-${purpose}`, hostRoot, ttlHours, extractions: input.extractions, fullWorkspace: input.fullWorkspace ?? false, row, staged: false };
+    // The owner is bound before each attempt, so a refusal is checked on the instance that refused (DC-77).
+    const bind = (target: Target) => { this.owner = target.remote ? target.backend : undefined; e.backend = target.binding; if (target.reason) e.chosen = { instance: target.binding.instance ?? null, machine_id: target.binding.machine_id ?? null, reason: target.reason }; };
+    bind(first);
     let refused = false;
     try { await this.save(); }
     catch (error) { this.enclosure = undefined; await this.m.forget(this); throw error; }
@@ -912,29 +1076,43 @@ class Guest {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       // A host at capacity refuses before it reserves anything, so the same acquisition is asked again until the wait runs out (DC-22).
       let firstRefusal: number | undefined, granted = 0;
-      for (;;) {
-        e.acquisitionInFlight = true; await this.save();
-        const asked = Date.now();
-        try {
-          const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000;
-          // A durable acquisition names the machine and nothing a running Mac cannot apply (DM-3).
-          e.lease = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? 'none', ttl_hours } : { purpose, image: input.image, env: input.env ?? 'none', ttl_hours, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
-          if (e.machine) {
-            e.lease.vm = e.machine;
-            if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error('Durable owner machine_id mismatch'));
-            e.backend!.machine_id ??= e.lease.machine_id;
-            e.guestRoot = durableRoot(e.lease.workspace!, purpose);
+      acquiring: for (;;) {
+        // Each round asks the targets in order; a capacity refusal passes to the next, and once all refused the round waits (DC-22, DC-77).
+        let capacity: MachineServiceError | undefined;
+        for (const [index, target] of targets.entries()) {
+          bind(target);
+          if (target.reason) await this.log('acquire-choice', undefined, { ...e.chosen, endpoint: target.binding.endpoint });
+          e.acquisitionInFlight = true; await this.save();
+          const asked = Date.now();
+          try {
+            const ttl_hours = Math.min(this.m.renewalWindowMs(), ttlHours * 3600000) / 3600000;
+            // A durable acquisition names the machine and nothing a running Mac cannot apply (DM-3).
+            const answer = await this.vm.acquire(input.machine ? { purpose, machine: input.machine, env: input.env ?? 'none', ttl_hours } : { purpose, image: input.image, env: input.env ?? 'none', ttl_hours, wait: true, network, ...(input.vnc === undefined ? {} : { vnc: input.vnc }) }, { signal });
+            // The credential lives in `relay`, beside the lease record, never inside it (RP-11).
+            e.lease = answer;
+            if (answer.relay) { e.relay = answer.relay; delete e.lease.relay; }
+            if (remoteOwner(e)) {
+              if (e.backend?.machine_id && e.lease.machine_id && e.lease.machine_id !== e.backend.machine_id) await this.unknownOwner(e, new Error(`${e.machine ? 'Durable owner' : 'VM owner'} machine_id mismatch`));
+              e.backend!.machine_id ??= e.lease.machine_id;
+            }
+            if (e.machine) {
+              e.lease.vm = e.machine;
+              e.guestRoot = durableRoot(e.lease.workspace!, purpose);
+            }
+            e.acquisitionInFlight = false; granted = asked; break acquiring;
+          } catch (error) {
+            if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
+            // machine-service refused it: nothing was acquired, and the refusal passes through (DC-20).
+            else if (error instanceof MachineServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) { e.acquisitionInFlight = false; refused = true; }
+            if (!refused || !(error instanceof MachineServiceError && error.capacity)) throw error;
+            firstRefusal ??= asked;
+            if (index + 1 < targets.length) { await this.log('acquire-refused-for-capacity', undefined, { ...e.chosen, reason: error.message }); refused = false; continue; }
+            capacity = error;
           }
-          e.acquisitionInFlight = false; granted = asked; break;
-        } catch (error) {
-          if (signal?.aborted && error === signal.reason) e.acquisitionInFlight = false;
-          // machine-service refused it: nothing was acquired, and the refusal passes through (DC-20).
-          else if (error instanceof MachineServiceError && error.status !== undefined && error.status >= 400 && error.status < 500) { e.acquisitionInFlight = false; refused = true; }
-          if (!refused || !(error instanceof MachineServiceError && error.capacity) || this.m.capacityWaitMs <= 0) throw error;
-          firstRefusal ??= asked;
-          await this.waitForCapacity(e, error, firstRefusal, signal);
-          refused = false;
         }
+        if (this.m.capacityWaitMs <= 0) throw capacity!;
+        await this.waitForCapacity(e, capacity!, firstRefusal!, signal);
+        refused = false;
       }
       const waitedForCapacityMs = firstRefusal === undefined ? 0 : granted - firstRefusal;
       if (e.capacityWait) { delete e.capacityWait; await this.log('capacity-granted', undefined, { waitedForCapacityMs }); }
@@ -951,7 +1129,7 @@ class Guest {
       // that arrived after the caller cancelled stays owned and renewed, and
       // the error says so, so the agent can continue, finish or release it.
       if (signal?.aborted) throw new Error(`${String(signal.reason)}; the acquisition completed after it was cancelled: VM ${e.lease!.vm} is owned by this session as guest ${this.name}, retained and renewed. Continue with relay_stage, or call relay_finish or relay_release, naming guest ${this.name}.`, { cause: signal.reason });
-      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, ...(e.machine ? { machine: e.machine, kind: 'durable' as const, network: 'lan' as const } : { network }), waitedForCapacityMs };
+      return { ...this.status(), guestRoot: e.guestRoot, workspace: join(e.guestRoot, 'workspace'), declarations: input.extractions, ...(e.machine ? { machine: e.machine, kind: 'durable' as const, network: 'lan' as const } : { network }), ...(e.chosen ? { chosen: e.chosen } : {}), waitedForCapacityMs };
     } catch (error) {
       if (refused && await this.withdraw(error)) throw error;
       await this.fail(error);
@@ -1218,7 +1396,7 @@ class Guest {
   }
   private imageStore() {
     const e = this.current();
-    return new ImageStore({ owner: this.m.options.sessionId, enclosure: e.purpose, backend: e.machine && e.backend?.machine_id ? { machine_id: e.backend.machine_id } : e.backend,
+    return new ImageStore({ owner: this.m.options.sessionId, enclosure: e.purpose, backend: remoteOwner(e) && e.backend?.machine_id ? { machine_id: e.backend.machine_id } : e.backend,
       catalogRoot: join(this.m.root, 'image-catalog', e.purpose), hostRoot: e.hostRoot, guestRoot: e.guestRoot,
       sessionId: e.sessionId, previousEvidence: e.previousEvidence, declarations: e.extractions, transfer: this.transfer(),
       ensureGuest: async (signal, deadline) => {
@@ -1579,7 +1757,7 @@ class Guest {
         }
         if (!released) throw new Error('Lease release unconfirmed');
         if (e.machine) { if (!await this.durableReleased(e)) throw new Error(`machine-service confirmed the release of ${e.machine}, but the machine still names lease ${e.lease.lease_id}. The release is unverified; ownership retained.`); }
-        else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but Tart still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
+        else if (!await this.destroyed(e.lease.vm)) throw new Error(`machine-service relinquished ${e.lease.vm}, but ${this.m.localTart && !remoteVm(e) ? 'Tart' : 'its /machines'} still lists it. Destruction is unverified; ownership retained. See docs/verification.md dependency limitation.`);
       }
       e.released = true; await this.save().catch(() => {});
     }
@@ -1595,6 +1773,10 @@ class Guest {
   }
   private async destroyed(vm: string): Promise<boolean> {
     if (this.m.options.verifyDestroyed) return this.m.options.verifyDestroyed(vm);
+    // A host with no local Tart (Ubuntu) leases from an instance elsewhere, whose
+    // Tart store it cannot read: the instance's own inventory is asked instead.
+    // So is the instance that owns a VM on another Mac (DC-78).
+    if (!this.m.localTart || remoteVm(this.enclosure)) return !Object.hasOwn((await this.vm.list({ timeoutMs: 10000 })).machines, vm);
     // Read-only host observation, not a second guest/transfer channel. The daemon
     // currently drops its lease even when Tart deletion fails; 404 is not proof.
     const environment = this.m.environment;

@@ -112,9 +112,14 @@ without a Claude Code plugin or pi package wrapper.
 
 ### Prerequisites
 
-Node 22+, Python 3 with `fcntl` for the registry lock, and for VM execution an
-Apple-silicon Mac with Tart, a running
-[machine-service](https://github.com/WeZZard/vm-service) (formerly vm-service) and prepared guest images.
+Node 22+, Python 3 with `fcntl` for the registry lock, and a running
+[machine-service](https://github.com/WeZZard/vm-service) (formerly vm-service) with prepared guest images.
+The relay runs on macOS and on Ubuntu. Only a local Tart/machine-service
+backend needs an Apple-silicon Mac with Tart; on any other host, such as
+Ubuntu, the relay is a client of an instance on another host, and verifies a
+VM's destruction in that instance's `/machines` inventory instead of a local
+Tart inventory. Bonjour discovery uses `dns-sd` on macOS and Avahi's
+`avahi-browse` on Linux, or the relay's own multicast query when Avahi is absent.
 Check readiness with `node dist/doctor.mjs`. It does not acquire a VM or
 establish guest UI readiness. Staging and runs assume no software in the guest
 but Node.js, which runs the relay's own guest code; `relay_stage` refuses an
@@ -301,6 +306,22 @@ Failed or uncertain launches retain ownership; resolve or cancel the attempt
 rather than replaying it. Console tests use mocked backends; no live viewer,
 installation or platform acceptance is claimed here.
 
+## Every instance
+
+The relay asks every machine-service instance on the network, found as
+`machctl list` finds them, so a Mac whose own instance offers nothing still
+sees the Macs that host the VMs ([docs/instances.md](docs/instances.md)).
+
+- `relay_search` names, for each installation, the instances that offer it,
+  each with its `machine_id` and its catalog generation, and lists every
+  instance asked; an instance that did not answer is listed as unreachable.
+- `relay_probe` and `relay_acquisition_capabilities` answer per instance.
+- `relay_acquire` with `image` chooses an instance that offers the image and
+  has capacity, says which and why in `chosen`, and passes a capacity refusal
+  to the next instance. Every later call on the guest goes to that instance.
+- `instance` narrows any of these to one instance, by its name, a former name,
+  its `machine_id` or its origin. A selected environment asks only its own.
+
 ## Durable machines
 
 `relay_acquire` takes `machine` in place of `image` to lease a durable machine,
@@ -326,8 +347,9 @@ tool works on it as on a VM ([docs/durable-machines.md](docs/durable-machines.md
   `com.trycua.driver`) holds Screen Recording, read with
   `cua-driver permissions status --json` in the lease. machine-service's own
   permissions are not read, and it needs no Screen Recording grant.
-- A durable machine is on the home network and not isolated from it, a CI job
-  may share its desktop, and it has no console.
+- A durable machine is on the home network and not isolated from it, and it has
+  no console. A CI job on it holds its lease like any other client, so it never
+  shares the desktop with a lease.
 
 ## Selected environments
 
@@ -362,8 +384,8 @@ needed. Diagnostic commands appear in the review data
 as command-only steps without screenshots. `finish` verifies the package before
 destroying the VM; a failed delivery removes only the derived files it created
 and retains the VM for a corrected attempt. Cleanup checks the read-only host
-Tart inventory (the selected one, when an environment is selected) before
-claiming destruction. Leases default to 4 hours, renewed 15 minutes at a
+Tart inventory (the selected one, when an environment is selected; on a host
+with no local Tart, the instance's `/machines` inventory) before claiming destruction. Leases default to 4 hours, renewed 15 minutes at a
 time up to that TTL; the machine-service reaper is the final backstop for process death.
 
 Relay evidence has no size limit (owner decision PS-D12): screenshots are
@@ -379,8 +401,8 @@ keeps the VM for a retry after space is freed.
 
 - `MCP_RELAY_PROJECT`: the project directory (the plugin passes Claude Code's). Evidence lands under `relay-evidence/<task>/` there. Every host file the relay reads, `relay_stage`'s `workspace` and `files[].local` and `relay_script`'s `localPath`, lies in this folder: a relative path resolves against it, an absolute path must already lie in it, and a path through a symlink is refused.
 - `MCP_RELAY_SESSION`: an explicit session identity. By default each server process takes a fresh random one; a stable identity lets a restarted server reconcile and reattach the guests of the same identity.
-- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; a durable machine's instance on another Mac is reached only when discovery finds it.
-- `MACHINE_SERVICE_DISCOVERY`: how durable machines' instances are found, `bonjour` (the default) or `consul`, as for machine-service and machctl.
+- `MCP_RELAY_URL`: the loopback machine-service origin, default `http://localhost:6240`. Non-loopback servers and redirects are refused; an instance on another Mac is reached only when discovery finds it.
+- `MACHINE_SERVICE_DISCOVERY`: how the other instances are found, `bonjour` (the default: `dns-sd -Z` on macOS, `avahi-browse` on Linux, else the relay's own multicast query) or `consul`, as for machine-service and machctl.
 - `CONSUL_HTTP_ADDR`: the Consul agent that lists machine-service instances, in Consul mode; default `http://127.0.0.1:8500`.
 - `MCP_RELAY_GUEST_NETWORK`: the network every guest is acquired on, `nat` (the default) or `internet`. With `internet`, machine-service gives a guest that reaches the internet and reaches neither this host nor any private network; an application that hosts agents sets it. The agent cannot choose it: `relay_acquire` takes no network. Any other value stops the server at startup and refuses every acquisition, and a machine-service that cannot give `internet` refuses the acquisition with its own reason, never falling back to `nat`.
 - `MCP_RELAY_ON_EXIT`: what the end of a session does to its guests, `pause` (the default: renewal pauses and the VMs are kept for an explicit finish or release) or `release` (every guest is released, then the server exits). An application that owns its tasks' machines, such as The Desk, sets `release`. Any other value stops the server at startup.
@@ -403,13 +425,20 @@ npm run setup:dev -- /absolute/path/to/built/relay-driver
 npm run check                                            # build, typecheck, tests
 ```
 
+The tests start from an empty environment (`scripts/test.mjs`): nothing in
+your shell, such as `VM_ENVIRONMENT_FILE`, `MCP_RELAY_URL`, `MACHCTL`, `TART`
+or `TART_HOME`, reaches them, and a relay a test starts is refused the
+installed instance's origin. Only variables named `MCP_RELAY_TEST_*` pass, as
+the tests' own inputs. Run a single file the same way:
+`node scripts/test.mjs tests/server.test.ts`.
+
 Three tests need something outside this repository and skip with a message
 when it is absent: the console fixture regeneration needs a historical
 `../vm-service` checkout with the Python backend (or
-`VM_SERVICE_PYTHON_BACKEND`); the environment parity test needs
-machine-service's `machctl` (`MACHCTL`, `PATH`, or a release build in
-`../machine-service/rust`) and `../pilot-images`; and the shared catalog text
-corpus needs `../pilot-images`. The JPEG and WebP presentation fixtures in
+`MCP_RELAY_TEST_PYTHON_BACKEND`); the environment parity test needs a
+`machctl` built from source (`MCP_RELAY_TEST_MACHCTL`, or a release build in
+`../machine-service/rust`; never one on PATH) and `../pilot-images`; and the
+shared catalog text corpus needs `../pilot-images`. The JPEG and WebP presentation fixtures in
 `tests/fixtures/` were encoded once from the test's spatial PNG with a codec
 outside this repository and are committed, because the core carries none.
 
@@ -429,8 +458,11 @@ the stand-in before anything is acquired), an invalid call refused by the
 contract, a full acquire, stage, exec, finish lifecycle with a verified package,
 and a lease abandoned when the session ends, which is retained with its renewal
 paused rather than released. What is checked is what happened on disk and at
-the service, not what the model said. The suite needs `claude` on PATH with an
-account and spends a few model turns per case, so it is not part of `npm test`.
+the service, not what the model said. Each session has its own HOME and
+`CLAUDE_CONFIG_DIR`, so only the plugin under test loads. The suite needs the
+Claude Code executable named by `MCP_RELAY_TEST_CLAUDE` and a credential in
+`MCP_RELAY_TEST_ANTHROPIC_API_KEY` or `MCP_RELAY_TEST_CLAUDE_CODE_OAUTH_TOKEN`,
+and spends a few model turns per case, so it is not part of `npm test`.
 
 The relay-driver links are development-only. The tests run the manager, the
 guest programs and the shipped server against fixture HTTP services, fixture

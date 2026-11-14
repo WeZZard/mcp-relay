@@ -11,6 +11,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { instructions, relayTools } from '../src/core.js';
 import type { RelayManager } from '../src/manager.js';
 import { PLUGIN_TOOL_PREFIX, STATUS_TOOL, createRelayServer, projectDirectory, relayContent } from '../src/server.js';
+import { childEnvironment } from './isolation.js';
 
 const run = promisify(execFile);
 const server = resolve('dist/server.mjs');
@@ -28,7 +29,7 @@ test('the project directory comes from the plugin, unless the placeholder was ne
 });
 
 test('the server refuses to start on a guest network other than nat or internet (DC-17)', async () => {
-  await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_GUEST_NETWORK: 'host' } }), (error: any) => {
+  await assert.rejects(run(process.execPath, [server], { env: childEnvironment({ MCP_RELAY_GUEST_NETWORK: 'host', MCP_RELAY_URL: 'http://127.0.0.1:9' }) }), (error: any) => {
     assert.equal(error.code, 1);
     assert.match(error.stderr, /MCP_RELAY_GUEST_NETWORK must be nat or internet, not "host"/);
     return true;
@@ -37,7 +38,7 @@ test('the server refuses to start on a guest network other than nat or internet 
 
 test('the server refuses to start on a capacity wait that is not whole seconds (DC-22)', async () => {
   for (const value of ['', '-1', '1.5', '30m']) {
-    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_CAPACITY_WAIT: value } }), (error: any) => {
+    await assert.rejects(run(process.execPath, [server], { env: childEnvironment({ MCP_RELAY_CAPACITY_WAIT: value, MCP_RELAY_URL: 'http://127.0.0.1:9' }) }), (error: any) => {
       assert.equal(error.code, 1, value);
       assert.match(error.stderr, /MCP_RELAY_CAPACITY_WAIT must be a nonnegative integer of seconds/, value);
       return true;
@@ -47,7 +48,7 @@ test('the server refuses to start on a capacity wait that is not whole seconds (
 
 test('the server refuses to start on an exit behaviour other than pause or release (DC-21)', async () => {
   for (const value of ['', 'destroy', 'Release']) {
-    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_ON_EXIT: value } }), (error: any) => {
+    await assert.rejects(run(process.execPath, [server], { env: childEnvironment({ MCP_RELAY_ON_EXIT: value, MCP_RELAY_URL: 'http://127.0.0.1:9' }) }), (error: any) => {
       assert.equal(error.code, 1, value);
       assert.match(error.stderr, /MCP_RELAY_ON_EXIT must be pause or release/, value);
       return true;
@@ -57,7 +58,7 @@ test('the server refuses to start on an exit behaviour other than pause or relea
 
 test('the server refuses to start on a guest limit that is not a positive integer (DC-20)', async () => {
   for (const value of ['0', '-1', '2.5', 'four', '']) {
-    await assert.rejects(run(process.execPath, [server], { env: { ...process.env, MCP_RELAY_MAX_GUESTS: value } }), (error: any) => {
+    await assert.rejects(run(process.execPath, [server], { env: childEnvironment({ MCP_RELAY_MAX_GUESTS: value, MCP_RELAY_URL: 'http://127.0.0.1:9' }) }), (error: any) => {
       assert.equal(error.code, 1, value);
       assert.match(error.stderr, /MCP_RELAY_MAX_GUESTS must be a positive integer/, value);
       return true;
@@ -74,32 +75,31 @@ test('no text tells the agent to relay only interruptive work (DC-14)', async ()
 });
 
 test('the CLI prints the instructions text and the full table of tool schemas', async () => {
-  const { stdout } = await run(process.execPath, [server, '--instructions']);
+  const { stdout } = await run(process.execPath, [server, '--instructions'], { env: childEnvironment() });
   assert.equal(stdout, `${instructions}\n`);
   assert.match(stdout, /relay_probe/);
   assert.match(stdout, /relay_acquire/);
   assert.match(stdout, /after-image is returned as pending and downloaded in the background, so call relay_image with the imageId/);
-  const schema = JSON.parse((await run(process.execPath, [server, '--schema'])).stdout);
+  const schema = JSON.parse((await run(process.execPath, [server, '--schema'], { env: childEnvironment() })).stdout);
   assert.deepEqual(schema.map((tool: any) => tool.name).sort(), [...allToolNames].sort());
   for (const tool of schema) {
     assert.ok(tool.title?.length > 0, tool.name);
     assert.ok(tool.annotations, tool.name);
     assert.equal(tool.inputSchema.type, 'object');
   }
-  await assert.rejects(run(process.execPath, [server, '--nonsense']), /Usage/);
+  await assert.rejects(run(process.execPath, [server, '--nonsense'], { env: childEnvironment() }), /Usage/);
 });
 
 async function fixture(t: { after(fn: () => Promise<unknown>): void }) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'mcp-relay-')));
   const project = join(root, 'project'); await mkdir(project);
   t.after(() => rm(root, { recursive: true, force: true }));
-  const transport = new StdioClientTransport({ command: process.execPath, args: [server], env: {
-    ...process.env as Record<string, string>,
+  const transport = new StdioClientTransport({ command: process.execPath, args: [server], env: childEnvironment({
     MCP_RELAY_PROJECT: project, MCP_RELAY_SESSION: 'test-session',
     HOME: root, // no ~/AGENTS.md here: the relay keeps a private registry in its own state directory
     MCP_RELAY_STATE_DIR: join(root, 'state'),
     MCP_RELAY_URL: 'http://127.0.0.1:9', // nothing listens: every service call fails fast and visibly
-  } });
+  }) });
   const client = new Client({ name: 'mcp-relay-test', version: '0' });
   await client.connect(transport);
   t.after(() => client.close());
@@ -180,7 +180,8 @@ test('a valid call that reaches an unreachable service is an error result, not a
   const { client } = await fixture(t);
   const result: any = await client.callTool({ name: 'relay_search', arguments: { name: 'Firefox' } });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /machine-service \/applications: request failed/);
+  // Every instance asked is named with why it did not answer (DC-76).
+  assert.match(result.content[0].text, /No machine-service instance answered with an application catalog: local \(http:\/\/127\.0\.0\.1:9\): machine-service \/health: request failed/);
   const status: any = await client.callTool({ name: STATUS_TOOL, arguments: {} });
   assert.equal(JSON.parse(status.content[0].text).active, false);
 });

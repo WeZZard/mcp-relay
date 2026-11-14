@@ -110,6 +110,12 @@ are errors. These bounds cap parsing/matching work; there is no backend partial
 success or hidden pagination. The extension validates the envelope independently
 and applies matching and public response limits below.
 
+## Every instance
+
+- This contract was written when the relay and machine-service ran on one Mac, so the relay asked only its loopback instance. A Mac may now run an instance that offers nothing (machine-service DC-93), and that instance's empty catalog must never stand for the network's.
+- relay_search asks every instance that discovery finds, or the one `instance` names, and matches each instance's catalog on its own by the rules below. Each installation names the instances that offer it, with their `machine_id` and catalog `generation`, and the result lists every instance asked; an instance that did not answer is listed as unreachable, never left out. An installation whose facts differ between instances is listed once for each set of facts, instead of being a conflict. The search is an error only when no instance answered with a valid catalog ([instances.md §3](instances.md#3-questions-dc-7x-fed-2-dc-7x-fed-3), machine-service FD-7).
+- The response budget below counts the whole result, with the instance lists.
+
 ## Response budget
 
 The extension returns at most **100 installation records** across application

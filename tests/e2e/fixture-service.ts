@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, chmod, copyFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join, resolve } from 'node:path';
+import { childEnvironment } from '../isolation.js';
 
 const [root, infoFile] = process.argv.slice(2);
 if (!root || !infoFile) { process.stderr.write('usage: fixture-service.ts <root> <info-file>\n'); process.exit(2); }
@@ -54,7 +55,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (!['node', process.execPath, '/bin/mkdir', '/usr/bin/env'].includes(argv[0]!)) return respond(res, 400, { error: `Unexpected fixture executable: ${argv[0]}` });
   if (argv[0] === '/bin/mkdir') for (const dir of argv.slice(2)) { const m = /^(\/var\/tmp\/[^/]+-mcp-relay-[^/]+)(?:\/|$)/.exec(dir); if (m) guestRoots.add(m[1]!); }
   const response = await new Promise<{ rc: number; output: string }>((done, reject) => {
-    const child = spawn(argv[0]!, argv.slice(1), { cwd: root, env: { PATH: process.env.PATH!, HOME: root }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: root, env: childEnvironment({ HOME: root }), stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     child.stdout.on('data', data => { output += String(data); }); child.stderr.on('data', data => { output += String(data); });
     child.on('error', reject); child.on('close', code => done({ rc: code ?? 1, output }));

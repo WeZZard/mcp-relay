@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
-import { RelayManager, type AcquireInput, type ManagerOptions } from '../src/manager.js';
+import { RelayManager, type AcquireInput, type ManagerOptions, type ManagerSettings } from '../src/manager.js';
 import { Registry } from '../src/registry.js';
 import { MachineService, MachineServiceError, capacityRefusal } from '../src/machine-service.js';
 import { durableCapture } from '../src/capture-gate.js';
 import { consulAddress, discoveryMode, findDurableOwner, parseRegistrations } from '../src/discovery.js';
 import { assemble, browse as mdnsBrowse, encodeQuery, parseRecords, type Advertised } from '../src/mdns.js';
 import { validateRelayInput } from '../src/schema.js';
+import { childEnvironment, childPath } from './isolation.js';
 
 /**
  * Durable machines (docs/durable-machines.md): the cua-driver snapshot gate,
@@ -326,7 +327,7 @@ class DurableService {
     }
     const argv: string[] = body.argv;
     const response = await new Promise<{ rc: number; output: string }>((resolve, reject) => {
-      const child = spawn(argv[0], argv.slice(1), { cwd: join(this.lease!.workspace, 'work'), env: { PATH: `${localBin}:${process.env.PATH}`, HOME: this.root }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(argv[0], argv.slice(1), { cwd: join(this.lease!.workspace, 'work'), env: childEnvironment({ PATH: childPath(localBin), HOME: this.root }), stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       child.stdout.on('data', data => { output += String(data); }); child.stderr.on('data', data => { output += String(data); });
       child.on('error', reject); child.on('close', code => resolve({ rc: code ?? 1, output }));
@@ -341,7 +342,7 @@ function virtualOnly() {
   return { baseUrl: 'http://localhost:6240', list: async () => ({ machines: {}, limits: { max_macos_running: 2, grace_hours: 6 }, pilot_repo: '', port: 6240 }), health: async () => ({ ok: true, service: 'machine-service' }) } as any;
 }
 
-async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
+async function fixture(t: TestContext, patch: Partial<ManagerSettings> = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-durable-')));
   const registryPath = join(root, 'AGENTS.md'); await writeFile(registryPath, registryText);
   const service = new DurableService(root), origin = await service.start();
@@ -351,7 +352,7 @@ async function fixture(t: TestContext, patch: Partial<ManagerOptions> = {}) {
   await setPermissions({ code: 0, stdout: daemon() });
   await writeFile(driver, `#!${process.execPath}\nconst fs=require('node:fs');const [a,b,c]=process.argv.slice(2);if(a==='permissions'&&b==='status'&&c==='--json'){const p=JSON.parse(fs.readFileSync(${JSON.stringify(permissions)},'utf8'));process.stdout.write(p.stdout);process.exit(p.code);}if(a!=='call'||b!=='get_desktop_state'||c!=='--json')process.exit(99);const o=JSON.parse(process.argv[5]);fs.appendFileSync(${JSON.stringify(join(root, 'captures.jsonl'))},JSON.stringify(o)+'\\n');fs.writeFileSync(o.screenshot_out_file,Buffer.from('${png}','base64'));console.log(JSON.stringify({screenshot_file_path:o.screenshot_out_file}));`);
   await chmod(driver, 0o700);
-  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, discovery: 'consul', consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(service.origin).port), Meta: { instance: service.name, ...(service.machineId ? { machine_id: service.machineId } : {}) } } }], ...patch };
+  const options: ManagerOptions = { project: root, sessionId: randomUUID(), stateRoot: join(root, 'state'), tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), outputRoot: join(root, 'packages'), registry: new Registry(registryPath), vm: virtualOnly(), runtimeBundle: bundle, heartbeatMs: 60000, captureReadyWaitMs: 1000, captureReadyRetryMs: 50, capacityRetryMs: 20, discovery: 'consul', consulFetch: async () => [{ Node: { Node: 'fixture' }, Service: { Address: '127.0.0.1', Port: Number(new URL(service.origin).port), Meta: { instance: service.name, ...(service.machineId ? { machine_id: service.machineId } : {}) } } }], ...patch };
   const manager = new RelayManager(options);
   t.after(async () => { await manager.release().catch(() => {}); await manager.cleanup('test teardown'); await service.close(); await rm(root, { recursive: true, force: true }); });
   const acquire = (patch: Partial<AcquireInput> = {}) => manager.acquire({ machine: MACHINE, task: 'durable', extractions: [{ name: 'artifact', path: 'artifact.txt' }], ttlHours: 0.5, ...patch });

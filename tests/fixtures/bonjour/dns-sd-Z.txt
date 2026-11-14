@@ -1,0 +1,50 @@
+Browsing for _relayfixture._tcp.local.
+DATE: ---Mon 02 Nov 2026---
+18:20:21.038  ...STARTING...
+
+; To direct clients to browse a different domain, substitute that domain in place of '@'
+lb._dns-sd._udp                                 PTR     @
+
+; In the list of services below, the SRV records will typically reference dot-local Multicast DNS names.
+; When transferring this zone file data to your unicast DNS server, you'll need to replace those dot-local
+; names with the correct fully-qualified (unicast) domain name of the target host offering the service.
+
+_relayfixture._tcp                              PTR     Fixture\032A._relayfixture._tcp
+Fixture\032A._relayfixture._tcp                 SRV     0 0 6241 fixture-a.local. ; Replace with unicast FQDN of target host
+Fixture\032A._relayfixture._tcp                 TXT     "txtvers=1" "instance=Fixture A" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "kinds=durable"
+
+_relayfixture._tcp                              PTR     fixture-l._relayfixture._tcp
+fixture-l._relayfixture._tcp                    SRV     0 0 6240 fixture-l.local. ; Replace with unicast FQDN of target host
+fixture-l._relayfixture._tcp                    TXT     "txtvers=1" "instance=fixture-l" "kinds=virtual"
+
+_relayfixture._tcp                              PTR     Fixture\032A._relayfixture._tcp
+Fixture\032A._relayfixture._tcp                 SRV     0 0 6241 fixture-a.local. ; Replace with unicast FQDN of target host
+Fixture\032A._relayfixture._tcp                 TXT     "txtvers=1" "instance=Fixture A" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "kinds=durable"
+
+_relayfixture._tcp                              PTR     fixture-l._relayfixture._tcp
+fixture-l._relayfixture._tcp                    SRV     0 0 6240 fixture-l.local. ; Replace with unicast FQDN of target host
+fixture-l._relayfixture._tcp                    TXT     "txtvers=1" "instance=fixture-l" "kinds=virtual"
+
+_relayfixture._tcp                              PTR     Fixture\032A._relayfixture._tcp
+Fixture\032A._relayfixture._tcp                 SRV     0 0 6241 fixture-a.local. ; Replace with unicast FQDN of target host
+Fixture\032A._relayfixture._tcp                 TXT     "txtvers=1" "instance=Fixture A" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "kinds=durable"
+
+_relayfixture._tcp                              PTR     fixture-l._relayfixture._tcp
+fixture-l._relayfixture._tcp                    SRV     0 0 6240 fixture-l.local. ; Replace with unicast FQDN of target host
+fixture-l._relayfixture._tcp                    TXT     "txtvers=1" "instance=fixture-l" "kinds=virtual"
+
+_relayfixture._tcp                              PTR     Fixture\032A._relayfixture._tcp
+Fixture\032A._relayfixture._tcp                 SRV     0 0 6241 fixture-a.local. ; Replace with unicast FQDN of target host
+Fixture\032A._relayfixture._tcp                 TXT     "txtvers=1" "instance=Fixture A" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "kinds=durable"
+
+_relayfixture._tcp                              PTR     fixture-l._relayfixture._tcp
+fixture-l._relayfixture._tcp                    SRV     0 0 6240 fixture-l.local. ; Replace with unicast FQDN of target host
+fixture-l._relayfixture._tcp                    TXT     "txtvers=1" "instance=fixture-l" "kinds=virtual"
+
+_relayfixture._tcp                              PTR     Fixture\032A._relayfixture._tcp
+Fixture\032A._relayfixture._tcp                 SRV     0 0 6241 fixture-a.local. ; Replace with unicast FQDN of target host
+Fixture\032A._relayfixture._tcp                 TXT     "txtvers=1" "instance=Fixture A" "machine_id=7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6" "kinds=durable"
+
+_relayfixture._tcp                              PTR     fixture-l._relayfixture._tcp
+fixture-l._relayfixture._tcp                    SRV     0 0 6240 fixture-l.local. ; Replace with unicast FQDN of target host
+fixture-l._relayfixture._tcp                    TXT     "txtvers=1" "instance=fixture-l" "kinds=virtual"

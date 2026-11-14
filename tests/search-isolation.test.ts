@@ -14,18 +14,24 @@ test('search does not recover a durable lease, acquire locks or access registry/
   const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-search-isolation-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls: string[] = [];
+  // Search asks each instance its name and its catalog questions only (DC-76).
   const vm = new Proxy({}, { get(_target, key) {
+    if (key === 'baseUrl') return 'http://127.0.0.1:9';
+    if (key === 'health') return async () => ({ ok: true, service: 'machine-service', instance: 'this-mac', machine_id: 'id-this-mac' });
+    if (key === 'images') return async () => ({ images: {}, capacity: {}, catalog: { status: 'current', generation: 3 } });
     if (key === 'applications') return async () => { calls.push('applications'); return { schemaVersion: 1, images: [] }; };
     throw new Error(`Unexpected VM access: ${String(key)}`);
   } }) as MachineService;
   const registry = new Proxy({}, { get() { throw new Error('Registry accessed'); } }) as Registry;
-  const manager = new RelayManager({ sessionId: 'search-only', project: root, stateRoot: root, vm, registry });
+  const manager = new RelayManager({ sessionId: 'search-only', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), vm, registry });
   await mkdir(manager.root, { mode: 0o700 });
   const original = JSON.stringify({ task: 'interrupted', lease: { vm: 'must-not-touch' } });
   await writeFile(join(manager.root, 'lease.json'), original, { mode: 0o600 });
   const response = await relayCall(() => manager, { action: 'search', name: 'Firefox' }, { toolCallId: 'isolation-call' });
   assert.equal(response.isError, false);
-  assert.deepEqual(JSON.parse(response.text), { applications: [], truncated: false });
+  assert.deepEqual(JSON.parse(response.text), { applications: [], truncated: false, discovery: JSON.parse(response.text).discovery,
+    instances: [{ instance: 'this-mac', machine_id: 'id-this-mac', origin: 'http://127.0.0.1:9', local: true, reachable: true, generation: 3, status: 'current' }] });
+  assert.match(JSON.parse(response.text).discovery, /MCP_RELAY_ISOLATED=1/);
   assert.deepEqual(calls, ['applications']);
   assert.equal(await readFile(join(manager.root, 'lease.json'), 'utf8'), original);
   assert.deepEqual((await readdir(manager.root)).sort(), ['lease.json', 'search-diagnostics']);
@@ -60,7 +66,7 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
-  const manager = new RelayManager({ sessionId: 'active', project: root, stateRoot: root, outputRoot: join(root, 'packages'),
+  const manager = new RelayManager({ sessionId: 'active', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), outputRoot: join(root, 'packages'),
     registry: new Registry(registryPath), vm: new MachineService({ baseUrl: `http://127.0.0.1:${address.port}` }), heartbeatMs: 1000, verifyDestroyed: async () => true });
   t.after(async () => {
     t.mock.timers.reset();
@@ -109,14 +115,16 @@ test('initialized active lease and scheduled heartbeat survive search and diagno
   };
   await pulse();
   requests.length = 0;
-  assert.deepEqual(await manager.search({ name: 'Firefox' }), { applications: [], truncated: false });
-  assert.deepEqual(requests, ['GET /applications']);
+  const found = await manager.search({ name: 'Firefox' });
+  assert.deepEqual([found.applications, found.truncated, found.instances.map(i => [i.local, i.reachable])], [[], false, [[true, true]]]);
+  // The instance's name, its catalog and its catalog's generation; no lease API (DC-76).
+  assert.deepEqual(requests.sort(), ['GET /applications', 'GET /health', 'GET /images']);
   await unchanged();
   await pulse();
   await writeFile(join(manager.root, 'search-diagnostics', 'foreign'), 'preserve');
   requests.length = 0;
   await assert.rejects(manager.search({ name: 'Firefox' }), /Unrecognized/);
-  assert.deepEqual(requests, ['GET /applications']);
+  assert.deepEqual(requests.sort(), ['GET /applications', 'GET /health', 'GET /images']);
   assert.equal(await readFile(join(manager.root, 'search-diagnostics', 'foreign'), 'utf8'), 'preserve');
   await unchanged();
   await pulse();
@@ -127,7 +135,7 @@ test('catalog outage is an error with diagnostics, without cleanup or ownership 
   t.after(() => rm(root, { recursive: true, force: true }));
   const vm = { applications: async () => { throw new Error('catalog unavailable'); } } as unknown as MachineService;
   const registry = new Proxy({}, { get() { throw new Error('Registry accessed'); } }) as Registry;
-  const manager = new RelayManager({ sessionId: 'outage', project: root, stateRoot: root, vm, registry });
+  const manager = new RelayManager({ sessionId: 'outage', project: root, stateRoot: root, tartHome: join(root, 'tart'), tartPath: join(root, 'no-tart'), vm, registry });
   await assert.rejects(manager.search({ name: 'Firefox' }), /catalog unavailable/);
   assert.deepEqual(await readdir(manager.root), ['search-diagnostics']);
   const files = await readdir(join(manager.root, 'search-diagnostics'));

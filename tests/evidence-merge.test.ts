@@ -5,6 +5,7 @@ import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { refreshEvidenceState } from "../src/evidence-merge.js";
+import { childEnvironment } from './isolation.js';
 
 async function save(root: string, path: string, data: string) {
   await mkdir(dirname(join(root, path)), { recursive: true });
@@ -127,7 +128,7 @@ for (const location of ["incoming", "destination"] as const) {
       if (kind === "symlink") await symlink(join(f.root, "outside/original"), target);
       if (kind === "directory-symlink") await symlink(join(f.root, "outside"), target);
       if (kind === "hardlink") await link(join(f.root, "outside/original"), target);
-      if (kind === "fifo") execFileSync("mkfifo", [target]);
+      if (kind === "fifo") execFileSync("mkfifo", [target], { env: childEnvironment() });
       if (kind === "unsafe-name") await save(f[location], "bad\\name", "unsafe");
       await assert.rejects(f.refresh(), /symlink|non-regular|unsafe/);
       assert.equal(await readFile(join(f.destination, "journal/events.jsonl"), "utf8"), "prior");

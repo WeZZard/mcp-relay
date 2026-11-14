@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { pythonExecutable } from "../src/config.js";
 import { Registry, RegistryError, resolveRegistry, validateRegistryText, type RegistryRow } from "../src/registry.js";
+import { childEnvironment } from './isolation.js';
 
 const fixture = `# Personal instructions
 
@@ -96,7 +97,7 @@ test("concurrent processes serialize updates without lost rows", async t => {
   const children = Array.from({ length: 10 }, (_, i) => {
     const current = { ...row, taskName: `parallel-${i}`, machine: `vm-${i}` };
     const script = `import { Registry } from ${JSON.stringify(modulePath)}; await new Registry(${JSON.stringify(path)}).add(${JSON.stringify(current)});`;
-    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: childEnvironment(), stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", chunk => { stderr += chunk; });
     return once(child, "close").then(([code]) => assert.equal(code, 0, stderr));
@@ -108,7 +109,7 @@ test("concurrent processes serialize updates without lost rows", async t => {
 });
 
 async function holdLock(path: string) {
-  const child = spawn(pythonExecutable(), ["-u", "-c", "import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600); fcntl.flock(fd,fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.read()", `${path}.mcp-vm-relay.lock`], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(pythonExecutable(), ["-u", "-c", "import fcntl,os,sys; fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o600); fcntl.flock(fd,fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.read()", `${path}.mcp-vm-relay.lock`], { env: childEnvironment(), stdio: ["pipe", "pipe", "pipe"] });
   await once(child.stdout, "data");
   return child;
 }
@@ -147,7 +148,7 @@ test("killed Node owner closes helper pipe and releases its kernel lock", async 
   const modulePath = fileURLToPath(new URL("../src/registry.ts", import.meta.url));
   // Exercise the private lock primitive to pause deterministically inside a critical section.
   const script = `import { Registry } from ${JSON.stringify(modulePath)}; await new Registry(${JSON.stringify(path)}).lock(${JSON.stringify(`${path}.mcp-vm-relay.lock`)}); console.log('held'); setInterval(() => {}, 1000);`;
-  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: childEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => { child.kill("SIGKILL"); });
   await once(child.stdout, "data");
   const closed = once(child, "close");
@@ -232,7 +233,7 @@ test('managed state never chmods an existing public directory', async t => {
 test("concurrent fresh default initialization is atomic, private, and supports later add/remove", { timeout: 30_000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "relay-managed-concurrent-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: dir };
+  const env = childEnvironment({ HOME: dir });
   delete env.MCP_RELAY_STATE_DIR;
   delete env.XDG_STATE_HOME;
   delete env.MCP_RELAY_REGISTRY;

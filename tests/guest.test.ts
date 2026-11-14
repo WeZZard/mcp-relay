@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { RecordStore } from "@wezzard/relay-driver-remote-runtime";
 import { MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, interpreterArgv, receive, validateImageEvidence, type DispatchResult, type GuestRequest, type ReceiveOptions } from "../src/guest/receiver.js";
+import { childEnvironment } from './isolation.js';
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO/8AAAAASUVORK5CYII=", "base64");
 const success: DispatchResult = { exitStatus: { code: 0, signal: null }, stdout: "done" };
@@ -357,7 +358,7 @@ test("stale locks require dead-owner and inactive-operation proof; ambiguous ref
   const lock = join(root, ".receiver-lock");
   // Obtain a real, reaped PID rather than guessing an unused number.
   const deadPid = await new Promise<number>((resolvePid, reject) => {
-    const child = spawn(process.execPath, ["-e", ""]);
+    const child = spawn(process.execPath, ["-e", ""], { env: childEnvironment() });
     child.on("error", reject); child.on("close", () => resolvePid(child.pid!));
   });
   await mkdir(lock);
@@ -377,7 +378,7 @@ test("stale active locks require proof that all recorded process groups have exi
   const { root, options } = await setup(t);
   const lock = join(root, ".receiver-lock");
   const deadPid = await new Promise<number>((resolvePid, reject) => {
-    const child = spawn(process.execPath, ["-e", ""], { detached: true });
+    const child = spawn(process.execPath, ["-e", ""], { env: childEnvironment(), detached: true });
     child.on("error", reject); child.on("close", () => resolvePid(child.pid!));
   });
   await mkdir(lock);
@@ -560,7 +561,7 @@ test("file-argument CLI emits exactly one framed response and captures through c
   await chmod(driver, 0o700);
   const path = join(root, "request.json");
   await writeFile(path, JSON.stringify(request("cli", { code: sh([process.execPath, "-e", "console.log('cli result')"]) })));
-  const env = { ...process.env, RELAY_RUNTIME_ROOT: root, RELAY_CUA_DRIVER: driver };
+  const env = childEnvironment({ RELAY_RUNTIME_ROOT: root, RELAY_CUA_DRIVER: driver });
   const result = await cli(path, env);
   assert.equal(result.code, 0); assert.equal(result.stderr, "");
   assert.equal(result.stdout.trim().split("\n").length, 1);
@@ -613,7 +614,7 @@ test("without tsx, a TypeScript script runs with this Node.js's type stripping a
     await writeFile(script, "const n: number = 42; console.log('typed', n);\n");
     const argv = await interpreterArgv("typescript", script, async () => false);
     const out = await new Promise<string>((done, fail) => {
-      const child = spawn(argv[0]!, argv.slice(1)); let text = "";
+      const child = spawn(argv[0]!, argv.slice(1), { env: childEnvironment() }); let text = "";
       child.stdout.on("data", chunk => { text += chunk; });
       child.on("error", fail); child.on("close", code => code === 0 ? done(text) : fail(new Error(`exit ${code}`)));
     });

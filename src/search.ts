@@ -51,10 +51,22 @@ export function validateCatalog(value: unknown): asserts value is ApplicationCat
   if (value.images.reduce((n, image) => n + image.applications.length, 0) > 20000) throw new Error('Application catalog exceeds installation limit');
 }
 
-/** Pure matching: never touches a VM, registry, filesystem or lifecycle state. */
-export function searchCatalog(value: unknown, query: SearchQuery): SearchResult {
+type Match = { id: string; name: string; rank: number; installations: Installation[] };
+function checkQuery(query: SearchQuery) {
   if (typeof query.name !== 'string' || !query.name.trim()) throw new Error('Search name must be nonblank');
   if (query.os !== undefined && query.os !== 'linux' && query.os !== 'macos') throw new Error('Invalid search OS');
+}
+const byRank = (a: Match, b: Match) => a.rank - b.rank || compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name) || compare(a.id, b.id);
+
+/** Pure matching: never touches a VM, registry, filesystem or lifecycle state. */
+export function searchCatalog(value: unknown, query: SearchQuery): SearchResult {
+  checkQuery(query);
+  const result: SearchResult = { applications: [], truncated: false };
+  return budget(result, matchCatalog(value, query));
+}
+
+/** Every application of one catalog that matches, best first, with its installations sorted by image. */
+function matchCatalog(value: unknown, query: SearchQuery): Match[] {
   validateCatalog(value);
   const needle = normalizeSearchName(query.name);
   const groups = new Map<string, { name: string; aliases: Set<string>; installations: Map<string, Installation> }>();
@@ -84,15 +96,22 @@ export function searchCatalog(value: unknown, query: SearchQuery): SearchResult 
       if (rank === 0) break;
     }
     return rank === 3 ? [] : [{ id, name: group.name, rank, installations }];
-  }).sort((a, b) => a.rank - b.rank || compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.name, b.name) || compare(a.id, b.id));
-  const result: SearchResult = { applications: [], truncated: false };
+  });
+  return matches.sort(byRank);
+}
+
+/**
+ * Take a prefix of complete installations within SEARCH_LIMITS, serializing
+ * `result` as it grows, and mark it truncated when any is left out.
+ */
+function budget<I, R extends { applications: Array<{ name: string; installations: I[] }>; truncated: boolean }>(result: R, matches: Array<{ name: string; installations: I[] }>): R {
   let count = 0;
   for (const match of matches) {
-    const group: SearchResult['applications'][number] = { name: match.name, installations: [] };
+    const group = { name: match.name, installations: [] as I[] };
     result.applications.push(group);
     for (const installation of match.installations) {
       group.installations.push(installation);
-      const serialized = serializeSearchResult(result);
+      const serialized = JSON.stringify(result, null, 2);
       if (count === SEARCH_LIMITS.installations || Buffer.byteLength(serialized) > SEARCH_LIMITS.bytes || serialized.split('\n').length > SEARCH_LIMITS.lines) {
         group.installations.pop();
         if (!group.installations.length) result.applications.pop();
@@ -103,4 +122,59 @@ export function searchCatalog(value: unknown, query: SearchQuery): SearchResult 
     }
   }
   return result;
+}
+
+/** An instance as a search result names it (machine-service FD-7). */
+export interface InstanceRef { instance: string; machine_id: string | null }
+/** One instance's catalog, or why there is none. */
+export interface InstanceCatalog extends InstanceRef { origin: string; local: boolean; reachable: boolean; catalog?: unknown; generation?: number | null; status?: string | null; error?: string }
+/** An installation, and the instances that offer it with that version, each with its catalog generation. */
+export interface FederatedInstallation extends Installation { instances: Array<InstanceRef & { generation: number | null }> }
+export interface FederatedSearchResult {
+  applications: Array<{ name: string; installations: FederatedInstallation[] }>;
+  /** Every instance asked: whether it answered, and its catalog's generation and status, or its error. */
+  instances: Array<Omit<InstanceCatalog, 'catalog'>>;
+  /** Why discovery found no instance beyond the loopback one, when it could not look. */
+  discovery?: string;
+  truncated: boolean;
+}
+
+/**
+ * Search every instance's catalog (machine-service FD-7). Each catalog is
+ * matched on its own, as one catalog is; an installation that two instances
+ * offer with the same facts is listed once with both, and one whose facts
+ * differ between instances, such as a version not yet synced, is listed once
+ * per version. An instance that did not answer, or whose catalog is invalid,
+ * is reported in `instances` with its error; only when no instance answered
+ * with a valid catalog is the search an error, never an empty result.
+ */
+export function searchInstances(catalogs: InstanceCatalog[], query: SearchQuery, discovery?: string): FederatedSearchResult {
+  checkQuery(query);
+  const merged = new Map<string, Omit<Match, 'installations'> & { installations: FederatedInstallation[] }>();
+  const reported: FederatedSearchResult['instances'] = [];
+  for (const { catalog, ...entry } of catalogs) {
+    let matches: Match[] | undefined;
+    if (entry.reachable && !entry.error) {
+      try { matches = matchCatalog(catalog, query); }
+      catch (error) { entry.error = `invalid application catalog: ${error instanceof Error ? error.message : String(error)}`; }
+    }
+    reported.push(entry);
+    for (const match of matches ?? []) {
+      const known = merged.get(match.id) ?? { id: match.id, name: match.name, rank: match.rank, installations: [] };
+      known.rank = Math.min(known.rank, match.rank);
+      merged.set(match.id, known);
+      for (const installation of match.installations) {
+        const same = known.installations.find(other => other.image === installation.image && other.version === installation.version && other.os === installation.os && other.architecture === installation.architecture);
+        const offer = { instance: entry.instance, machine_id: entry.machine_id, generation: entry.generation ?? null };
+        if (same) same.instances.push(offer);
+        else known.installations.push({ ...installation, instances: [offer] });
+      }
+    }
+  }
+  if (!reported.some(entry => entry.reachable && !entry.error)) {
+    throw new Error(`No machine-service instance answered with an application catalog: ${reported.map(entry => `${entry.instance} (${entry.origin}): ${entry.error ?? 'no answer'}`).join('; ')}${discovery ? `; ${discovery}` : ''}`);
+  }
+  const matches = [...merged.values()].map(match => ({ ...match, installations: match.installations.sort((a, b) => compare(a.image, b.image) || compare(String(a.version), String(b.version))) })).sort(byRank);
+  const result: FederatedSearchResult = { applications: [], instances: reported, ...(discovery ? { discovery } : {}), truncated: false };
+  return budget(result, matches);
 }

@@ -155,6 +155,78 @@ test('the system browser reads dns-sd zone output, escapes and quoted TXT values
     { name: 'Mac A', instance: 'Mac A', machine_id: ID, host: 'Mac-A.local', port: 6241, txt: { txtvers: '1', instance: 'Mac A', machine_id: ID, kinds: 'durable' } },
     { name: 'Mac-L', instance: 'Mac-L', host: 'Mac-L.local', port: 6240, txt: { txtvers: '1', instance: 'Mac-L', kinds: 'virtual' } },
   ], 'an instance whose SRV has not arrived is left out');
-  const found = await systemBrowse('_machine-service._tcp.local', 10, { run: async () => zone, lookup: async host => (host === 'Mac-A.local' ? '192.0.2.4' : undefined) });
+  const found = await systemBrowse('_machine-service._tcp.local', 10, { run: async () => ({ stdout: zone, ran: true }), lookup: async host => (host === 'Mac-A.local' ? '192.0.2.4' : undefined) });
   assert.deepEqual(found.map(a => [a.instance, a.address, a.port]), [['Mac A', '192.0.2.4', 6241], ['Mac-L', undefined, 6240]], 'addresses come from the system resolver');
+});
+
+// Fixtures recorded from the real tools, browsing transient advertisements of
+// a fixture type with documentation addresses: `dns-sd -Z` on macOS, and
+// `avahi-browse -p -r -t -k` on Ubuntu 24.04 (Avahi 0.8).
+const FIXTURE_ID = '7f0c2a4e-1b3d-4c5e-9f60-718293a4b5c6';
+const fixture = (name: string) => import('node:fs/promises').then(fs => fs.readFile(new URL(`./fixtures/bonjour/${name}`, import.meta.url), 'utf8'));
+const fixtureAdverts = (address?: [string, string]) => [
+  { name: 'Fixture A', instance: 'Fixture A', machine_id: FIXTURE_ID, host: 'fixture-a.local', ...(address ? { address: address[0] } : {}), port: 6241, txt: { txtvers: '1', instance: 'Fixture A', machine_id: FIXTURE_ID, kinds: 'durable' } },
+  { name: 'fixture-l', instance: 'fixture-l', host: 'fixture-l.local', ...(address ? { address: address[1] } : {}), port: 6240, txt: { txtvers: '1', instance: 'fixture-l', kinds: 'virtual' } },
+];
+
+test('a recorded dns-sd -Z browse parses to one advertisement per instance (DC-40)', async () => {
+  const { parseZone } = await import('../src/mdns.js');
+  assert.deepEqual(parseZone(await fixture('dns-sd-Z.txt')).map(a => ({ ...a, txt: { ...a.txt } })), fixtureAdverts(), 'repeats and the lb._dns-sd._udp line add nothing');
+});
+
+test('a recorded avahi-browse -p -r browse gives the same result shape as dns-sd, its own IPv4 addresses kept (DC-42)', async () => {
+  const { parseAvahi, parseZone, avahiBrowse } = await import('../src/mdns.js');
+  const output = await fixture('avahi-browse-pr.txt');
+  const found = parseAvahi(output);
+  assert.deepEqual(found, fixtureAdverts(['192.0.2.4', '192.0.2.5']), 'one per instance across interfaces and transports, TXT in record order');
+  assert.deepEqual(found.map(({ address: _, ...rest }) => rest), parseZone(await fixture('dns-sd-Z.txt')), 'the same shape as the dns-sd browse');
+  const asked: string[][] = [];
+  const looked: string[] = [];
+  const browsed = await avahiBrowse('_relayfixture._tcp.local', 10, { run: async argv => { asked.push(argv); return { stdout: output, ran: true }; }, lookup: async host => { looked.push(host); return undefined; } });
+  assert.deepEqual(asked, [['avahi-browse', '--parsable', '--resolve', '--terminate', '--no-db-lookup', '--domain=local', '_relayfixture._tcp']]);
+  assert.deepEqual(browsed, found); assert.deepEqual(looked, [], 'an address Avahi resolved is not looked up again');
+});
+
+test('avahi-browse lines: escapes, quoted semicolons, gone instances, IPv6-only answers and unresolved ones', async () => {
+  const { parseAvahi, avahiBrowse } = await import('../src/mdns.js');
+  const output = [
+    '+;eth0;IPv4;Gone;_machine-service._tcp;local',
+    '=;eth0;IPv4;Gone;_machine-service._tcp;local;gone.local;192.0.2.9;6240;"instance=Gone"',
+    '-;eth0;IPv4;Gone;_machine-service._tcp;local',
+    '+;eth0;IPv4;Pending;_machine-service._tcp;local',
+    '+;eth0;IPv6;v6\\059only;_machine-service._tcp;local',
+    '=;eth0;IPv6;v6\\059only;_machine-service._tcp;local;v6.local;fe80::1;6240;"note=a;b" "quote=\\"x\\"" "instance=shadowed" "instance=v6;only"',
+    "Failed to resolve service 'Other'",
+  ].join('\n');
+  assert.deepEqual(parseAvahi(output), [{ name: 'v6;only', instance: 'v6;only', host: 'v6.local', port: 6240, txt: { instance: 'v6;only', quote: '"x"', note: 'a;b' } }], 'Avahi prints the last string first, and the first of a repeated key in record order wins');
+  const browsed = await avahiBrowse('_machine-service._tcp.local', 10, { run: async () => ({ stdout: output, ran: true }), lookup: async host => (host === 'v6.local' ? '192.0.2.6' : undefined) });
+  assert.equal(browsed?.[0]?.address, '192.0.2.6', 'with no IPv4 answer the system resolver is asked');
+});
+
+test('Bonjour browses through dns-sd on macOS, Avahi on Linux, and the relay\'s own query when Avahi is absent (DC-42)', async () => {
+  const { browseService } = await import('../src/mdns.js');
+  const zone = await fixture('dns-sd-Z.txt'), avahi = await fixture('avahi-browse-pr.txt');
+  const tools = (answers: Record<string, { stdout: string; ran: boolean }>, asked: string[]) => ({ run: async (argv: string[]) => { asked.push(argv[0]!); return answers[argv[0]!] ?? { stdout: '', ran: false }; }, lookup: async () => undefined });
+  const own = [advertised('Fixture Q')];
+  let queries = 0; const query = async () => { queries++; return own; };
+  const mac: string[] = [];
+  assert.equal((await browseService('_x._tcp.local', { hasDnsSd: true, tools: tools({ '/usr/bin/dns-sd': { stdout: zone, ran: true } }, mac), query })).length, 2);
+  assert.deepEqual(mac, ['/usr/bin/dns-sd']);
+  const linux: string[] = [];
+  assert.deepEqual((await browseService('_x._tcp.local', { hasDnsSd: false, tools: tools({ 'avahi-browse': { stdout: avahi, ran: true } }, linux), query })).map(a => a.address), ['192.0.2.4', '192.0.2.5']);
+  assert.deepEqual(linux, ['avahi-browse']); assert.equal(queries, 0);
+  assert.deepEqual(await browseService('_x._tcp.local', { hasDnsSd: false, tools: tools({ 'avahi-browse': { stdout: '', ran: true } }, []), query }), [], 'a running Avahi that sees nothing is the answer');
+  assert.equal(queries, 0);
+  assert.equal(await browseService('_x._tcp.local', { hasDnsSd: false, tools: tools({}, []), query }), own, 'avahi-browse not installed, or its daemon not running');
+  assert.equal(queries, 1);
+});
+
+test('a browse command that cannot start falls back to the relay\'s own query', async () => {
+  const { browseService } = await import('../src/mdns.js');
+  let queries = 0;
+  const query = async () => { queries++; return []; };
+  // With PATH emptied avahi-browse cannot start on any host.
+  const path = process.env.PATH; process.env.PATH = '';
+  try { await browseService('_relay-absent._tcp.local', { hasDnsSd: false, query }); } finally { process.env.PATH = path; }
+  assert.equal(queries, 1, 'a command that cannot start falls back to the relay\'s own query');
 });

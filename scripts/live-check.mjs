@@ -1,9 +1,20 @@
 // Live check: starts this checkout's built MCP server over stdio and runs one
-// scripted sequence of relay tool calls against a real VM through the local
-// machine-service. It acquires, runs and finishes a real VM; run it deliberately.
+// scripted sequence of relay tool calls against a real VM. It acquires, runs
+// and finishes a real VM; run it deliberately.
 //
 //   npm run build
-//   node scripts/live-check.mjs scripts/live-checks/ubuntu.json <outDir>
+//   node scripts/live-check.mjs --instance <root> --tart <path> <steps.json> <outDir>
+//
+// The instance is named, never defaulted (DC-64), and is a second instance
+// machine-service's launcher started under <root> (DC-70): its
+// manifest, its daemon's environment and its /health mark are checked by
+// scripts/second-instance.mjs, as the lifecycle scripts check them, before
+// the server starts, and every machine it lists before and after the run is
+// one of its own `si-<id>-` clones. Its Tart store may be the operator's own
+// (machine-service DC-246). The server gets only PATH, a HOME of the run's
+// own, the instance's origin, its store, the Tart at --tart and a state root
+// under <outDir>, where the relay keeps the run's registry, so it reaches
+// neither the installed instance nor the operator's ~/AGENTS.md.
 //
 // A step is {tool, args, label?, expectError?, stopOnError?, capture?, show?}.
 // `capture` maps a name to a regular expression whose first group is taken
@@ -13,22 +24,39 @@
 // is 1 when a step's error state differs from `expectError`.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, appendFile, constants, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { confirmOwnedMachines, connectSecondInstance, flagValue, instanceTransport, ownRegistry } from './second-instance.mjs';
 
-const [stepsFile, outArg] = process.argv.slice(2);
-if (!stepsFile || !outArg) { console.error('usage: node scripts/live-check.mjs <steps.json> <outDir>'); process.exit(2); }
+const usage = 'usage: node scripts/live-check.mjs --instance <root> --tart <path> <steps.json> <outDir>';
+const argv = process.argv.slice(2);
+const named = new Set(['--instance', '--tart'].flatMap(flag => { const at = argv.indexOf(flag); return at >= 0 ? [at, at + 1] : []; }));
+const [stepsFile, outArg, ...extra] = argv.filter((_, index) => !named.has(index));
+let instanceRoot, tartPath;
+try { instanceRoot = flagValue(argv, '--instance'); tartPath = flagValue(argv, '--tart'); }
+catch (error) { console.error(`live-check: ${error.message}\n${usage}`); process.exit(2); }
+if (!instanceRoot || !tartPath || !isAbsolute(tartPath) || !stepsFile || !outArg || extra.length) { console.error(usage); process.exit(2); }
+const home = process.env.HOME ?? homedir();
+let instance;
+try {
+  await access(tartPath, constants.X_OK);
+  ({ instance } = await connectSecondInstance(instanceRoot, home));
+} catch (error) { console.error(`live-check: ${error.message}`); process.exit(2); }
+const machines = async () => { const response = await instanceTransport(instance)(`${instance.origin}/machines`, { redirect: 'error', signal: AbortSignal.timeout(10_000) }); confirmOwnedMachines(instance, await response.json()); };
+try { await machines(); } catch (error) { console.error(`live-check: ${error.message}`); process.exit(2); }
 const outDir = resolve(outArg);
 const server = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'server.mjs');
-await mkdir(join(outDir, 'project'), { recursive: true });
+await Promise.all(['project', 'home', 'relay'].map(name => mkdir(join(outDir, name), { recursive: true })));
+ownRegistry(join(outDir, 'relay'), home);
 const log = line => appendFile(join(outDir, 'log.txt'), line + '\n').then(() => console.log(line));
 const steps = JSON.parse(await readFile(stepsFile, 'utf8'));
 // A fixed session id lets separate runs resume the same owned lease.
 const session = process.env.LIVE_CHECK_SESSION ?? `live-check-${Date.now()}`;
 const transport = new StdioClientTransport({
   command: process.execPath, args: [server],
-  env: { ...process.env, MCP_RELAY_PROJECT: join(outDir, 'project'), MCP_RELAY_SESSION: session },
+  env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: join(outDir, 'home'), MCP_RELAY_URL: instance.origin, TART_HOME: instance.tartHome, TART: tartPath, TART_NO_AUTO_PRUNE: '1', MCP_RELAY_STATE_DIR: join(outDir, 'relay'), MCP_RELAY_PROJECT: join(outDir, 'project'), MCP_RELAY_SESSION: session },
   stderr: 'inherit',
 });
 const client = new Client({ name: 'mcp-relay-live-check', version: '1' });
@@ -65,5 +93,6 @@ try {
 } finally {
   await client.close();
 }
+try { await machines(); } catch (error) { failed++; await log(`after the run: ${error.message}`); }
 await log(failed ? `${failed} unexpected result(s)` : 'all steps as expected');
 process.exitCode = failed ? 1 : 0;

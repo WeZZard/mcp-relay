@@ -19,10 +19,12 @@
 
 ## 3. The session with the broker
 
-- The relay opens one resumable session per instance with the broker at the instance's `relay_url`, authenticated with the lease credential that the acquisition returned.
+- The relay opens one resumable session per lease with the broker at the `relay_url` of the instance that owns the lease, which may be on another Mac ([instances.md §6](instances.md#6-the-relay-link-dc-7x-fed-5)), authenticated with the lease credential that the acquisition returned, which binds the session to that lease's relay agent (DC-45).
 - Every operation carries the relay's execution ID, which the relay already records for each run, so a resumed session never runs an operation twice.
 - After any loss that the session cannot resume, the relay asks `query {execution}` and reports `completed`, `running` or `unknown`. An `unknown` outcome stays uncertain, and the relay never replays it, as the relay already does for timeouts.
 - The relay sends data in chunks of at most 1 MiB and sends a heartbeat at least every 30 seconds, as the transport contract requires.
+- Each connection's in-flight window starts at 1 MiB, the floor, and grows from what it measures, as machine-service's own sessions do (DC-81, machine-service DC-302).
+- The relay speaks relay protocol 2 (vm-service RP-15), named in its session hello: an upload streams from its source, a file read from the disk at any offset, and keeps at most 32 MiB beyond the relay agent's last `progress`, so a file of any size needs no memory of its size. After `upload_incomplete`, or a lost session before the upload's `end` went out, the relay sends the same call with `resume` and continues from the relay agent's committed offset; a read cut by a lost session continues under a new execution ID from the bytes the relay already holds, with `offset`. Under a broker of protocol 1 the relay sends uploads as before (DC-55).
 
 ## 4. Running on Ubuntu
 

@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "skipLibCheck": true,
     "esModuleInterop": true, "types": ["node"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/lifecycle.ts", "scripts/selected-image-lifecycle.ts", "scripts/real-base-chain.ts", "scripts/live-federation.ts"]
 }

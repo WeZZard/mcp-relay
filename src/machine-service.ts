@@ -1,7 +1,10 @@
 import { isIP } from "node:net";
-import { createHash } from "node:crypto";
-import { open, rm } from "node:fs/promises";
-import type { SelectedEnvironment, EnvironmentIdentity } from './environment.js';
+import { createHash, randomUUID } from "node:crypto";
+import { open, rename, rm, stat } from "node:fs/promises";
+import { basename } from "node:path";
+import { selectedEnvironment, type SelectedEnvironment, type EnvironmentIdentity } from './environment.js';
+import { serviceUrl } from './config.js';
+import { checkGrant, fileSource, RelayClient, RelayFailedError, RelayUncertainError, type CallAnswer, type Op, type RelayClientOptions, type RelayGrant, type UploadSource } from './relay-client.js';
 
 /**
  * The daemon's actual record; acquire returns this directly, not a lease wrapper.
@@ -27,6 +30,11 @@ export interface VmLease {
   ttl_expires_at: number;
   grace_until: number | null;
   warned: boolean;
+  /** How the lease's guest operations travel: through the broker to the relay agent, or over SSH because the agent did not register (RP-11, RA-8). */
+  link?: "relay" | "ssh-fallback";
+  link_reason?: string;
+  /** The acquisition answer's broker grant; only the answer carries it (RP-11). */
+  relay?: RelayGrant;
   ip: string | null;
   cpu: number | null;
   memory_mb: number | null;
@@ -55,6 +63,8 @@ export interface VmImages {
     active_purposes: string[];
   }>;
   capacity: { macos_running: number; macos_limit: number; host_macos_guests?: number; foreign_macos_guests?: number };
+  /** The instance's image catalog status (machine-service IC-5): its generation, and `current`, `stale` or `unavailable`. */
+  catalog?: { generation?: number; status?: string; built_at?: number; error?: string; failed_at?: number; file?: string };
 }
 export interface AcquireRequest {
   purpose: string;
@@ -73,26 +83,47 @@ export interface AcquireRequest {
 }
 /** `lease_id` is required on a durable machine and accepted on a VM (DC-30). */
 export interface LeaseIdentity { lease_id?: string }
-export type ExecRequest = ({ argv: string[]; script?: never } | { script: string; argv?: never }) & { timeout?: number } & LeaseIdentity;
+/** `execution_id` names the operation for machine-service's and the relay agent's records: a repeat never runs again (BK-3, RP-7). */
+export type ExecRequest = ({ argv: string[]; script?: never } | { script: string; argv?: never }) & { timeout?: number; execution_id?: string } & LeaseIdentity;
 export interface TransferRequest extends LeaseIdentity { local_path: string; remote_path: string }
-export interface ExecResponse { vm: string; rc: number; output: string }
+export interface ExecResponse { vm: string; rc: number; output: string; link?: "relay"; execution_id?: string }
 export interface PushResponse { vm: string; pushed: string; to: string }
 export interface PullResponse { vm: string; pulled: string; to: string }
 export interface ReleaseResponse { vm?: string; name?: string; released: boolean; reason: string; hygiene?: unknown }
 export interface BytesResponse { sha256: string; bytes: number }
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
-export interface MachineServiceOptions {
-  baseUrl?: string;
-  environment?: SelectedEnvironment;
+/** How the client sends a request: the platform's fetch in production, a stand-in in tests (DC-62). */
+export type Transport = (url: string, init: RequestInit) => Promise<Response>;
+/**
+ * A client names its instance: the origin, or a selected environment that
+ * binds one. There is no default origin here; `machineServiceFromProcess`
+ * supplies the installed one to production (DC-62).
+ */
+export type MachineServiceOptions = MachineServiceSettings & ({ baseUrl: string; environment?: SelectedEnvironment } | { baseUrl?: string; environment: SelectedEnvironment });
+export interface MachineServiceSettings {
+  /** How requests are sent; default the platform's fetch. */
+  transport?: Transport;
   timeoutMs?: number;
   acquireTimeoutMs?: number;
   maxResponseBytes?: number;
   /** The origin is an instance that discovery found, by its Bonjour advertisement or its Consul registration, which may be on another Mac (DC-29, DC-35). */
   listed?: boolean;
+  /** Options of the broker sessions, for tests. */
+  relay?: RelayClientOptions;
+}
+
+/**
+ * The client a relay process uses: the selected environment's instance, else
+ * MCP_RELAY_URL, else the installed one; under the test harness there is no
+ * default and the installed instance is refused (config.serviceUrl, DC-61).
+ */
+export function machineServiceFromProcess(env: NodeJS.ProcessEnv = process.env, environment = selectedEnvironment(env), settings: MachineServiceSettings = {}): MachineService {
+  const baseUrl = serviceUrl(env, environment);
+  return new MachineService(environment ? { ...settings, baseUrl, environment } : { ...settings, baseUrl });
 }
 
 /** The manager depends on this protocol, not on a concrete transport or hypervisor. */
-export type VmBackend = Pick<MachineService, 'baseUrl' | 'health' | 'list' | 'images' | 'applications' | 'get' | 'acquire' | 'exec' | 'push' | 'pull' | 'heartbeat' | 'release'> & Partial<Pick<MachineService, 'acquisitionCapabilities' | 'consoleResolve' | 'consoleOpen' | 'consoleCancel' | 'pushBytes' | 'pullBytes'>>;
+export type VmBackend = Pick<MachineService, 'baseUrl' | 'health' | 'list' | 'images' | 'applications' | 'get' | 'acquire' | 'exec' | 'push' | 'pull' | 'heartbeat' | 'release'> & Partial<Pick<MachineService, 'acquisitionCapabilities' | 'consoleResolve' | 'consoleOpen' | 'consoleCancel' | 'pushBytes' | 'pullBytes' | 'useRelay'>>;
 
 export class MachineServiceError extends Error {
   /** The host is at capacity, such as its limit on running macOS VMs: nothing was reserved, and the same acquisition may be asked again (DC-22). */
@@ -165,17 +196,38 @@ function isLease(value: unknown): value is VmLease {
     && typeof value.warned === "boolean";
 }
 
+/** machine-service's shell quoting of an argv for a command line (its `ssh::shell_quote`), so a command means the same over either link. */
+export function shellQuote(value: string): string {
+  if (value && /^[A-Za-z0-9@%_\-+=:,./]+$/.test(value)) return value;
+  if (!value) return "''";
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+/** The last `max` characters, as machine-service bounds an exec's output. */
+function tailChars(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length <= max ? text : chars.slice(chars.length - max).join("");
+}
+/** One lease's broker link: its grant, and once the instance's advertisement matched it, its session. */
+interface RelayRoute { grant: RelayGrant; checked?: Promise<RelayClient | undefined> }
+
 export class MachineService {
   readonly baseUrl: string;
+  /** Leases whose operations go through the broker, by machine name (docs/relay-agent-link.md §3). */
+  private readonly relays = new Map<string, RelayRoute>();
+  private readonly relayOptions?: RelayClientOptions;
   private readonly environment?: SelectedEnvironment;
   private readonly timeoutMs: number;
   private readonly acquireTimeoutMs: number;
   private readonly maxResponseBytes: number;
+  private readonly transport: Transport;
 
-  constructor(options: MachineServiceOptions | string = {}) {
+  constructor(options: MachineServiceOptions | string) {
     if (typeof options === "string") options = { baseUrl: options };
     this.environment = options.environment;
-    const url = new URL(options.baseUrl ?? options.environment?.profile.vmServiceUrl ?? "http://localhost:6240");
+    this.transport = options.transport ?? ((url, init) => fetch(url, init));
+    const named = options.baseUrl ?? options.environment?.profile.vmServiceUrl;
+    if (named === undefined) throw new TypeError("machine-service client needs its origin: a baseUrl or a selected environment");
+    const url = new URL(named);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError('Backend endpoint does not match the selected environment');
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const loopback = host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
@@ -186,6 +238,62 @@ export class MachineService {
     this.timeoutMs = positive(options.timeoutMs ?? 660_000, "timeoutMs");
     this.acquireTimeoutMs = positive(options.acquireTimeoutMs ?? 3_600_000, "acquireTimeoutMs");
     this.maxResponseBytes = positive(options.maxResponseBytes ?? 4 * 1024 * 1024, "maxResponseBytes");
+    this.relayOptions = options.relay;
+  }
+
+  /**
+   * Route a lease's guest operations through the broker when its record says
+   * `link: relay` and it carries the acquisition's grant; any other lease,
+   * `ssh-fallback` included, keeps the HTTP operations (§6).
+   */
+  useRelay(vm: string, lease: { link?: string; relay?: RelayGrant }): void {
+    const known = this.relays.get(vm);
+    if (lease.link === "relay" && lease.relay) {
+      if (known && known.grant.credential === lease.relay.credential) return;
+      this.dropRelay(vm);
+      this.relays.set(vm, { grant: lease.relay });
+      return;
+    }
+    this.dropRelay(vm);
+  }
+  /** Whether a lease's operations go through the broker: the grant matches what the instance advertises. */
+  async relayLink(vm: string): Promise<boolean> { return !!(await this.relayFor(vm)); }
+  private dropRelay(vm: string) {
+    const route = this.relays.get(vm);
+    this.relays.delete(vm);
+    void route?.checked?.then(client => client?.close(), () => {});
+  }
+  private relayFor(vm: string): Promise<RelayClient | undefined> {
+    const route = this.relays.get(vm);
+    if (!route) return Promise.resolve(undefined);
+    route.checked ??= (async () => {
+      // The instance must still advertise the broker and the same authority (RP-1, RP-11).
+      const health = await this.request<{ relay_url?: unknown; relay_ca_sha256?: unknown }>("/health", undefined, { timeoutMs: 10000 });
+      const refused = checkGrant(route.grant, health);
+      if (refused) return undefined;
+      return new RelayClient(route.grant, this.relayOptions);
+    })();
+    route.checked.catch(() => { if (this.relays.get(vm) === route) route.checked = undefined; });
+    return route.checked;
+  }
+  /** One operation through the broker, its `failed` and `interrupted` outcomes as errors. */
+  private async relayRun(client: RelayClient, op: Op, upload: Buffer | UploadSource, executionId: string, options: RequestOptions & { sink?: import('./relay-client.js').Sink }): Promise<CallAnswer> {
+    let answer: CallAnswer;
+    try { answer = await client.run(op, upload, { executionId, ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), ...(options.sink ? { sink: options.sink } : {}) }); }
+    catch (cause) {
+      if (options.signal?.aborted && cause === options.signal.reason) throw cause;
+      throw new MachineServiceError(`machine-service relay link: ${(cause as Error).message}`, undefined, undefined, { cause });
+    }
+    const outcome = answer.outcome as Record<string, any>;
+    if (outcome.failed) {
+      const failure = new RelayFailedError(answer.executionId, outcome.failed.code, outcome.failed.message, outcome.failed.committed);
+      throw new MachineServiceError(failure.message, undefined, undefined, { cause: failure });
+    }
+    if (outcome.interrupted) {
+      const failure = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`);
+      throw new MachineServiceError(failure.message, undefined, undefined, { cause: failure });
+    }
+    return answer;
   }
 
   health(options: RequestOptions = {}): Promise<{ ok: boolean; service: string; instance?: string; machine_id?: string; environment?: EnvironmentIdentity }> {
@@ -228,6 +336,7 @@ export class MachineService {
     try {
       const lease = await this.request<unknown>("/acquire", body, { timeoutMs });
       if (!isLease(lease)) throw new MachineServiceError("Invalid machine-service acquire response");
+      this.useRelay(lease.vm, lease);
       return lease;
     } catch (error) {
       // VNC provisioning errors must not reflect adapter diagnostics or secrets.
@@ -239,19 +348,88 @@ export class MachineService {
       throw new AcquireIndeterminateError(body.purpose, safeError);
     }
   }
+  /**
+   * On a `relay` lease the command runs through the broker in the desktop
+   * session, under the request's execution ID, and answers as machine-service's
+   * own relay route does; otherwise one HTTP request.
+   */
   exec(vm: string, body: ExecRequest, options: RequestOptions = {}): Promise<ExecResponse> {
-    return this.request(this.path(vm, "exec"), body, options);
+    this.path(vm); // an invalid name throws before anything is sent
+    return this.execRouted(vm, body, options);
   }
+  private async execRouted(vm: string, body: ExecRequest, options: RequestOptions): Promise<ExecResponse> {
+    const client = await this.relayFor(vm);
+    if (!client) return this.request(this.path(vm, "exec"), body, options);
+    const timeout = body.timeout ?? 600;
+    if (!(timeout > 0)) throw new MachineServiceError("timeout must be positive");
+    const executionId = body.execution_id ?? randomUUID();
+    const [op, upload]: [Op, Buffer] = body.script !== undefined
+      ? [{ script: { timeout_s: timeout } }, Buffer.from(body.script)]
+      : [{ exec: { command: body.argv!.map(shellQuote).join(" "), stdin: false, timeout_s: timeout } }, Buffer.alloc(0)];
+    const answer = await this.relayRun(client, op, upload, executionId, { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const exit = (answer.outcome as { exit?: { rc: number | null; timed_out: boolean } }).exit;
+    if (!exit) throw new MachineServiceError(`machine-service relay link: unexpected outcome ${JSON.stringify(answer.outcome)}`);
+    if (exit.timed_out) throw new MachineServiceError(`machine-service relay link: the command timed out after ${timeout}s and was killed`);
+    return { vm, rc: exit.rc ?? 255, output: tailChars(answer.output.toString("utf8"), 64000), link: "relay", execution_id: answer.executionId };
+  }
+  /** On a `relay` lease a file goes as a `write` through the broker; a folder still goes over HTTP, as machine-service sends folders by `scp` (DC-151). */
   push(vm: string, body: TransferRequest, options: RequestOptions = {}): Promise<PushResponse> {
-    return this.request(this.path(vm, "push"), body, options);
+    this.path(vm); // an invalid name throws before anything is sent
+    return this.pushRouted(vm, body, options);
   }
+  private async pushRouted(vm: string, body: TransferRequest, options: RequestOptions): Promise<PushResponse> {
+    const client = await this.relayFor(vm);
+    const facts = client ? await stat(body.local_path) : undefined;
+    if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
+    // The file streams from the disk and continues after a loss (RP-15), so its size needs no memory.
+    const source = await fileSource(body.local_path);
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 0o777 } }, source, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const written = (answer.outcome as { written?: { size: number; sha256: string } }).written;
+    if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
+    return { vm, pushed: body.local_path, to: body.remote_path };
+  }
+  /** On a `relay` lease a file comes as a `read` through the broker, checked and renamed into place; a guest folder still goes over HTTP. */
   pull(vm: string, body: TransferRequest, options: RequestOptions = {}): Promise<PullResponse> {
-    return this.request(this.path(vm, "pull"), body, options);
+    this.path(vm); // an invalid name throws before anything is sent
+    return this.pullRouted(vm, body, options);
+  }
+  private async pullRouted(vm: string, body: TransferRequest, options: RequestOptions): Promise<PullResponse> {
+    const client = await this.relayFor(vm);
+    if (!client) return this.request(this.path(vm, "pull"), body, options);
+    const part = `${body.local_path}.relay-${randomUUID()}.part`;
+    try {
+      await this.relayRead(client, body.remote_path, part, options);
+    } catch (error) {
+      await rm(part, { force: true });
+      if (((error as Error).cause as RelayFailedError | undefined)?.code === "is_directory") return this.request(this.path(vm, "pull"), body, options);
+      throw error;
+    }
+    await rename(part, body.local_path);
+    return { vm, pulled: body.remote_path, to: body.local_path };
+  }
+  /** Read a guest file into `to`, which must not exist, streaming and hashing it; the bytes must match the read's outcome. */
+  private async relayRead(client: RelayClient, remote: string, to: string, options: RequestOptions): Promise<BytesResponse> {
+    const file = await open(to, "wx", 0o600);
+    let position = 0, writing: Promise<unknown> = Promise.resolve();
+    const sink = {
+      write: (data: Buffer) => { const at = position; position += data.length; writing = writing.then(() => file.write(data, 0, data.length, at)); },
+      reset: () => { position = 0; writing = writing.then(() => file.truncate(0)); },
+    };
+    try {
+      const answer = await this.relayRun(client, { read: { path: remote } }, Buffer.alloc(0), randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs, sink });
+      await writing;
+      const read = (answer.outcome as { read?: { size: number; sha256: string } }).read;
+      if (!read || !answer.stream || answer.stream.size !== read.size || answer.stream.sha256 !== read.sha256 || position !== read.size) throw new MachineServiceError(`machine-service relay link: the bytes of ${remote} do not match their SHA-256; pull again`);
+      await file.sync();
+      return { sha256: read.sha256, bytes: read.size };
+    } finally { await writing.catch(() => {}); await file.close(); }
   }
   async heartbeat(vm: string, body: { ttl_hours?: number } & LeaseIdentity = {}, options: RequestOptions = {}): Promise<VmLease & { ttl_hours_remaining: number }> {
     return named(await this.request<VmLease & { ttl_hours_remaining: number }>(this.path(vm, "heartbeat"), body, options));
   }
   release(vm: string, body: { reason?: string } & LeaseIdentity = {}, options: RequestOptions = {}): Promise<ReleaseResponse> {
+    // Release revokes the lease's credential; the session ends with it (RP-10).
+    this.dropRelay(vm);
     return this.request(this.path(vm, "release"), body, options);
   }
   /**
@@ -261,6 +439,13 @@ export class MachineService {
    */
   async pushBytes(vm: string, body: { remote_path: string; bytes: Buffer } & LeaseIdentity, options: RequestOptions = {}): Promise<BytesResponse> {
     const sha256 = createHash("sha256").update(body.bytes).digest("hex");
+    const client = await this.relayFor(vm);
+    if (client) {
+      const answer = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+      const written = (answer.outcome as { written?: BytesResponse & { size: number } }).written;
+      if (!written || written.sha256 !== sha256 || written.size !== body.bytes.length) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
+      return { sha256, bytes: body.bytes.length };
+    }
     const response = await this.fetchBounded(this.filesPath(vm, body.remote_path, body.lease_id), { method: "PUT", headers: { "Content-Type": "application/octet-stream", "X-Content-SHA256": sha256 }, body: new Uint8Array(body.bytes.buffer as ArrayBuffer, body.bytes.byteOffset, body.bytes.byteLength) }, options, this.maxResponseBytes);
     const answer = this.json<BytesResponse>(response.path, response.text);
     if (answer.sha256 !== sha256 || answer.bytes !== body.bytes.length) throw new MachineServiceError(`machine-service ${response.path}: the instance stored ${answer.bytes} bytes with SHA-256 ${answer.sha256}, not what was sent`);
@@ -274,6 +459,11 @@ export class MachineService {
    * match the digest the instance states (DC-31).
    */
   async pullBytes(vm: string, body: { remote_path: string; to: string } & LeaseIdentity, options: RequestOptions = {}): Promise<BytesResponse> {
+    const client = await this.relayFor(vm);
+    if (client) {
+      try { return await this.relayRead(client, body.remote_path, body.to, options); }
+      catch (error) { await rm(body.to, { force: true }); throw error; }
+    }
     const hash = createHash("sha256"), file = await open(body.to, "wx", 0o600);
     let bytes = 0;
     try {
@@ -323,7 +513,7 @@ export class MachineService {
     const expire = () => controller.abort(Object.assign(new MachineServiceError(`machine-service ${path} timed out after ${timeoutMs}ms${stream.idle ? " without a byte" : ""}`), { code: "ETIMEDOUT" }));
     let timer = setTimeout(expire, timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await this.transport(`${this.baseUrl}${path}`, {
         method: init.method,
         headers: { ...init.headers, ...(this.environment ? { 'X-VM-Environment-Fingerprint': this.environment.identity.fingerprint } : {}) },
         ...(init.body === undefined ? {} : { body: init.body }),

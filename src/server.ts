@@ -19,7 +19,8 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { RelayManager, Registry, guestNetwork, maxGuests, onExit, capacityWait, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, selectedEnvironment, type RelayCallResult, type RelayToolAnnotations } from './core.js';
+import { RelayManager, relayManagerFromProcess, guestNetwork, maxGuests, onExit, capacityWait, instructions, relayCall, relayToolInput, relayToolInputSchema, relayTools, type RelayCallResult, type RelayToolAnnotations } from './core.js';
+import { isolated, serviceUrl } from './config.js';
 
 export const SERVER_NAME = 'relay';
 /** The build injects this from package.json (esbuild define); under tsx it falls back to reading the file directly. */
@@ -83,23 +84,15 @@ export function createRelayServer(options: RelayServerOptions = {}) {
   // store and the state directories together; it is resolved once, at the
   // first call, so an invalid selection is reported rather than falling back.
   // Tests inject options.manager directly instead of a real RelayManager.
-  const get = options.manager ?? (() => {
-    if (!manager) {
-      const environment = selectedEnvironment();
-      manager = new RelayManager({ sessionId, project, environment, registry: new Registry(environment ? { managedRoot: environment.profile.relayStateDir } : {}) });
-    }
-    return manager;
-  });
+  const get = options.manager ?? (() => manager ??= relayManagerFromProcess({ sessionId, project }));
   /**
    * The data relay_status reports, read-only. It reads the session's saved
    * guests first (host-only, no backend call), so a restarted relay reports the
    * guests it still owns before any other call.
    */
   const statusPayload = async () => {
-    const environment = selectedEnvironment();
-    const service = environment?.profile.vmServiceUrl ?? process.env.MCP_RELAY_URL ?? 'http://localhost:6240';
     const owned = get();
-    return { ...(await owned.loadedStatus()), project, service, environment: environment?.identity };
+    return { ...(await owned.loadedStatus()), project, service: owned.vm.baseUrl, environment: owned.environment?.identity };
   };
   // Cancels every in-flight tool call when shutdown gives up waiting for it.
   // Closing the transport would do the same at once, so shutdown never closes it first.
@@ -138,6 +131,9 @@ async function main(args: string[]): Promise<void> {
   if (args.length) throw new Error('Usage: server.mjs [--instructions | --schema]; with no argument the MCP server speaks on stdin/stdout');
   // A guest network the relay cannot honour refuses the server at startup (DC-17), as does a guest limit that is not a positive integer (DC-20) an exit behaviour other than pause or release (DC-21) and a capacity wait that is not whole seconds (DC-22).
   guestNetwork(); maxGuests(); onExit(); capacityWait();
+  // Started by the test harness, the server names its machine-service origin
+  // at startup and is refused the installed instance's (DC-61).
+  if (isolated()) serviceUrl();
   const relay = createRelayServer();
   const grace = Number(process.env.MCP_RELAY_SHUTDOWN_GRACE_MS ?? SHUTDOWN_GRACE_MS);
   if (!Number.isSafeInteger(grace) || grace < 0) throw new Error('MCP_RELAY_SHUTDOWN_GRACE_MS must be a nonnegative integer of milliseconds');

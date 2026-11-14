@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { capacityWait, guestNetwork, maxGuests, onExit, pythonExecutable, registryDiagnosticsPath, relayStateRoot } from "../src/config.js";
 import { acquireOwnerLock } from "../src/owner-lock.js";
+import { childEnvironment } from './isolation.js';
 
 const home = join(tmpdir(), "relay-config-home");
 test("state root precedence is portable and does not read or create state", () => {
@@ -52,7 +53,7 @@ test("owner lock honors environment Python override without touching global stat
   for (const executable of ["", "/no/such/python"]) {
     const script = `import assert from 'node:assert/strict'; import { acquireOwnerLock } from ${JSON.stringify(modulePath)}; await assert.rejects(acquireOwnerLock(${JSON.stringify(join(dir, "owner.lock"))}), /${executable ? "Cannot start" : "nonblank"}/);`;
     const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], {
-      env: { ...process.env, HOME: dir, MCP_RELAY_PYTHON: executable }, stdio: ["ignore", "ignore", "pipe"],
+      env: childEnvironment({ HOME: dir, MCP_RELAY_PYTHON: executable }), stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
     child.stderr.on("data", chunk => { stderr += chunk; });
