@@ -122,6 +122,8 @@ class FixtureService {
   pullHook?: (remote: string) => Promise<void>;
   /** Runs before any guest command; a test can hold one open. */
   execHook?: (argv: string[]) => Promise<void>;
+  /** On a request the caller abandons, SIGKILL the command's process group, as the relay agent's cancel does (DC-50). */
+  killOnCancel = false;
   receiverActive = 0;
   maxReceiverActive = 0;
   receiverCalls = 0;
@@ -207,7 +209,8 @@ class FixtureService {
       if (isReceiver) await this.receiverHook?.();
       const response = await new Promise<{ rc: number; output: string }>((resolve, reject) => {
         // The receiver finds the language runtimes on the guest's PATH: python3 from the host, tsx from this checkout.
-        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: childEnvironment({ PATH: childPath(localBin), HOME: this.root }), stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(argv[0], argv.slice(1), { cwd: this.root, env: childEnvironment({ PATH: childPath(localBin), HOME: this.root }), stdio: ['ignore', 'pipe', 'pipe'], detached: this.killOnCancel });
+        if (this.killOnCancel) res.on('close', () => { if (!res.writableEnded && child.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } });
         let output = '';
         child.stdout.on('data', data => { output += String(data); }); child.stderr.on('data', data => { output += String(data); });
         child.on('error', reject); child.on('close', code => resolve({ rc: code ?? 1, output }));
@@ -1062,11 +1065,44 @@ test('abort during a dispatched operation retains its receipt and VM without rep
   await assert.rejects(f.manager.run(operation('cancel-run'), controller.signal), /cancel dispatched run/);
   assert.equal(f.service.receiverCalls, 1); await f.assertRetained();
   f.service.receiverHook = undefined;
-  // Cancellation stops the wait, not the guest command (R6): let the cancelled receiver finish before the next run.
+  // The fixture's exec may still start the receiver after the cancel and its stop (DC-86): let it finish before the next run.
   while (f.service.receiverActive) await new Promise(done => setTimeout(done, 20));
   const afterAbort = await f.manager.run(operation('after-abort')); assert.equal(afterAbort.outcome.kind, 'completed', JSON.stringify(afterAbort.outcome));
   assert.equal(f.service.receiverCalls, 2); await f.manager.release(); await f.assertClean();
 });
+
+/** The processes whose command line names `marker`, as `pgrep -f` lists them. */
+const survivors = (marker: string) => new Promise<string>(done => {
+  const child = spawn('pgrep', ['-f', marker], { stdio: ['ignore', 'pipe', 'ignore'] });
+  let out = ''; child.stdout.on('data', data => { out += String(data); }); child.on('close', () => done(out.trim()));
+});
+for (const agentKills of [true, false]) {
+  test(`DC-86: a cancelled run is stopped in the guest and the next run on it completes (${agentKills ? "the relay agent kills the exec's group" : 'nothing kills the exec'})`, { timeout: 60000 }, async t => {
+    const f = await fixture(t); f.service.killOnCancel = agentKills;
+    const acquired = await f.manager.acquire(acquireInput()); await f.stage();
+    const seconds = 3000 + Math.floor(Math.random() * 900), marker = `sleep ${seconds}`, ready = join(f.root, 'cancel-ready');
+    t.after(async () => { spawn('pkill', ['-9', '-f', marker]); });
+    const controller = new AbortController();
+    const running = f.manager.run(operation('cancelled', { code: `sleep ${seconds} & sleep ${seconds} & (sleep ${seconds} &); echo ready > '${ready}'; wait`, timeoutMs: 600000 }), controller.signal);
+    running.catch(() => {});
+    while (!(await lstat(ready).then(() => true, () => false))) await new Promise(done => setTimeout(done, 20));
+    controller.abort(new Error('the caller cancelled the call'));
+    await assert.rejects(running, /the caller cancelled the call/);
+    assert.equal(await survivors(marker), '', 'no process of the cancelled script survives');
+    await f.assertRetained(acquired.vm);
+    const next = await f.manager.run(operation('after-cancel'));
+    assert.deepEqual(next.outcome, { kind: 'completed', exitStatus: { code: 0, signal: null } }, JSON.stringify(next));
+    assert.equal(f.service.receiverCalls, 2, 'the cancelled run is not sent again');
+    const hostRoot = f.manager.guestStatus().output!;
+    const receipts = await readdir(join(hostRoot, 'host/receipts'));
+    const cancelled = receipts.map(name => name.replace(/\.json$/, '')).find(id => id !== next.executionId)!;
+    const receipt = await json(join(hostRoot, 'host/receipts', `${cancelled}.json`));
+    assert.equal(receipt.outcome.kind, 'uncertain'); assert.match(receipt.outcome.diagnostic, /stopped in the guest: \{"stopped":true/);
+    const delivered = await f.manager.finish();
+    assert.equal(delivered.deliveryVerified, true); assert.equal(delivered.execution, 'uncertain');
+    await f.assertClean();
+  });
+}
 
 test('invalid run annotation rejects before guarded admission without releasing ownership', async t => {
   const f = await fixture(t); await f.manager.acquire(acquireInput());

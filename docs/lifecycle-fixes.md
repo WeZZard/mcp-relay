@@ -100,10 +100,10 @@ flowchart TD
 ### Cancellable guest commands
 
 - The diagnostic `exec` path and `VmTransport.send` pass the caller's abort signal to vm-service's `exec` request.
-- A cancelled request stops waiting for the HTTP response; it does not stop the guest process, and the result is reported as `uncertain`, which keeps the VM and is never replayed.
-- The receiver's receipt for a cancelled dispatch records the outcome as uncertain, as for any other lost response.
-- Because the guest command keeps running, an operation submitted right after a cancellation can meet the receiver lock of the cancelled one and be reported as uncertain. It is never replayed, and the VM is kept.
-- The existing test "abort during a dispatched operation retains its receipt and VM without replay" now waits for the cancelled guest command to finish before it submits the next run.
+- A cancelled request stops waiting for the response, and the result is reported as `uncertain`, which keeps the VM and is never replayed.
+- A cancelled recorded run is then stopped in the guest before the guest's next operation (DC-86). The relay agent's cancel (DC-50) kills only the exec's process group, and the receiver runs the script in a process group of its own, so the cancel alone would leave the script running and the receiver's lock held, and every later run on the guest would fail. The relay kills the processes that still run the request and the process groups the receiver recorded for the execution, and waits until they are gone. It writes no guest receipt and leaves the execution's started marker, so the cancelled run is never replayed; the next receiver reclaims the lock of an owner that is proved gone.
+- The host receipt for a cancelled dispatch records the outcome as uncertain, with what the stop found: `stopped in the guest`, or `not confirmed stopped in the guest` when a process outlived it or the receiver was killed between starting a process and recording it. Only then can the next run still meet the cancelled run's lock and be reported as uncertain.
+- A cancelled diagnostic command, which runs without the receiver, is stopped by the relay agent's cancel alone.
 
 ### Relay state of any size
 
