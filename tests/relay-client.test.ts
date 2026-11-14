@@ -17,6 +17,7 @@ import { MAX_CHUNK, RELAY_PROTOCOL, RelayClient, RelayUncertainError, UPLOAD_WIN
 import { writeFileSync } from 'node:fs';
 import { MAX_BODY, type Timing } from '../src/relay-session.js';
 import { childEnvironment } from './isolation.js';
+import { sessionGraceMs } from '../src/config.js';
 
 const FAST: Partial<Timing> = { heartbeatMs: 40, deadMs: 300, handshakeMs: 500, backoffInitialMs: 5, backoffMaxMs: 40, tickMs: 10, openMs: 1000 };
 const sleep = (ms: number) => new Promise(done => setTimeout(done, ms));
@@ -167,6 +168,17 @@ test('the client names relay protocol 2 in its hello', async t => {
   const { broker, client } = fixture(t);
   assert.equal((await client.ready()).protocol, 2);
   assert.deepEqual(broker.received.find(r => r.kind === 'hello')!.value.attributes, { role: 'client', protocol: RELAY_PROTOCOL });
+});
+
+test('a client asks for the grace period it was given, and only then', async t => {
+  const broker = new FakeBroker(); new FakeRelay(broker);
+  const client = new RelayClient(grant, { dial: broker.dial, timing: FAST, graceMs: 2000 });
+  t.after(() => client.close());
+  await client.ready();
+  assert.deepEqual(broker.received.find(r => r.kind === 'hello')!.value.attributes, { role: 'client', protocol: RELAY_PROTOCOL, grace_ms: 2000 });
+  assert.equal(sessionGraceMs({}), undefined);
+  assert.equal(sessionGraceMs({ MCP_RELAY_SESSION_GRACE_MS: '2000' }), 2000);
+  for (const bad of ['999', '600001', '1.5', 'soon']) assert.throws(() => sessionGraceMs({ MCP_RELAY_SESSION_GRACE_MS: bad }), /MCP_RELAY_SESSION_GRACE_MS/, bad);
 });
 
 test('an upload keeps within the window beyond the relay agent\'s progress', async t => {
