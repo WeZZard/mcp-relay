@@ -16,8 +16,9 @@
 import { createHash, randomUUID, X509Certificate, type Hash } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { rootCertificates } from 'node:tls';
+import { connect as tlsConnect, rootCertificates, type ConnectionOptions as TlsConnectionOptions } from 'node:tls';
 import WebSocket from 'ws';
+import { brokerRoute, type BrokerRoute } from './config.js';
 import { MAX_BUFFERED, MAX_MESSAGE, ResumableSession, type Dial, type SessionEnd, type Timing } from './relay-session.js';
 
 /** The most data one chunk carries: 1 MiB less 4 KiB (RP-4, RP-12). */
@@ -163,11 +164,20 @@ function loopback(hostname: string) {
  * only `http/1.1`, the public roots and the instance's authority are
  * trusted, and no message above 1 MiB is accepted (RP-1).
  */
-export function webSocketDial(url: string, caPem: string, handshakeMs = 10000): Dial {
-  const ca = [...rootCertificates, caPem];
+/** One line on standard error, which an MCP server keeps for its log. */
+function stderrLine(line: string) { process.stderr.write(`${line}\n`); }
+
+export function webSocketDial(url: string, caPem: string, handshakeMs = 10000, route: BrokerRoute = {}): Dial {
+  const ca = [...rootCertificates, caPem, ...(route.caPem ? [route.caPem] : [])];
+  // The route's one name connects to its address, and port when given, keeping the name as the TLS server name (curl's --resolve, --connect-to).
+  const to = route.resolve;
+  const createConnection = to ? (options: TlsConnectionOptions) => {
+    if (String(options.host).toLowerCase() !== to.host) return tlsConnect({ ...options, path: undefined });
+    return tlsConnect({ ...options, path: undefined, servername: to.host, host: to.address, port: to.port ?? options.port });
+  } : undefined;
   return handlers => new Promise((resolve, reject) => {
     // ws hands its options to tls.connect, which takes the ALPN list.
-    const tlsOptions: WebSocket.ClientOptions & { ALPNProtocols: string[] } = { ca, ALPNProtocols: ['http/1.1'], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
+    const tlsOptions: WebSocket.ClientOptions & { ALPNProtocols: string[] } = { ca, ...(createConnection ? { createConnection: createConnection as unknown as WebSocket.ClientOptions['createConnection'] } : {}), ALPNProtocols: ['http/1.1'], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new WebSocket(url, [], tlsOptions);
     let open = false;
     socket.on('open', () => {
@@ -254,6 +264,8 @@ interface Handle {
 
 export interface RelayClientOptions {
   dial?: Dial;
+  /** How the default dial reaches the broker; read from MCP_RELAY_BROKER_RESOLVE and MCP_RELAY_BROKER_CA when absent. */
+  route?: BrokerRoute;
   timing?: Partial<Timing>;
   random?: () => number;
   log?: (line: string) => void;
@@ -374,14 +386,15 @@ export class RelayClient {
     // The handle exists before the session: the first bodies may arrive while it opens.
     const handle: Handle = { session: undefined as unknown as ResumableSession, ready, calls: new Map(), next: 1 };
     handle.session = await ResumableSession.open({
-      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs),
+      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs, this.options.route ?? brokerRoute()),
       credential: this.grant.credential,
       attributes: { role: 'client', protocol: RELAY_PROTOCOL },
       ...(this.options.timing ? { timing: this.options.timing } : {}),
       ...(this.options.random ? { random: this.options.random } : {}),
       onBody: body => this.receive(handle, body, readyResolve),
       onEnd: end => this.ended(handle, end),
-      onEvent: event => this.options.log?.(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ''}`),
+      // Every loss and resume goes to the log, by default the server's standard error, so an operator or a test sees the link's history.
+      onEvent: event => (this.options.log ?? stderrLine)(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ''}`),
     });
     this.sessions++;
     if (!handle.session.ended && !this.closed) this.active = handle;

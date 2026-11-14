@@ -3355,8 +3355,8 @@ var require_utils = __commonJS({
     var HOST_DELIMS = { "@": "%40", "/": "%2F", "?": "%3F", "#": "%23", ":": "%3A" };
     var HOST_DELIM_RE = /[@/?#:]/g;
     var HOST_DELIM_NO_COLON_RE = /[@/?#]/g;
-    function reescapeHostDelimiters(host, isIP5) {
-      const re = isIP5 ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE;
+    function reescapeHostDelimiters(host, isIP6) {
+      const re = isIP6 ? HOST_DELIM_NO_COLON_RE : HOST_DELIM_RE;
       re.lastIndex = 0;
       return host.replace(re, (ch) => HOST_DELIMS[ch]);
     }
@@ -4045,8 +4045,8 @@ var require_fast_uri = __commonJS({
       const host = matches[4];
       return hasMalformedPercentEncoding(matches[3]) || host !== void 0 && !isIPLiteral(host) && hasMalformedPercentEncoding(host) || hasMalformedPercentEncoding(matches[6]) || hasMalformedPercentEncoding(matches[7]) || hasMalformedPercentEncoding(matches[8]);
     }
-    function canonicalizeHost(parsed2, options, schemeHandler, isIP5) {
-      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed2.host && !isIPLiteral(parsed2.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP5 === false && nonSimpleDomain(parsed2.host)) {
+    function canonicalizeHost(parsed2, options, schemeHandler, isIP6) {
+      if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport) && parsed2.host && !isIPLiteral(parsed2.host) && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP6 === false && nonSimpleDomain(parsed2.host)) {
         try {
           parsed2.host = new URL("http://" + parsed2.host).hostname;
         } catch (e) {
@@ -4073,7 +4073,7 @@ var require_fast_uri = __commonJS({
       let malformedHost = false;
       let malformedIPLiteral = false;
       let malformedScheme = false;
-      let isIP5 = false;
+      let isIP6 = false;
       if (options.reference === "suffix") {
         if (options.scheme) {
           uri = options.scheme + ":" + uri;
@@ -4136,15 +4136,15 @@ var require_fast_uri = __commonJS({
             const bracketedIPLiteral = isIPLiteral(parsed2.host);
             const hasIPLiteralBracket = parsed2.host.indexOf("[") !== -1 || parsed2.host.indexOf("]") !== -1;
             const ipv6result = normalizeIPv6(parsed2.host);
-            isIP5 = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
+            isIP6 = ipv6result.isIPV6 || ipv6result.isIPVFuture === true;
             malformedIPLiteral = hasIPLiteralBracket && (!bracketedIPLiteral || ipv6result.error === true);
-            parsed2.host = isIP5 ? ipv6result.host : ipv6result.host.toLowerCase();
+            parsed2.host = isIP6 ? ipv6result.host : ipv6result.host.toLowerCase();
             if (malformedIPLiteral) {
               parsed2.error = parsed2.error || "URI host is malformed.";
               malformedAuthorityOrPort = true;
             }
           } else {
-            isIP5 = true;
+            isIP6 = true;
           }
         }
         if (parsed2.scheme === void 0 && parsed2.userinfo === void 0 && parsed2.host === void 0 && parsed2.port === void 0 && parsed2.query === void 0 && !parsed2.path) {
@@ -4161,13 +4161,13 @@ var require_fast_uri = __commonJS({
         }
         const schemeHandler = getSchemeHandler(options.scheme || parsed2.scheme);
         if (!malformedIPLiteral) {
-          malformedHost = canonicalizeHost(parsed2, options, schemeHandler, isIP5);
+          malformedHost = canonicalizeHost(parsed2, options, schemeHandler, isIP6);
         }
         if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (uri.indexOf("%") !== -1) {
             if (parsed2.host !== void 0 && !malformedIPLiteral) {
-              const host = isIP5 ? parsed2.host : normalizePercentEncoding(parsed2.host, true);
-              parsed2.host = reescapeHostDelimiters(host, isIP5);
+              const host = isIP6 ? parsed2.host : normalizePercentEncoding(parsed2.host, true);
+              parsed2.host = reescapeHostDelimiters(host, isIP6);
             }
           }
           if (parsed2.path) {
@@ -10266,7 +10266,7 @@ var require_websocket = __commonJS({
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
-      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
+      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect2 : netConnect);
       opts.defaultPort = opts.defaultPort || defaultPort;
       opts.port = parsedUrl.port || defaultPort;
       opts.host = parsedUrl.hostname.startsWith("[") ? parsedUrl.hostname.slice(1, -1) : parsedUrl.hostname;
@@ -10473,7 +10473,7 @@ var require_websocket = __commonJS({
       options.path = options.socketPath;
       return net.connect(options);
     }
-    function tlsConnect(options) {
+    function tlsConnect2(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
         options.servername = net.isIP(options.host) ? "" : options.host;
@@ -20895,6 +20895,8 @@ import { mkdir as mkdir10, readFile as readFile9, readdir as readdir7, rm as rm5
 import { join as join13, resolve as resolve9 } from "node:path";
 
 // src/config.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { isIP as isIP2 } from "node:net";
 import { homedir as homedir2 } from "node:os";
 import { isAbsolute as isAbsolute2, join as join2, normalize } from "node:path";
 
@@ -21104,6 +21106,25 @@ function onExit(env = process.env) {
 }
 function pythonExecutable(env = process.env) {
   return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
+}
+function brokerRoute(env = process.env) {
+  const route = {};
+  const resolve11 = env.MCP_RELAY_BROKER_RESOLVE;
+  if (resolve11 !== void 0 && resolve11 !== "") {
+    const at = resolve11.indexOf("=");
+    const host = resolve11.slice(0, at).toLowerCase(), target = resolve11.slice(at + 1);
+    const withPort = /^\[([^\]]+)\]:(\d+)$/.exec(target) ?? /^([^:\[\]]+):(\d+)$/.exec(target);
+    const address = withPort ? withPort[1] : target, port = withPort ? Number(withPort[2]) : void 0;
+    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP2(address) === 0 || port !== void 0 && !(port > 0 && port < 65536)) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>[:<port>], not ${JSON.stringify(resolve11)}`);
+    route.resolve = port === void 0 ? { host, address } : { host, address, port };
+  }
+  const ca = env.MCP_RELAY_BROKER_CA;
+  if (ca !== void 0 && ca !== "") {
+    const pem = readFileSync2(absolute(ca, "MCP_RELAY_BROKER_CA"), "utf8");
+    if (!pem.includes("-----BEGIN CERTIFICATE-----")) throw new TypeError("MCP_RELAY_BROKER_CA must name a PEM certificate file");
+    route.caPem = pem;
+  }
+  return route;
 }
 
 // src/manager.ts
@@ -21473,7 +21494,7 @@ var Session = class {
 init_evidence_package();
 
 // src/machine-service.ts
-import { isIP as isIP3 } from "node:net";
+import { isIP as isIP4 } from "node:net";
 import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 import { open as open3, rename as rename2, rm, stat as stat2 } from "node:fs/promises";
 import { basename } from "node:path";
@@ -21481,8 +21502,8 @@ import { basename } from "node:path";
 // src/relay-client.ts
 import { createHash as createHash3, randomUUID, X509Certificate } from "node:crypto";
 import { open as open2 } from "node:fs/promises";
-import { isIP as isIP2 } from "node:net";
-import { rootCertificates } from "node:tls";
+import { isIP as isIP3 } from "node:net";
+import { connect as tlsConnect, rootCertificates } from "node:tls";
 
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -22118,12 +22139,21 @@ function checkGrant(grant, advertised) {
 }
 function loopback(hostname) {
   const host = hostname.replace(/^\[|\]$/g, "");
-  return host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
+  return host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
 }
-function webSocketDial(url, caPem, handshakeMs = 1e4) {
-  const ca = [...rootCertificates, caPem];
+function stderrLine(line) {
+  process.stderr.write(`${line}
+`);
+}
+function webSocketDial(url, caPem, handshakeMs = 1e4, route = {}) {
+  const ca = [...rootCertificates, caPem, ...route.caPem ? [route.caPem] : []];
+  const to = route.resolve;
+  const createConnection = to ? (options) => {
+    if (String(options.host).toLowerCase() !== to.host) return tlsConnect({ ...options, path: void 0 });
+    return tlsConnect({ ...options, path: void 0, servername: to.host, host: to.address, port: to.port ?? options.port });
+  } : void 0;
   return (handlers) => new Promise((resolve11, reject) => {
-    const tlsOptions = { ca, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
+    const tlsOptions = { ca, ...createConnection ? { createConnection } : {}, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new wrapper_default(url, [], tlsOptions);
     let open10 = false;
     socket.on("open", () => {
@@ -22323,14 +22353,15 @@ var RelayClient = class {
     });
     const handle = { session: void 0, ready, calls: /* @__PURE__ */ new Map(), next: 1 };
     handle.session = await ResumableSession.open({
-      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs),
+      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs, this.options.route ?? brokerRoute()),
       credential: this.grant.credential,
       attributes: { role: "client", protocol: RELAY_PROTOCOL },
       ...this.options.timing ? { timing: this.options.timing } : {},
       ...this.options.random ? { random: this.options.random } : {},
       onBody: (body) => this.receive(handle, body, readyResolve),
       onEnd: (end) => this.ended(handle, end),
-      onEvent: (event) => this.options.log?.(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ""}`)
+      // Every loss and resume goes to the log, by default the server's standard error, so an operator or a test sees the link's history.
+      onEvent: (event) => (this.options.log ?? stderrLine)(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ""}`)
     });
     this.sessions++;
     if (!handle.session.ended && !this.closed) this.active = handle;
@@ -22615,7 +22646,7 @@ var MachineService = class {
     const url = new URL(named2);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    const loopback2 = host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
+    const loopback2 = host === "localhost" || host === "::1" || isIP4(host) === 4 && host.startsWith("127.");
     if (!loopback2 && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
       throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
@@ -22991,7 +23022,7 @@ import { homedir as homedir4 } from "node:os";
 // src/registry.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { link, lstat, mkdir as mkdir2, open as open4, readFile as readFile3, realpath, rename as rename3, unlink } from "node:fs/promises";
-import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { spawn as spawn2 } from "node:child_process";
 import { dirname as dirname3, join as join5, resolve as resolve3 } from "node:path";
@@ -23056,7 +23087,7 @@ function resolveRegistry(options = {}) {
   const explicit = options.path ?? env.MCP_RELAY_REGISTRY;
   const validate2 = (path) => {
     if (!statSync2(path).isFile()) throw new RegistryError("Registry target must be a regular file");
-    table(readFileSync2(path, "utf8"));
+    table(readFileSync3(path, "utf8"));
   };
   if (explicit !== void 0) {
     const path = options.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_RELAY_REGISTRY");
@@ -33821,7 +33852,7 @@ import { spawn as spawn5 } from "node:child_process";
 import { createSocket } from "node:dgram";
 import { lookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
-import { isIP as isIP4 } from "node:net";
+import { isIP as isIP5 } from "node:net";
 var TYPE = { A: 1, PTR: 12, TXT: 16, SRV: 33 };
 var GROUP = "224.0.0.251";
 var PORT = 5353;
@@ -33990,7 +34021,7 @@ function parseAvahi(output) {
     }
     if (fields.length < 10) continue;
     const [host, address, port] = fields.slice(6, 9);
-    const prior = found.get(name), ipv42 = isIP4(address) === 4 ? address : void 0;
+    const prior = found.get(name), ipv42 = isIP5(address) === 4 ? address : void 0;
     if (prior?.address || prior && !ipv42) continue;
     found.set(name, advert(name, host.replace(/\.$/, ""), Number(port), prior?.txt ?? quotedTxt(fields.slice(9).join(";"), true), ipv42));
   }

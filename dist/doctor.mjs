@@ -2843,7 +2843,7 @@ var require_websocket = __commonJS({
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
-      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
+      opts.createConnection = opts.createConnection || (isSecure ? tlsConnect2 : netConnect);
       opts.defaultPort = opts.defaultPort || defaultPort;
       opts.port = parsedUrl.port || defaultPort;
       opts.host = parsedUrl.hostname.startsWith("[") ? parsedUrl.hostname.slice(1, -1) : parsedUrl.hostname;
@@ -3050,7 +3050,7 @@ var require_websocket = __commonJS({
       options.path = options.socketPath;
       return net.connect(options);
     }
-    function tlsConnect(options) {
+    function tlsConnect2(options) {
       options.path = void 0;
       if (!options.servername && options.servername !== "") {
         options.servername = net.isIP(options.host) ? "" : options.host;
@@ -3782,7 +3782,7 @@ async function command(argv, options = {}) {
 }
 
 // src/machine-service.ts
-import { isIP as isIP3 } from "node:net";
+import { isIP as isIP4 } from "node:net";
 import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
 import { open as open2, rename, rm, stat } from "node:fs/promises";
 import { basename } from "node:path";
@@ -3925,6 +3925,8 @@ function matchesEnvironment(actual, selected) {
 }
 
 // src/config.ts
+import { readFileSync as readFileSync2 } from "node:fs";
+import { isIP as isIP2 } from "node:net";
 import { homedir as homedir2 } from "node:os";
 import { isAbsolute as isAbsolute2, join as join2, normalize } from "node:path";
 function nonblank(value, label) {
@@ -3966,12 +3968,31 @@ function relayStateRoot(options = {}) {
 function pythonExecutable(env = process.env) {
   return nonblank(env.MCP_RELAY_PYTHON ?? "python3", "MCP_RELAY_PYTHON");
 }
+function brokerRoute(env = process.env) {
+  const route = {};
+  const resolve4 = env.MCP_RELAY_BROKER_RESOLVE;
+  if (resolve4 !== void 0 && resolve4 !== "") {
+    const at = resolve4.indexOf("=");
+    const host = resolve4.slice(0, at).toLowerCase(), target = resolve4.slice(at + 1);
+    const withPort = /^\[([^\]]+)\]:(\d+)$/.exec(target) ?? /^([^:\[\]]+):(\d+)$/.exec(target);
+    const address = withPort ? withPort[1] : target, port = withPort ? Number(withPort[2]) : void 0;
+    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP2(address) === 0 || port !== void 0 && !(port > 0 && port < 65536)) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>[:<port>], not ${JSON.stringify(resolve4)}`);
+    route.resolve = port === void 0 ? { host, address } : { host, address, port };
+  }
+  const ca = env.MCP_RELAY_BROKER_CA;
+  if (ca !== void 0 && ca !== "") {
+    const pem = readFileSync2(absolute(ca, "MCP_RELAY_BROKER_CA"), "utf8");
+    if (!pem.includes("-----BEGIN CERTIFICATE-----")) throw new TypeError("MCP_RELAY_BROKER_CA must name a PEM certificate file");
+    route.caPem = pem;
+  }
+  return route;
+}
 
 // src/relay-client.ts
 import { createHash as createHash3, randomUUID as randomUUID2, X509Certificate } from "node:crypto";
 import { open } from "node:fs/promises";
-import { isIP as isIP2 } from "node:net";
-import { rootCertificates } from "node:tls";
+import { isIP as isIP3 } from "node:net";
+import { connect as tlsConnect, rootCertificates } from "node:tls";
 
 // node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -4607,12 +4628,21 @@ function checkGrant(grant, advertised) {
 }
 function loopback(hostname) {
   const host = hostname.replace(/^\[|\]$/g, "");
-  return host === "localhost" || host === "::1" || isIP2(host) === 4 && host.startsWith("127.");
+  return host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
 }
-function webSocketDial(url, caPem, handshakeMs = 1e4) {
-  const ca = [...rootCertificates, caPem];
+function stderrLine(line) {
+  process.stderr.write(`${line}
+`);
+}
+function webSocketDial(url, caPem, handshakeMs = 1e4, route = {}) {
+  const ca = [...rootCertificates, caPem, ...route.caPem ? [route.caPem] : []];
+  const to = route.resolve;
+  const createConnection = to ? (options) => {
+    if (String(options.host).toLowerCase() !== to.host) return tlsConnect({ ...options, path: void 0 });
+    return tlsConnect({ ...options, path: void 0, servername: to.host, host: to.address, port: to.port ?? options.port });
+  } : void 0;
   return (handlers) => new Promise((resolve4, reject) => {
-    const tlsOptions = { ca, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
+    const tlsOptions = { ca, ...createConnection ? { createConnection } : {}, ALPNProtocols: ["http/1.1"], maxPayload: MAX_MESSAGE, perMessageDeflate: false, handshakeTimeout: handshakeMs, followRedirects: false };
     const socket = new wrapper_default(url, [], tlsOptions);
     let open4 = false;
     socket.on("open", () => {
@@ -4812,14 +4842,15 @@ var RelayClient = class {
     });
     const handle = { session: void 0, ready, calls: /* @__PURE__ */ new Map(), next: 1 };
     handle.session = await ResumableSession.open({
-      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs),
+      dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs, this.options.route ?? brokerRoute()),
       credential: this.grant.credential,
       attributes: { role: "client", protocol: RELAY_PROTOCOL },
       ...this.options.timing ? { timing: this.options.timing } : {},
       ...this.options.random ? { random: this.options.random } : {},
       onBody: (body) => this.receive(handle, body, readyResolve),
       onEnd: (end) => this.ended(handle, end),
-      onEvent: (event) => this.options.log?.(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ""}`)
+      // Every loss and resume goes to the log, by default the server's standard error, so an operator or a test sees the link's history.
+      onEvent: (event) => (this.options.log ?? stderrLine)(`relay: session ${event.kind}${event.reason ? `: ${event.reason}` : ""}`)
     });
     this.sessions++;
     if (!handle.session.ended && !this.closed) this.active = handle;
@@ -5104,7 +5135,7 @@ var MachineService = class {
     const url = new URL(named2);
     if (options.environment && url.origin !== new URL(options.environment.profile.vmServiceUrl).origin) throw new TypeError("Backend endpoint does not match the selected environment");
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    const loopback2 = host === "localhost" || host === "::1" || isIP3(host) === 4 && host.startsWith("127.");
+    const loopback2 = host === "localhost" || host === "::1" || isIP4(host) === 4 && host.startsWith("127.");
     if (!loopback2 && !options.listed || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
       throw new TypeError("machine-service baseUrl must be a loopback HTTP(S) origin, or one discovery found, without credentials, path, query or fragment");
     }
@@ -5477,7 +5508,7 @@ var MachineService = class {
 // src/registry.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 import { link, lstat, mkdir, open as open3, readFile, realpath, rename as rename2, unlink } from "node:fs/promises";
-import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { spawn as spawn2 } from "node:child_process";
 import { dirname as dirname2, join as join3, resolve as resolve3 } from "node:path";
@@ -5545,7 +5576,7 @@ function resolveRegistry(options = {}) {
   const explicit = options.path ?? env.MCP_RELAY_REGISTRY;
   const validate = (path) => {
     if (!statSync2(path).isFile()) throw new RegistryError("Registry target must be a regular file");
-    table(readFileSync2(path, "utf8"));
+    table(readFileSync3(path, "utf8"));
   };
   if (explicit !== void 0) {
     const path = options.path !== void 0 ? resolve3(nonblank(explicit, "Registry path")) : absolute(explicit, "MCP_RELAY_REGISTRY");
