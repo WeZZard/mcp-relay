@@ -1482,6 +1482,25 @@ test('R6: release does not wait behind a cancelled recorded run whose receiver a
   while (f.service.receiverActive) await new Promise(done => setTimeout(done, 20));
 });
 
+test('DC-86: release waits at most the bounded stop behind a cancelled run whose guest answers nothing more', { timeout: 30000 }, async t => {
+  const f = await fixture(t), controller = new AbortController(), hold = deferred(), entered = deferred();
+  const acquired = await f.manager.acquire(acquireInput()); await f.stage();
+  f.service.receiverHook = async () => { entered.resolve(); await hold.promise; };
+  // The guest never answers the stop.
+  f.service.execHook = async argv => { if (argv.some(arg => arg.includes("'.receiver-lock','owner.json'"))) await hold.promise; };
+  const running = f.manager.run(operation('hang'), controller.signal);
+  running.catch(() => {});
+  await entered.promise;
+  const released = f.manager.release();
+  controller.abort(new Error('the caller cancelled the command'));
+  const observed = await settledWithin(released, 12000);
+  hold.resolve();
+  assert.equal(observed, 'settled', 'the stop of a cancelled run is bounded, so the queued release runs');
+  await released; await f.assertClean();
+  assert.equal(f.service.leases.has(acquired.vm!), false);
+  while (f.service.receiverActive) await new Promise(done => setTimeout(done, 20));
+});
+
 test('R7 (owner decision): a finish whose packaging fails keeps the VM and does not release it', { timeout: 30000, todo: 'waiting for the owner\'s decision: README "Ownership, failure and recovery" documents that a failed delivery retains the VM; this documents the current behavior' }, async t => {
   const f = await fixture(t);
   const acquired = await f.manager.acquire(acquireInput()); await f.stage();

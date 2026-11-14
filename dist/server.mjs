@@ -24168,12 +24168,13 @@ var Transfer = class {
 // src/transport.ts
 import { join as join8 } from "node:path";
 var INVOKE = `const {spawnSync}=require('child_process');const [receiver,request]=process.argv.slice(1);const result=spawnSync(process.execPath,[receiver,request],{stdio:['ignore','ignore','inherit']});if(result.error)throw result.error;if(result.status!==0)process.exit(result.status??1);console.log('{"receiverExited":true}');`;
+var STOP_MS = 8e3;
 var STOP = `const fs=require('fs'),p=require('path'),cp=require('child_process');const [root,id]=process.argv.slice(1);
 const request=p.join(root,'requests',id+'.json'),owner=p.join(root,'.receiver-lock','owner.json');
 const pause=ms=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms);
 const alive=(pid,group)=>{try{process.kill(group?-pid:pid,0);return true;}catch(e){return e.code!=='ESRCH';}};
 const kill=(pid,group)=>{try{process.kill(group?-pid:pid,'SIGKILL');}catch{}};
-const settle=left=>{const until=Date.now()+5000;while(left().length&&Date.now()<until)pause(25);return left();};
+const settle=left=>{const until=Date.now()+3000;while(left().length&&Date.now()<until)pause(25);return left();};
 const skip=new Set([process.pid,process.ppid]);
 const runners=cp.execFileSync('ps',['-axww','-o','pid=,command='],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\\n').map(l=>/^\\s*(\\d+)\\s+(.*)$/.exec(l)).filter(m=>m&&!skip.has(Number(m[1]))&&m[2].split(' ').includes(request)).map(m=>Number(m[1]));
 for(const pid of runners)kill(pid,false);
@@ -24253,10 +24254,10 @@ var VmTransport = class {
     this.response = response;
     return response;
   }
-  /** Stop a cancelled execution in the guest, without the aborted signal; says what it found. */
+  /** Stop a cancelled execution in the guest, without the aborted signal and within STOP_MS; says what it found. */
   async stop(executionId) {
     try {
-      const answer = (await this.transfer.checked([this.transfer.node, "-e", STOP, this.guestRoot, executionId], 3e4)).trim().split("\n").at(-1) ?? "";
+      const answer = (await this.transfer.checked([this.transfer.node, "-e", STOP, this.guestRoot, executionId], STOP_MS, AbortSignal.timeout(STOP_MS))).trim().split("\n").at(-1) ?? "";
       const fact = JSON.parse(answer);
       return fact.stopped === true ? `stopped in the guest: ${answer}` : `not confirmed stopped in the guest: ${answer}`;
     } catch (error2) {

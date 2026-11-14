@@ -101,9 +101,17 @@ flowchart TD
 
 - The diagnostic `exec` path and `VmTransport.send` pass the caller's abort signal to vm-service's `exec` request.
 - A cancelled request stops waiting for the response, and the result is reported as `uncertain`, which keeps the VM and is never replayed.
-- A cancelled recorded run is then stopped in the guest before the guest's next operation (DC-86). The relay agent's cancel (DC-50) kills only the exec's process group, and the receiver runs the script in a process group of its own, so the cancel alone would leave the script running and the receiver's lock held, and every later run on the guest would fail. The relay kills the processes that still run the request and the process groups the receiver recorded for the execution, and waits until they are gone. It writes no guest receipt and leaves the execution's started marker, so the cancelled run is never replayed; the next receiver reclaims the lock of an owner that is proved gone.
-- The host receipt for a cancelled dispatch records the outcome as uncertain, with what the stop found: `stopped in the guest`, or `not confirmed stopped in the guest` when a process outlived it or the receiver was killed between starting a process and recording it. Only then can the next run still meet the cancelled run's lock and be reported as uncertain.
-- A cancelled diagnostic command, which runs without the receiver, is stopped by the relay agent's cancel alone.
+- A cancelled recorded run is stopped in the guest before the guest's next operation (DC-86). This applies to a call the client cancels and to an operation that shutdown cancels.
+- The stop is needed because the relay agent's cancel (DC-50) kills only the exec's process group, while the receiver runs the script in a process group of its own.
+- Without the stop, the script keeps running, the receiver's lock stays held, and every later run on the guest fails as uncertain.
+- The stop kills the processes that still run the request, which are the dispatcher and the receiver.
+- The stop then kills the process groups that the receiver recorded for the execution, and waits until they are gone.
+- The stop writes no guest receipt and leaves the execution's started marker, so the cancelled run is never replayed.
+- The next receiver reclaims the lock, because its owner and the owner's process groups are proved gone.
+- The stop is bounded at 8 s on the host, so a guest that does not answer delays its next operation by 8 s at most. A shutdown that cancels an operation waits only 5 s for it, so its fallback may run before the stop ends.
+- The host receipt for a cancelled dispatch records the outcome as uncertain, and adds what the stop found: `stopped in the guest`, or `not confirmed stopped in the guest`.
+- The stop cannot confirm a process that the receiver started but had not yet recorded when it was killed. In that case the next run can still meet the cancelled run's lock and be reported as uncertain.
+- A cancelled diagnostic command runs without the receiver. Only the relay agent's cancel stops it, and only over the relay link.
 
 ### Relay state of any size
 
