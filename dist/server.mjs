@@ -21126,6 +21126,13 @@ function brokerRoute(env = process.env) {
   }
   return route;
 }
+function sessionGraceMs(env = process.env) {
+  const value = env.MCP_RELAY_SESSION_GRACE_MS;
+  if (value === void 0 || value === "") return void 0;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms < 1e3 || ms > 6e5) throw new TypeError(`MCP_RELAY_SESSION_GRACE_MS must be whole milliseconds from 1000 to 600000, not ${JSON.stringify(value)}`);
+  return ms;
+}
 
 // src/manager.ts
 import { fileURLToPath } from "node:url";
@@ -22041,6 +22048,9 @@ var ResumableSession = class _ResumableSession {
 };
 
 // src/relay-client.ts
+function graceMs(options) {
+  return options.graceMs ?? sessionGraceMs();
+}
 var MAX_CHUNK = MAX_MESSAGE - 4096;
 var RELAY_PROTOCOL = 2;
 var UPLOAD_WINDOW = 32 * 1024 * 1024;
@@ -22355,7 +22365,7 @@ var RelayClient = class {
     handle.session = await ResumableSession.open({
       dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs, this.options.route ?? brokerRoute()),
       credential: this.grant.credential,
-      attributes: { role: "client", protocol: RELAY_PROTOCOL },
+      attributes: { role: "client", protocol: RELAY_PROTOCOL, ...graceMs(this.options) !== void 0 ? { grace_ms: graceMs(this.options) } : {} },
       ...this.options.timing ? { timing: this.options.timing } : {},
       ...this.options.random ? { random: this.options.random } : {},
       onBody: (body) => this.receive(handle, body, readyResolve),

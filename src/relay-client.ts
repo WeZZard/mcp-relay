@@ -18,7 +18,10 @@ import { open } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { connect as tlsConnect, rootCertificates, type ConnectionOptions as TlsConnectionOptions } from 'node:tls';
 import WebSocket from 'ws';
-import { brokerRoute, type BrokerRoute } from './config.js';
+import { brokerRoute, sessionGraceMs, type BrokerRoute } from './config.js';
+
+/** The grace period this client asks for: its option, else the setting, else the broker's. */
+function graceMs(options: RelayClientOptions): number | undefined { return options.graceMs ?? sessionGraceMs(); }
 import { MAX_BUFFERED, MAX_MESSAGE, ResumableSession, type Dial, type SessionEnd, type Timing } from './relay-session.js';
 
 /** The most data one chunk carries: 1 MiB less 4 KiB (RP-4, RP-12). */
@@ -264,6 +267,8 @@ interface Handle {
 
 export interface RelayClientOptions {
   dial?: Dial;
+  /** The grace period to ask the broker for; read from MCP_RELAY_SESSION_GRACE_MS when absent. */
+  graceMs?: number;
   /** How the default dial reaches the broker; read from MCP_RELAY_BROKER_RESOLVE and MCP_RELAY_BROKER_CA when absent. */
   route?: BrokerRoute;
   timing?: Partial<Timing>;
@@ -388,7 +393,7 @@ export class RelayClient {
     handle.session = await ResumableSession.open({
       dial: this.options.dial ?? webSocketDial(this.grant.url, this.grant.ca_pem, this.options.timing?.handshakeMs, this.options.route ?? brokerRoute()),
       credential: this.grant.credential,
-      attributes: { role: 'client', protocol: RELAY_PROTOCOL },
+      attributes: { role: 'client', protocol: RELAY_PROTOCOL, ...(graceMs(this.options) !== undefined ? { grace_ms: graceMs(this.options) } : {}) },
       ...(this.options.timing ? { timing: this.options.timing } : {}),
       ...(this.options.random ? { random: this.options.random } : {}),
       onBody: body => this.receive(handle, body, readyResolve),

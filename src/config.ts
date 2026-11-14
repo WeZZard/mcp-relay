@@ -177,3 +177,18 @@ export function brokerRoute(env: NodeJS.ProcessEnv = process.env): BrokerRoute {
   }
   return route;
 }
+
+/**
+ * The grace period a client session asks the broker for, from
+ * MCP_RELAY_SESSION_GRACE_MS: the broker keeps a disconnected session this
+ * long, at most its own 10 minutes (machine-service RP, "Expiry"). Unset in
+ * ordinary use, which takes the broker's; the relay acceptance's AC-67 asks
+ * for a short one to see an expired session recover.
+ */
+export function sessionGraceMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const value = env.MCP_RELAY_SESSION_GRACE_MS;
+  if (value === undefined || value === '') return undefined;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms < 1000 || ms > 600_000) throw new TypeError(`MCP_RELAY_SESSION_GRACE_MS must be whole milliseconds from 1000 to 600000, not ${JSON.stringify(value)}`);
+  return ms;
+}
