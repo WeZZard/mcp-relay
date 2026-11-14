@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, resolve } from "node:path";
 import { selectedEnvironment } from './environment.js';
@@ -143,4 +145,32 @@ export function registryDiagnosticsPath(options: ConfigOptions = {}): string {
     return absolute(env.MCP_RELAY_REGISTRY, "MCP_RELAY_REGISTRY");
   }
   return join(relayStateRoot(options), "registry.md");
+}
+
+/**
+ * How the relay reaches a broker that sits behind an edge it cannot reach by
+ * ordinary DNS or public roots, such as the relay acceptance's network rig
+ * (machine-service TL-7), the way curl's --resolve and --cacert do:
+ * MCP_RELAY_BROKER_RESOLVE=<host name>=<IP address> resolves that one name to
+ * that address, and MCP_RELAY_BROKER_CA=<absolute path of a PEM file> trusts
+ * one more authority besides the public roots and the instance's own. Both
+ * are unset in ordinary use.
+ */
+export interface BrokerRoute { resolve?: { host: string; address: string }; caPem?: string }
+export function brokerRoute(env: NodeJS.ProcessEnv = process.env): BrokerRoute {
+  const route: BrokerRoute = {};
+  const resolve = env.MCP_RELAY_BROKER_RESOLVE;
+  if (resolve !== undefined && resolve !== '') {
+    const at = resolve.indexOf('=');
+    const host = resolve.slice(0, at).toLowerCase(), address = resolve.slice(at + 1);
+    if (at <= 0 || !/^[a-z0-9.-]+$/.test(host) || isIP(address) === 0) throw new TypeError(`MCP_RELAY_BROKER_RESOLVE must be <host name>=<IP address>, not ${JSON.stringify(resolve)}`);
+    route.resolve = { host, address };
+  }
+  const ca = env.MCP_RELAY_BROKER_CA;
+  if (ca !== undefined && ca !== '') {
+    const pem = readFileSync(absolute(ca, 'MCP_RELAY_BROKER_CA'), 'utf8');
+    if (!pem.includes('-----BEGIN CERTIFICATE-----')) throw new TypeError('MCP_RELAY_BROKER_CA must name a PEM certificate file');
+    route.caPem = pem;
+  }
+  return route;
 }
