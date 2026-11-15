@@ -23477,6 +23477,12 @@ function archiveChunks(files, maxArgvBytes = 64 * 1024, argvBytes = (file) => Bu
   if (chunk.length) chunks.push(chunk);
   return chunks;
 }
+var StagingSourceError = class extends Error {
+  constructor(message3, options) {
+    super(message3, options);
+    this.name = "StagingSourceError";
+  }
+};
 async function packArchive(archive, files, beforeOpen = async () => {
 }) {
   const output = await open6(archive, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
@@ -23489,18 +23495,27 @@ async function packArchive(archive, files, beforeOpen = async () => {
   };
   try {
     const buffer = Buffer.alloc(8 * 1024 * 1024);
-    for (const file of files) {
-      await beforeOpen(file.source);
-      const input = await open6(file.source, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+    const source = async (file, step2) => {
       try {
-        const info = await input.stat();
-        if (!info.isFile() || info.size !== file.bytes) throw new Error(`Staging source changed: ${file.source}`);
+        return await step2();
+      } catch (error2) {
+        throw error2 instanceof StagingSourceError ? error2 : new StagingSourceError(`Staging source changed: ${file.source}: ${error2 instanceof Error ? error2.message : String(error2)}`, { cause: error2 });
+      }
+    };
+    for (const file of files) {
+      const input = await source(file, async () => {
+        await beforeOpen(file.source);
+        return open6(file.source, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+      });
+      try {
+        const info = await source(file, () => input.stat());
+        if (!info.isFile() || info.size !== file.bytes) throw new StagingSourceError(`Staging source changed: ${file.source}`);
         modes.push(info.mode & 511);
         await put(Buffer.from(header(file.path, file.bytes)));
         const digest = createHash6("sha256");
         let read = 0;
         for (; ; ) {
-          const { bytesRead } = await input.read(buffer, 0, buffer.length, null);
+          const { bytesRead } = await source(file, () => input.read(buffer, 0, buffer.length, null));
           if (!bytesRead) break;
           read += bytesRead;
           if (read > file.bytes) break;
@@ -23508,7 +23523,7 @@ async function packArchive(archive, files, beforeOpen = async () => {
           digest.update(chunk);
           await put(chunk);
         }
-        if (read !== file.bytes || digest.digest("hex") !== file.sha256) throw new Error(`Staging source changed: ${file.source}`);
+        if (read !== file.bytes || digest.digest("hex") !== file.sha256) throw new StagingSourceError(`Staging source changed: ${file.source}`);
         await put(Buffer.from(trailer(file.sha256)));
       } finally {
         await input.close();
@@ -23689,12 +23704,6 @@ var SCAN_MS_PER_MIB = 125;
 function scanTimeoutMs(bytes) {
   return SCAN_BASE_MS + Math.ceil(bytes / 1048576) * SCAN_MS_PER_MIB;
 }
-var StagingSourceError = class extends Error {
-  constructor(message3, options) {
-    super(message3, options);
-    this.name = "StagingSourceError";
-  }
-};
 function pushChunks(files) {
   return archiveChunks(files, 64 * 1024, (file) => Buffer.byteLength(file.path) + 5);
 }
@@ -23832,12 +23841,7 @@ var Transfer = class {
     let unpacked = false;
     try {
       const staged = join7(hostDirectory, "archive");
-      let packed;
-      try {
-        packed = await packArchive(staged, files.map((file) => ({ ...file, source: within(local, file.path) })), (source) => assertHostPath(approvedLocalRoot, source));
-      } catch (error2) {
-        throw new StagingSourceError(error2 instanceof Error ? error2.message : String(error2), { cause: error2 });
-      }
+      const packed = await packArchive(staged, files.map((file) => ({ ...file, source: within(local, file.path) })), (source) => assertHostPath(approvedLocalRoot, source));
       const prepare = () => this.checked([this.node, "-e", PREPARE, guestRoot, archive]);
       await prepare();
       await this.copy("push", () => this.vm.push(this.name, staged, archive), async () => {

@@ -3,7 +3,7 @@
 ## A workspace staged in archives (2026-11-14)
 
 - Scope: [screenshot-delivery.md AD-11](screenshot-delivery.md#ad-11-a-workspace-is-staged-in-archives-as-the-finish-pulls-them), decision DC-88, on branch `claude/archived-staging`.
-- `npm run build`, `npm run typecheck` and `npm test` passed: 628 tests, 622 passed, 4 skipped, 2 todo, none failed. The tests use fake guest channels that run the guest scripts on the host.
+- `npm run build`, `npm run typecheck` and `npm test` passed: 629 tests, 623 passed, 4 skipped, 2 todo, none failed. The tests use fake guest channels that run the guest scripts on the host.
 - Not verified: a stage on a live link, under the relay acceptance's N2 profile (machine-service AC-58), on a durable machine, or with a guest that lacks the space to unpack an archive.
 
 ## Background download of step evidence (2026-10-08)

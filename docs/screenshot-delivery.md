@@ -308,7 +308,7 @@ imageDelivery: {
 ### AD-11: a workspace is staged in archives, as the finish pulls them
 
 - `relay_stage` with a `workspace` pushes the tree in archives of the format of AD-8, one per chunk of paths. A chunk follows the bound of AD-8: one guest command carries at most 64 KiB of arguments, here each file's permission bits and path. A chunk of one file goes as a plain file push. A file of any size may ride in an archive, as in the pull (DC-88).
-- The host writes each chunk's archive in its own temporary folder. It reads each file once, without following a link, and refuses the stage with `Staging source changed` when a file's size or hash differs from the inventory taken first. A host-side refusal never falls back.
+- The host writes each chunk's archive in its own temporary folder. It reads each file once, without following a link, and refuses the stage with `Staging source changed` when a file's size or hash differs from the inventory taken first. A refusal for a host file never falls back; a failure to write the archive on the host does.
 - The archive is pushed as one file into the guest root, beside the inventory frames, with the checks of a file push.
 - One guest command unpacks it. It receives each expected file's path and permission bits, in order, and the archive's exact size and SHA-256. It refuses an archive unless every check passes:
   - each path is relative and has no `..`, `.` or empty segment, and no path appears twice;

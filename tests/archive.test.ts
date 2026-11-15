@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm, symlink, readdir, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { archiveBytes, archiveChunks, unpackArchive, type ArchiveEntry } from '../src/archive.js';
+import { archiveBytes, archiveChunks, packArchive, StagingSourceError, unpackArchive, type ArchiveEntry } from '../src/archive.js';
 import { Transfer, type VmChannel } from '../src/transfer.js';
 import { command, hash, inventory } from '../src/util.js';
 
@@ -115,6 +115,7 @@ test('the guest refuses to archive a link or a file outside the tree, and leaves
 const tree = async (root: string, count: number) => {
  for (let n = 0; n < count; n++) { await mkdir(join(root, 'files', String(n % 7)), { recursive: true }); await writeFile(join(root, 'files', String(n % 7), `${n}.txt`), `file ${n}\n`.padEnd(64, '.')); }
  await writeFile(join(root, 'run.sh'), '#!/bin/sh\necho staged\n', { mode: 0o755 });
+ await writeFile(join(root, 'empty'), '');
 };
 const pushes = (log: string[]) => ({
  exec: async (_name: string, argv: string[]) => { log.push('exec'); return command(argv, { maxBytes: 16 * 1024 * 1024 }); },
@@ -152,7 +153,8 @@ test('pushTree stages a tree in archives: every file arrives with its hash and m
 test('a tampered or short pushed archive is refused and leaves no file in the guest (AD-11)', async t => {
  const { root, project, workspace, guest, remote } = await pushSetup('relay-archive-tamper-', t);
  await tree(workspace, 3);
- const files = await inventory(workspace);
+ // The tampers edit the first entry's bytes, so it must have some; the empty file goes last.
+ const all = await inventory(workspace), files = [...all.filter(file => file.bytes), ...all.filter(file => !file.bytes)];
  const tampers: Array<[string, (path: string) => Promise<void>, RegExp]> = [
   ['short', async path => { await writeFile(path, (await readFile(path)).subarray(0, 40)); }, /Archive size mismatch/],
   ['flipped byte', async path => { const bytes = await readFile(path); bytes[bytes.indexOf(10) + 3] ^= 1; await writeFile(path, bytes); }, /checksum mismatch/],
@@ -227,4 +229,15 @@ test('a host file that changes while it is packed refuses the stage without the 
  assert.deepEqual(fallbacks, []);
  assert.deepEqual(await readdir(remote), []);
  assert.deepEqual(await readdir(join(root, 'temp')), []);
+});
+
+test('packing tells a changed source from an archive it cannot write, so only the latter may fall back (AD-11)', async t => {
+ const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-archive-pack-'))); t.after(() => rm(root, { recursive: true, force: true }));
+ await writeFile(join(root, 'a'), 'alpha');
+ const file = { ...entry('a', 'alpha'), source: join(root, 'a') };
+ const packed = await packArchive(join(root, 'ok.archive'), [file]);
+ assert.equal(packed.bytes, archiveBytes([file])); assert.equal(packed.sha256, hash(await readFile(join(root, 'ok.archive'))));
+ await assert.rejects(packArchive(join(root, 'missing', 'archive'), [file]), (error: Error) => !(error instanceof StagingSourceError) && /ENOENT/.test(error.message));
+ await assert.rejects(packArchive(join(root, 'changed.archive'), [{ ...file, sha256: hash('other') }]), StagingSourceError);
+ await assert.rejects(packArchive(join(root, 'gone.archive'), [{ ...file, source: join(root, 'gone') }]), StagingSourceError);
 });

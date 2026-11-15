@@ -967,7 +967,7 @@
     "node_modules/zod/v4/mini/iso.js": "24acf58a401645baaab9846987e5387cdf7c9e659e2e0aa3b3b6b8ac5555a5ed",
     "node_modules/zod/v4/mini/parse.js": "b87374f4e821d583f699d83e4b74ac59e4a5a782c510959187a0ba209145d76b",
     "node_modules/zod/v4/mini/schemas.js": "5614339bbec6b9be13ed1809e1215fe44d78e99f5f0eee848c0bb3b25dc1c9b6",
-    "src/archive.ts": "cb47ab49a61604f74ae8130dc529be6188f8351b2de85a85d2d36969e1ec8df4",
+    "src/archive.ts": "1368e3fea858572f3b68932a2fe1a62186f82fce52f0f4c171f74e6dbb52c152",
     "src/capture-gate.ts": "6757d7329b62e5b093323eddc779ee13722a0da24ab659649a23a2e70c4fbd56",
     "src/config.ts": "74a8545f0bec0b13de6ac9ae9ba8f3a6cf1ebc9810ed03f8983365c1f43ecece",
     "src/console.ts": "d8258173a24449c2a394289b14983b9575c5ce753ab267d4e13213f3abfcb72d",
@@ -996,7 +996,7 @@
     "src/search.ts": "d131e439525d283e0585904622c8d2ecb00708f9775f419256ffd28f7b2d32a2",
     "src/server.ts": "d279f5dfb27074609b108cbf605e4ed45c1b21c3a86868ff68b9dd9b7beb269a",
     "src/surface.ts": "41c7f7e7d422611fec56b56f82145ec584885c023108e69c3075e58f73b6230f",
-    "src/transfer.ts": "7ce5356db741bbd50d874e9b08499e27a2b5e8ef1f32686f8b2fef445aedd671",
+    "src/transfer.ts": "b3e0d6d1720172ec74231fff30f6b3d3636711be22e2ad99448bce28757d819c",
     "src/transport.ts": "5199001c7c5354ae1b9c9d856eec0e2239c67513d1af57ce10e0ac3f1eb7ea8c",
     "src/typebox.ts": "7f071fbc67548c7d3701272dabe88a217812e12e41dfad76974ff08169fa1a7e",
     "src/util.ts": "88993ec29376fbaf5c19fd23153b19c35fef99be1a906c59428cf48554c3b8da"

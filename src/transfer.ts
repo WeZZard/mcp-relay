@@ -4,7 +4,8 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { hash, hashFile, inventory, within } from './util.js';
-import { archiveBytes, archiveChunks, packArchive, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
+import { archiveBytes, archiveChunks, packArchive, StagingSourceError, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
+export { StagingSourceError } from './archive.js';
 
 /** machine-service is the sole guest communication channel. */
 export interface VmChannel {
@@ -147,10 +148,6 @@ const SCAN_BASE_MS = 120_000;
 const SCAN_MS_PER_MIB = 125;
 export function scanTimeoutMs(bytes: number): number { return SCAN_BASE_MS + Math.ceil(bytes / 1048576) * SCAN_MS_PER_MIB; }
 
-/** The host source of a push changed or is not safe to read: the stage is refused, never retried per file. */
-export class StagingSourceError extends Error {
-  constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'StagingSourceError'; }
-}
 /** A pushed archive's guest command names each file as its octal permission bits and its path (AD-11). */
 function pushChunks(files: readonly FileFact[]): FileFact[][] {
   return archiveChunks(files, 64 * 1024, file => Buffer.byteLength(file.path) + 5);
@@ -266,10 +263,7 @@ export class Transfer {
     let unpacked = false;
     try {
       const staged = join(hostDirectory, 'archive');
-      let packed: { bytes: number; sha256: string; modes: number[] };
-      try {
-        packed = await packArchive(staged, files.map(file => ({ ...file, source: within(local, file.path) })), source => assertHostPath(approvedLocalRoot, source));
-      } catch (error) { throw new StagingSourceError(error instanceof Error ? error.message : String(error), { cause: error }); }
+      const packed = await packArchive(staged, files.map(file => ({ ...file, source: within(local, file.path) })), source => assertHostPath(approvedLocalRoot, source));
       const prepare = () => this.checked([this.node, '-e', PREPARE, guestRoot, archive]);
       await prepare();
       await this.copy('push', () => this.vm.push(this.name, staged, archive), async () => { await assertHostPath(tempRoot, staged); await prepare(); });
