@@ -977,8 +977,8 @@
     "src/downloads.ts": "4f37b5bb4fac96f9260a3a87c83bacf715b9add5ae9926d3fe0994000c70a8dd",
     "src/environment.ts": "5770e966e49d78ae069614078c667f94e70074b150f83111049529ff613aa215",
     "src/evidence-merge.ts": "2f2759e28e70595ef9284fec85e1d6082bf25e815d04f0a36a253c24bfb75110",
-    "src/guest/image-evidence.ts": "9c5daaed5b33b9912021a91fd79a2e6d5be42c75d37761772a3bd2645d20a55e",
-    "src/guest/receiver.ts": "92fc8d3bfe95ed56d43cfe5b46eb196034ade5e4e9f58ed202465531458f697d",
+    "src/guest/image-evidence.ts": "807cc35aa2c4cf06ee7ebfaa336bc5e293ce2660da80b3443f5ed1a1c9af71a5",
+    "src/guest/receiver.ts": "c9707967553982450c4fa8575ad17df4f9e3b2e32780f64a599bcb0be4fd19ae",
     "src/image-presentation.ts": "64ca29a3444a04606cb783c81ac2d0f3136f9a9ac730ae9074156f0a63256c76",
     "src/images.ts": "415bfb37966a60ef3e407236295b9aeeb314f7fb33de55a6ada512cff6661908",
     "src/machine-service.ts": "fe66436ec1c65f3fdf7961690e2d79084bf916914e573266eedcb78574598043",
@@ -996,8 +996,8 @@
     "src/search.ts": "d131e439525d283e0585904622c8d2ecb00708f9775f419256ffd28f7b2d32a2",
     "src/server.ts": "d279f5dfb27074609b108cbf605e4ed45c1b21c3a86868ff68b9dd9b7beb269a",
     "src/surface.ts": "41c7f7e7d422611fec56b56f82145ec584885c023108e69c3075e58f73b6230f",
-    "src/transfer.ts": "b3e0d6d1720172ec74231fff30f6b3d3636711be22e2ad99448bce28757d819c",
-    "src/transport.ts": "5199001c7c5354ae1b9c9d856eec0e2239c67513d1af57ce10e0ac3f1eb7ea8c",
+    "src/transfer.ts": "beed1d2a70cc8b26ff2d2e650075447327bf6ae2058b3561a4bef057041df9d3",
+    "src/transport.ts": "8c30c1c5e20b3a6d31a586432b69e979e17c3003e456640102e237e0c00e6273",
     "src/typebox.ts": "7f071fbc67548c7d3701272dabe88a217812e12e41dfad76974ff08169fa1a7e",
     "src/util.ts": "88993ec29376fbaf5c19fd23153b19c35fef99be1a906c59428cf48554c3b8da"
   }

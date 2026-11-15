@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { FramedRequest } from '@wezzard/relay-driver-host-sdk';
 import { Transfer, type VmChannel } from '../src/transfer.js';
@@ -15,7 +16,7 @@ const request = (patch: Partial<FramedRequest> = {}): FramedRequest => ({
 const completed = { executionId: 'execution-1', outcome: { kind: 'completed', exitStatus: { code: 0, signal: null } } };
 
 /** Local protocol fixture only. No VM, display, real input or browser. */
-async function fixture(t: TestContext, response: unknown = completed, options: { absent?: boolean; exit?: number; malformed?: boolean } = {}) {
+async function fixture(t: TestContext, response: unknown = completed, options: { absent?: boolean; exit?: number; malformed?: boolean; declined?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'relay-transport-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const guest = join(root, 'guest'), host = join(root, 'host'); await mkdir(guest); await mkdir(host);
@@ -24,10 +25,11 @@ async function fixture(t: TestContext, response: unknown = completed, options: {
   // Faithfully emulate the old receiver CLI: persist a receipt then write that
   // same potentially huge, JSON-escaped document to stdout.
   const encoded = options.malformed ? '{malformed json' : JSON.stringify(response);
-  await writeFile(join(guest, 'receiver.mjs'), `import fs from 'node:fs';import p from 'node:path';const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));const receipt=p.join(process.env.RELAY_RUNTIME_ROOT,'state/receiver/receipts',request.executionId+'.json');if(!${!!options.absent}){fs.mkdirSync(p.dirname(receipt),{recursive:true});fs.writeFileSync(receipt,${JSON.stringify(encoded)});}process.stdout.write(${JSON.stringify(encoded)});process.exitCode=${options.exit ?? 0};`);
-  const dispatched: Array<{ argv: string[]; timeout?: number }> = [], stdoutLengths: number[] = [];
+  await writeFile(join(guest, 'receiver.mjs'), `import fs from 'node:fs';import p from 'node:path';const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));const receipt=p.join(process.env.RELAY_RUNTIME_ROOT,'state/receiver',${options.declined ? "'declined'" : "'receipts'"},request.executionId+'.json');if(!${!!options.absent}){fs.mkdirSync(p.dirname(receipt),{recursive:true});fs.writeFileSync(receipt,${JSON.stringify(encoded)});}process.stdout.write(${JSON.stringify(encoded)});process.exitCode=${options.exit ?? 0};`);
+  const dispatched: Array<{ argv: string[]; timeout?: number }> = [], stdoutLengths: number[] = [], execs: string[][] = [];
   const channel: VmChannel = {
     exec: async (_name, argv, timeout) => {
+      execs.push(argv);
       if (argv[0] === '/usr/bin/env') dispatched.push({ argv, timeout });
       const result = await command(argv, { timeoutMs: 10000, maxBytes: 16 * 1024 * 1024 });
       stdoutLengths.push(result.stdout.length);
@@ -38,7 +40,7 @@ async function fixture(t: TestContext, response: unknown = completed, options: {
   };
   const transfer = new Transfer(channel, 'fixture', process.execPath, { guestRoot: guest, hostTempRoot: join(root, 'temp') });
   const transport = new VmTransport(transfer, guest, host, 'fixture-unused-driver'); transport.because = 'Protocol fixture: no user interaction';
-  return { root, guest, host, channel, transfer, transport, guestReceipt, originalReceipt, dispatched, stdoutLengths, encoded };
+  return { root, guest, host, channel, transfer, transport, guestReceipt, originalReceipt, dispatched, stdoutLengths, encoded, execs };
 }
 
 test('escaped large stdout receipts use verified file framing despite service stdout truncation', async t => {
@@ -54,6 +56,58 @@ test('escaped large stdout receipts use verified file framing despite service st
   assert.equal(hash(original), hash(await readFile(f.guestReceipt)));
   assert.deepEqual(JSON.parse(await readFile(join(f.host, 'receipts/execution-1.json'), 'utf8')), expected);
   assert.equal(JSON.parse(await readFile(join(f.host, 'requests/execution-1.json'), 'utf8')).because, f.transport.because);
+  // The normal path is unchanged: dispatch, then the receipt's fact, pull and recheck, and no look for a declined answer (DC-89).
+  assert.ok(!f.execs.some(argv => argv.some(arg => arg.includes('isFile();}catch(e){if(e.code'))), 'no presence probe on the normal path');
+  await assert.rejects(readFile(join(f.host, 'receiver-declined/execution-1.json')), { code: 'ENOENT' });
+});
+
+const bundle = fileURLToPath(new URL('../dist/receiver.mjs', import.meta.url));
+
+test('a run while an earlier run holds the receiver lock is refused, naming that run, not a missing receipt (DC-89)', async t => {
+  const f = await fixture(t);
+  await copyFile(bundle, join(f.guest, 'receiver.mjs'));
+  // The earlier run's receiver is alive (this process) and holds the lock, as after a lost call whose run continues.
+  await mkdir(join(f.guest, '.receiver-lock'));
+  await writeFile(join(f.guest, '.receiver-lock/owner.json'), JSON.stringify({ pid: process.pid, executionId: 'execution-earlier', active: true, operationPids: [], pendingSpawn: false, settled: false }));
+  const result = await f.transport.send(request({ language: 'javascript', code: 'void 0', codeSha256: hash('void 0') }));
+  assert.equal(result.outcome.kind, 'refused', JSON.stringify(result));
+  assert.match(JSON.stringify(result), /a previous run, execution execution-earlier, still holds the receiver lock/);
+  assert.match(JSON.stringify(result), /nothing of this execution started/);
+  assert.doesNotMatch(JSON.stringify(result), /ENOENT|lstat|Guest setup\/transfer/);
+  assert.equal(f.dispatched.length, 1);
+  assert.deepEqual(JSON.parse(await readFile(join(f.host, 'receipts/execution-1.json'), 'utf8')), result);
+  assert.deepEqual(JSON.parse(await readFile(join(f.host, 'receiver-declined/execution-1.json'), 'utf8')), result);
+  await assert.rejects(readFile(f.originalReceipt), { code: 'ENOENT' }, 'a declined answer is not filed as a receiver receipt');
+  await assert.rejects(readFile(join(f.guest, 'state/receiver/started/execution-1.json')), { code: 'ENOENT' });
+});
+
+for (const started of [false, true]) test(`a missing receipt with no declined answer says the receiver gave no answer, with the started marker ${started ? 'present' : 'absent'} (DC-89)`, async t => {
+  const f = await fixture(t, completed, { absent: true });
+  if (started) { await mkdir(join(f.guest, 'state/receiver/started'), { recursive: true }); await writeFile(join(f.guest, 'state/receiver/started/execution-1.json'), '{}'); }
+  const result = await f.transport.send(request());
+  assert.equal(result.outcome.kind, 'uncertain');
+  assert.match(JSON.stringify(result), /the receiver gave no answer/);
+  assert.match(JSON.stringify(result), started ? /started marker exists, so it may have started/ : /started marker does not exist/);
+  assert.doesNotMatch(JSON.stringify(result), /ENOENT|lstat/);
+  assert.equal(f.dispatched.length, 1);
+});
+
+for (const answer of [
+  { ...completed },
+  { executionId: 'wrong-identity', outcome: { kind: 'refused', diagnostic: 'fixture' } },
+  { executionId: 'execution-1', outcome: { kind: 'refused' } },
+]) test(`a malformed declined answer stays uncertain: ${JSON.stringify(answer)}`, async t => {
+  const f = await fixture(t, answer, { declined: true });
+  const result = await f.transport.send(request());
+  assert.equal(result.outcome.kind, 'uncertain');
+  assert.match(JSON.stringify(result), /Malformed receiver|lacks diagnostic/);
+  assert.equal(f.dispatched.length, 1);
+});
+
+test('a declined uncertain answer is returned as the receiver gave it', async t => {
+  const expected = { executionId: 'execution-1', outcome: { kind: 'uncertain', diagnostic: 'execution was already started; it will not be replayed' } };
+  const f = await fixture(t, expected, { declined: true });
+  assert.deepEqual(await f.transport.send(request()), expected);
 });
 
 for (const snapshots of [

@@ -20,6 +20,15 @@ export type GuestRequest = Omit<FramedRequest, "kind" | "language"> & { readonly
 
 export const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
 
+/**
+ * Where the receiver files its answer for an execution it wrote no receipt for,
+ * relative to the runtime root (DC-89): a run refused while an earlier run holds
+ * the receiver lock, an execution already started, a receiver error. It is not
+ * under `receipts/`, which is read as final evidence; the host reads it only
+ * when the execution's receipt is missing.
+ */
+export const declinedPath = (executionId: string): string[] => ["state", "receiver", "declined", `${executionId}.json`];
+
 export interface GuestSnapshotDescriptor {
   sessionId: string;
   attemptId: string;

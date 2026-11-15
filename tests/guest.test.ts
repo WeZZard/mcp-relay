@@ -230,8 +230,36 @@ test("started identities and concurrent invocations fail closed without replay",
   const first = receive(request("running"), options);
   await entered;
   assert.equal((await receive(request("running"), options)).outcome.kind, "uncertain");
-  assert.equal((await receive(request("competing"), options)).outcome.kind, "uncertain");
+  const competing = await receive(request("competing"), options);
+  assert.equal(competing.outcome.kind, "refused", "nothing of a run refused at the lock started (DC-89)");
+  assert.match(competing.outcome.diagnostic, /a previous run, execution running, still holds the receiver lock/);
   unblock(); assert.equal((await first).outcome.kind, "completed");
+});
+
+test("a run while an earlier run holds the receiver lock is refused, naming that run, and its answer is filed apart from the receipts (DC-89)", async t => {
+  const { root, options } = await setup(t);
+  const lock = join(root, ".receiver-lock");
+  await mkdir(lock);
+  await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, executionId: "execution-earlier", active: true, operationPids: [], pendingSpawn: false, settled: false }));
+  const refused = await receive(request("execution-later"), options);
+  assert.equal(refused.outcome.kind, "refused");
+  assert.match(refused.outcome.diagnostic, /a previous run, execution execution-earlier, still holds the receiver lock \(its receiver, process \d+, is still running\), so nothing of this execution started/);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "state/receiver/declined/execution-later.json"), "utf8")), JSON.parse(JSON.stringify(refused)));
+  await assert.rejects(readFile(join(root, "state/receiver/receipts/execution-later.json")), { code: "ENOENT" });
+  await assert.rejects(readFile(join(root, "state/receiver/started/execution-later.json")), { code: "ENOENT" });
+  // The same execution holding the lock is not a refusal: it may be starting.
+  await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, executionId: "execution-same", active: false }));
+  assert.equal((await receive(request("execution-same"), options)).outcome.kind, "uncertain");
+  // An already-started execution's answer is filed too, as uncertain.
+  await rm(lock, { recursive: true });
+  await mkdir(join(root, "state/receiver/started"), { recursive: true });
+  await writeFile(join(root, "state/receiver/started/execution-interrupted.json"), "{}");
+  assert.equal((await receive(request("execution-interrupted"), options)).outcome.kind, "uncertain");
+  assert.equal(JSON.parse(await readFile(join(root, "state/receiver/declined/execution-interrupted.json"), "utf8")).outcome.kind, "uncertain");
+  // Once the lock is free, the next run runs, and a run with a receipt files no declined answer.
+  assert.equal((await receive(request("execution-next"), options)).outcome.kind, "completed");
+  assert.ok(JSON.parse(await readFile(join(root, "state/receiver/receipts/execution-next.json"), "utf8")));
+  await assert.rejects(readFile(join(root, "state/receiver/declined/execution-next.json")), { code: "ENOENT" });
 });
 
 test("a script's quoted arguments reach it literally; timeout and output bounds stop child execution", async (t) => {
@@ -364,10 +392,10 @@ test("stale locks require dead-owner and inactive-operation proof; ambiguous ref
   await mkdir(lock);
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: deadPid, active: true }));
   const blocked = await receive(request("stale-ambiguous"), options);
-  assert.equal(blocked.outcome.kind, "uncertain");
-  assert.match(blocked.outcome.diagnostic, /unconfirmed/);
+  assert.equal(blocked.outcome.kind, "refused");
+  assert.match(blocked.outcome.diagnostic, /one its lock does not name, still holds the receiver lock \(its receiver ended without recording the processes it started\)/);
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, active: false }));
-  assert.equal((await receive(request("live-owner"), options)).outcome.kind, "uncertain");
+  assert.equal((await receive(request("live-owner"), options)).outcome.kind, "refused");
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: deadPid, active: false }));
   assert.equal((await receive(request("reconciled-lock"), options)).outcome.kind, "completed");
   assert.equal((await receive(request("after-lock-recovery"), options)).outcome.kind, "completed");
@@ -383,7 +411,9 @@ test("stale active locks require proof that all recorded process groups have exi
   });
   await mkdir(lock);
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: deadPid, active: true, operationPids: [deadPid], pendingSpawn: true }));
-  assert.equal((await receive(request("spawn-window"), options)).outcome.kind, "uncertain");
+  const spawnWindow = await receive(request("spawn-window"), options);
+  assert.equal(spawnWindow.outcome.kind, "refused");
+  assert.match(spawnWindow.outcome.diagnostic, /its receiver ended while starting a process it had not yet recorded/);
   await writeFile(join(lock, "owner.json"), JSON.stringify({ pid: deadPid, active: true, operationPids: [deadPid], pendingSpawn: false }));
   assert.equal((await receive(request("dead-operation"), options)).outcome.kind, "completed");
 });

@@ -1,6 +1,7 @@
 import type { FramedRequest, FramedResponse, SessionTransport } from '@wezzard/relay-driver-host-sdk';
 import { join } from 'node:path';
-import { Transfer, assertHostPath } from './transfer.js';
+import { Transfer, assertHostPath, GUEST_PATH } from './transfer.js';
+import { declinedPath } from './guest/image-evidence.js';
 import { jsonFile, hash } from './util.js';
 
 /** Receiver stdout can contain escaped output larger than machine-service's 64000
@@ -37,6 +38,9 @@ for(const g of groups)if(alive(g,true))kill(g,true);
 const groupsLeft=settle(()=>groups.filter(g=>alive(g,true)));
 const pendingSpawn=mine&&record.pendingSpawn===true;
 console.log(JSON.stringify({stopped:!runnersLeft.length&&!groupsLeft.length&&!pendingSpawn,runners:runners.length,groups:groups.length,runnersLeft,groupsLeft,pendingSpawn}));`;
+
+/** Whether each named guest file exists, as a JSON array of booleans; a path outside the root or under a symlink fails. */
+const PRESENT = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,...files]=process.argv.slice(1);console.log(JSON.stringify(files.map(f=>{check(root,f,true);try{return fs.lstatSync(f).isFile();}catch(e){if(e.code==='ENOENT')return false;throw e;}})));`;
 
 function validateResponse(data: any, executionId: string): asserts data is FramedResponse {
   if (!data || typeof data !== 'object' || data.executionId !== executionId || !['completed', 'refused', 'uncertain'].includes(data.outcome?.kind)) throw new Error('Malformed receiver response / identity mismatch');
@@ -79,7 +83,9 @@ export class VmTransport implements SessionTransport {
       if (result.code !== 0) throw new Error(`Receiver exit ${result.code}: ${result.stderr.slice(0, 1000)}`);
       const guestReceipt = join(this.guestRoot, 'state', 'receiver', 'receipts', `${request.executionId}.json`);
       const originalReceipt = join(this.hostRoot, 'receiver-receipts', `${request.executionId}.json`);
-      const bytes = await this.transfer.pullFrame(guestReceipt, originalReceipt, this.guestRoot, this.hostRoot);
+      let bytes: Buffer;
+      try { bytes = await this.transfer.pullFrame(guestReceipt, originalReceipt, this.guestRoot, this.hostRoot); }
+      catch (error) { bytes = await this.declined(request.executionId, guestReceipt, error); }
       const data: unknown = JSON.parse(bytes.toString('utf8'));
       validateResponse(data, request.executionId);
       response = data;
@@ -94,6 +100,25 @@ export class VmTransport implements SessionTransport {
     await assertHostPath(this.hostRoot, receipt);
     this.response = response;
     return response;
+  }
+  /**
+   * The receiver's answer when the execution has no receipt (DC-89): the
+   * receiver files an answer that writes no receipt under `declined/`, such as
+   * a refusal while an earlier run holds its lock. A receipt that exists but
+   * failed to pull keeps that failure; with neither file, the receiver gave no
+   * answer, said with whether the execution's started marker exists.
+   */
+  private async declined(executionId: string, guestReceipt: string, failure: unknown): Promise<Buffer> {
+    const remote = join(this.guestRoot, ...declinedPath(executionId));
+    const started = join(this.guestRoot, 'state', 'receiver', 'started', `${executionId}.json`);
+    let present: unknown;
+    try { present = JSON.parse((await this.transfer.checked([this.transfer.node, '-e', PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split('\n').at(-1) ?? ''); }
+    catch { throw failure; }
+    if (!Array.isArray(present) || present.length !== 3 || present[0] !== false) throw failure;
+    if (present[1] !== true) throw new Error(`the receiver gave no answer: it exited without a receipt or a declined answer for this execution, and the execution's started marker ${present[2] === true ? 'exists, so it may have started' : 'does not exist'}`);
+    const bytes = await this.transfer.pullFrame(remote, join(this.hostRoot, 'receiver-declined', `${executionId}.json`), this.guestRoot, this.hostRoot);
+    if ((JSON.parse(bytes.toString('utf8')) as { outcome?: { kind?: unknown } } | null)?.outcome?.kind === 'completed') throw new Error('Malformed receiver answer: a completion without a receipt');
+    return bytes;
   }
   /** Stop a cancelled execution in the guest, without the aborted signal and within STOP_MS; says what it found. */
   private async stop(executionId: string): Promise<string> {
