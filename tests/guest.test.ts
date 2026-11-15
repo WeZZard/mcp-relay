@@ -418,6 +418,53 @@ test("stale active locks require proof that all recorded process groups have exi
   assert.equal((await receive(request("dead-operation"), options)).outcome.kind, "completed");
 });
 
+test("a dead receiver's lock whose only unrecorded start is a capture is reclaimed, its leftover capture killed; any other unrecorded start stays refused (DC-90)", async t => {
+  const { root, options } = await setup(t);
+  const lock = join(root, ".receiver-lock");
+  const deadPid = await new Promise<number>((resolvePid, reject) => {
+    const child = spawn(process.execPath, ["-e", ""], { env: childEnvironment(), detached: true });
+    child.on("error", reject); child.on("close", () => resolvePid(child.pid!));
+  });
+  const owner = (patch: Record<string, unknown>) => writeFile(join(lock, "owner.json"), JSON.stringify({ pid: deadPid, executionId: "execution-cancelled", active: true, operationPids: [], ...patch }));
+  await mkdir(lock);
+  // An unrecorded start of the action, or of a kind a receiver before DC-90 recorded as true, stays refused.
+  for (const pendingSpawn of ["action", true]) {
+    await owner({ pendingSpawn });
+    const refused = await receive(request(`after-${pendingSpawn}`), options);
+    assert.equal(refused.outcome.kind, "refused");
+    assert.match(refused.outcome.diagnostic, /execution execution-cancelled, still holds the receiver lock \(its receiver ended while starting a process it had not yet recorded\)/);
+  }
+  // A capture pending under a live receiver, or beside a recorded group that still runs, stays refused.
+  await owner({ pid: process.pid, pendingSpawn: "capture" });
+  assert.equal((await receive(request("after-live-capture"), options)).outcome.kind, "refused");
+  const running = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { env: childEnvironment(), detached: true, stdio: "ignore" });
+  t.after(() => { try { process.kill(-running.pid!, "SIGKILL"); } catch {} });
+  await owner({ pendingSpawn: "capture", operationPids: [running.pid] });
+  assert.equal((await receive(request("after-capture-and-group"), options)).outcome.kind, "refused");
+  // AC-56's shape: the receiver died in its before-capture, the capture unrecorded and no group recorded.
+  const capturePath = join(root, "state/snapshots/session-test/.a000001-before-execution-cancelled.png.part");
+  const leftover = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", "call", "get_desktop_state", "--json", JSON.stringify({ screenshot_out_file: capturePath })], { env: childEnvironment(), detached: true, stdio: "ignore" });
+  const exited = new Promise<void>(done => leftover.on("exit", () => done()));
+  t.after(() => { try { process.kill(-leftover.pid!, "SIGKILL"); } catch {} });
+  await new Promise(done => setTimeout(done, 200));
+  await owner({ pendingSpawn: "capture", capturePath });
+  assert.equal((await receive(request("after-capture"), options)).outcome.kind, "completed", "the next run proceeds");
+  await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error("the leftover capture survived the reclaim")), 5000))]);
+  assert.ok((await readdir(root)).some(name => name.startsWith(".receiver-lock-retired-")));
+});
+
+test("the lock records which kind of start is pending: a capture with its screenshot file, then the action (DC-90)", async t => {
+  const { root, options } = await setup(t);
+  const owner = async () => JSON.parse(await readFile(join(root, ".receiver-lock/owner.json"), "utf8"));
+  const seen: Array<Record<string, unknown>> = [];
+  options.capture = async out => { const o = await owner(); seen.push({ pendingSpawn: o.pendingSpawn, capturePath: o.capturePath, out }); await writeFile(out, png); };
+  options.dispatch = async () => { const o = await owner(); seen.push({ pendingSpawn: o.pendingSpawn, capturePath: o.capturePath }); return success; };
+  assert.equal((await receive(request("kinds"), options)).outcome.kind, "completed");
+  assert.equal(seen.length, 3);
+  for (const capture of [seen[0]!, seen[2]!]) { assert.equal(capture.pendingSpawn, "capture"); assert.equal(capture.capturePath, capture.out); }
+  assert.deepEqual(seen[1], { pendingSpawn: "action", capturePath: undefined });
+});
+
 test("damaged journals are preserved byte-for-byte and cannot admit diagnostic or visual commands", async t => {
   const { root, options } = await setup(t);
   await mkdir(join(root, "state/journal"), { recursive: true });

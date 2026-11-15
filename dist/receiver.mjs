@@ -1079,6 +1079,21 @@ async function receive(input, options = {}) {
   return result;
 }
 var runtimeRoot = (options) => resolve(options.root ?? process.env.RELAY_RUNTIME_ROOT ?? "/var/tmp/relay-driver-runtime");
+async function stopCapture(path) {
+  if (!text(path)) return;
+  const listing = await new Promise((done) => execFile("ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => done(error ? "" : stdout)));
+  const pids = listing.split("\n").map((line) => /^\s*(\d+)\s+(.*)$/.exec(line)).filter((m) => !!m && Number(m[1]) !== process.pid && m[2].includes(path) && m[2].includes("get_desktop_state")).map((m) => Number(m[1]));
+  for (const pid of pids) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+      }
+    }
+  }
+}
 async function answer(input, options) {
   const request = input;
   const executionId = request && safeId(request.executionId) ? request.executionId : "unknown";
@@ -1105,9 +1120,10 @@ async function answer(input, options) {
   const ownerPath = join3(lock, "owner.json");
   const operationPids = [];
   let pendingSpawn = false;
-  const markLock = (active, settled = false) => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, settled });
-  const runOwned = async (argv2, dispatchOptions) => {
-    pendingSpawn = true;
+  let capturePath;
+  const markLock = (active, settled = false) => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, ...pendingSpawn === "capture" && capturePath ? { capturePath } : {}, settled });
+  const owned = (kind) => async (argv2, dispatchOptions) => {
+    pendingSpawn = kind;
     await markLock(true);
     const result = await runArgv(argv2, dispatchOptions, async (pid) => {
       operationPids.push(pid);
@@ -1119,6 +1135,7 @@ async function answer(input, options) {
     if (!keepLock) await markLock(false);
     return result;
   };
+  const runOwned = owned("action");
   let reconcileGroup;
   let dispatchResult;
   let argv;
@@ -1147,9 +1164,11 @@ async function answer(input, options) {
       const held = (detail) => owner?.executionId === executionId ? response("uncertain", `this execution already holds the receiver lock (${detail}); input is not replayed`) : response("refused", `a previous run, ${safeId(owner?.executionId) ? `execution ${owner.executionId}` : "one its lock does not name"}, still holds the receiver lock (${detail}), ${notStarted}. A new run is accepted once the receiver can prove that run ended`);
       if (!owner) return held("the lock records no owner");
       if (!absent(owner.pid) && owner.settled !== true) return held(`its receiver, process ${owner.pid}, is still running`);
-      if (owner.active !== false && !(owner.pendingSpawn === false && Array.isArray(owner.operationPids) && owner.operationPids.length > 0 && owner.operationPids.every((pid) => absent(pid, true)))) {
+      const groupsGone = Array.isArray(owner.operationPids) && owner.operationPids.every((pid) => absent(pid, true));
+      const captureOnly = owner.pendingSpawn === "capture" && absent(owner.pid) && groupsGone;
+      if (owner.active !== false && !captureOnly && !(owner.pendingSpawn === false && Array.isArray(owner.operationPids) && owner.operationPids.length > 0 && groupsGone)) {
         const groups2 = Array.isArray(owner.operationPids) ? owner.operationPids.filter((pid) => !absent(pid, true)) : [];
-        return held(owner.pendingSpawn === true ? "its receiver ended while starting a process it had not yet recorded" : !groups2.length ? "its receiver ended without recording the processes it started" : `its receiver ended, and its script's process group ${groups2.join(", ")} still runs`);
+        return held(owner.pendingSpawn === true || owner.pendingSpawn === "action" ? "its receiver ended while starting a process it had not yet recorded" : !groups2.length ? "its receiver ended without recording the processes it started" : `its receiver ended, and its script's process group ${groups2.join(", ")} still runs`);
       }
       try {
         await mkdir3(join3(lock, "recovery"));
@@ -1157,6 +1176,7 @@ async function answer(input, options) {
         return response("refused", `receiver lock reconciliation is already in progress, ${notStarted}`);
       }
       if (JSON.stringify(await optionalJson(ownerPath)) !== JSON.stringify(owner)) return response("refused", `receiver lock changed during reconciliation, ${notStarted}`);
+      if (captureOnly) await stopCapture(owner.capturePath);
       await rename3(lock, join3(root, `.receiver-lock-retired-${randomUUID()}`));
       try {
         await mkdir3(lock);
@@ -1179,11 +1199,13 @@ async function answer(input, options) {
     let captureFailure;
     const capture = async (out) => {
       try {
-        pendingSpawn = true;
+        pendingSpawn = "capture";
+        capturePath = out;
         await markLock(true);
-        await (options.capture ?? ((file2) => captureWithDriver(file2, options.cuaDriver ?? process.env.RELAY_CUA_DRIVER ?? (process.platform === "darwin" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver"), runOwned)))(out);
+        await (options.capture ?? ((file2) => captureWithDriver(file2, options.cuaDriver ?? process.env.RELAY_CUA_DRIVER ?? (process.platform === "darwin" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver"), owned("capture"))))(out);
         if (!keepLock) {
           pendingSpawn = false;
+          capturePath = void 0;
           await markLock(false);
         }
         const file = await stat2(out);
@@ -1297,7 +1319,7 @@ async function answer(input, options) {
     try {
       const outcome = await engine.callWithHandle(actionId, params, async () => {
         dispatched = true;
-        pendingSpawn = true;
+        pendingSpawn = "action";
         await markLock(true);
         try {
           const dispatchOptions = { cwd: request.cwd, env: process.env, timeoutMs };

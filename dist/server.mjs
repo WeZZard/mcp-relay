@@ -24358,16 +24358,20 @@ const alive=(pid,group)=>{try{process.kill(group?-pid:pid,0);return true;}catch(
 const kill=(pid,group)=>{try{process.kill(group?-pid:pid,'SIGKILL');}catch{}};
 const settle=left=>{const until=Date.now()+3000;while(left().length&&Date.now()<until)pause(25);return left();};
 const skip=new Set([process.pid,process.ppid]);
-const runners=cp.execFileSync('ps',['-axww','-o','pid=,command='],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\\n').map(l=>/^\\s*(\\d+)\\s+(.*)$/.exec(l)).filter(m=>m&&!skip.has(Number(m[1]))&&m[2].split(' ').includes(request)).map(m=>Number(m[1]));
-for(const pid of runners)kill(pid,false);
-const runnersLeft=settle(()=>runners.filter(pid=>alive(pid,false)));
 let record;try{record=JSON.parse(fs.readFileSync(owner,'utf8'));}catch{}
 const mine=!!record&&record.executionId===id;
+const capture=mine&&record.pendingSpawn==='capture'&&typeof record.capturePath==='string'&&record.capturePath?record.capturePath:undefined;
+const table=cp.execFileSync('ps',['-axww','-o','pid=,command='],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\\n').map(l=>/^\\s*(\\d+)\\s+(.*)$/.exec(l)).filter(m=>m&&!skip.has(Number(m[1])));
+const captures=capture?table.filter(m=>m[2].includes(capture)&&m[2].includes('get_desktop_state')).map(m=>Number(m[1])):[];
+const runners=[...table.filter(m=>m[2].split(' ').includes(request)).map(m=>Number(m[1])),...captures];
+for(const pid of captures)kill(pid,true);
+for(const pid of runners)kill(pid,false);
+const runnersLeft=settle(()=>runners.filter(pid=>alive(pid,false)));
 const groups=mine&&Array.isArray(record.operationPids)?record.operationPids.filter(g=>Number.isInteger(g)&&g>1):[];
 for(const g of groups)if(alive(g,true))kill(g,true);
 const groupsLeft=settle(()=>groups.filter(g=>alive(g,true)));
-const pendingSpawn=mine&&record.pendingSpawn===true;
-console.log(JSON.stringify({stopped:!runnersLeft.length&&!groupsLeft.length&&!pendingSpawn,runners:runners.length,groups:groups.length,runnersLeft,groupsLeft,pendingSpawn}));`;
+const pendingSpawn=mine&&record.pendingSpawn?record.pendingSpawn:false;
+console.log(JSON.stringify({stopped:!runnersLeft.length&&!groupsLeft.length&&(!pendingSpawn||pendingSpawn==='capture'),runners:runners.length,groups:groups.length,runnersLeft,groupsLeft,pendingSpawn}));`;
 var PRESENT = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,...files]=process.argv.slice(1);console.log(JSON.stringify(files.map(f=>{check(root,f,true);try{return fs.lstatSync(f).isFile();}catch(e){if(e.code==='ENOENT')return false;throw e;}})));`;
 function validateResponse(data, executionId) {
   if (!data || typeof data !== "object" || data.executionId !== executionId || !["completed", "refused", "uncertain"].includes(data.outcome?.kind)) throw new Error("Malformed receiver response / identity mismatch");

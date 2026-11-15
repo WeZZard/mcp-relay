@@ -259,7 +259,21 @@ export async function receive(input: unknown, options: ReceiveOptions = {}): Pro
 
 const runtimeRoot = (options: ReceiveOptions): string => resolve(options.root ?? process.env.RELAY_RUNTIME_ROOT ?? "/var/tmp/relay-driver-runtime");
 
-interface LockOwner { pid: number; executionId?: unknown; active: boolean; operationPids?: number[]; pendingSpawn?: boolean; settled?: boolean }
+/** `true` is the record of a receiver predating DC-90, read as the strict kind. */
+type PendingSpawn = "capture" | "action";
+interface LockOwner { pid: number; executionId?: unknown; active: boolean; operationPids?: number[]; pendingSpawn?: boolean | PendingSpawn; capturePath?: unknown; settled?: boolean }
+
+/**
+ * Kill what is left of a dead receiver's unrecorded capture, found by the
+ * screenshot file it writes (DC-90). Best effort: a capture issues no input,
+ * so a lock is reclaimed even when none is found.
+ */
+async function stopCapture(path: unknown): Promise<void> {
+  if (!text(path)) return;
+  const listing = await new Promise<string>(done => execFile("ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => done(error ? "" : stdout)));
+  const pids = listing.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(m => !!m && Number(m[1]) !== process.pid && m[2]!.includes(path) && m[2]!.includes("get_desktop_state")).map(m => Number(m![1]));
+  for (const pid of pids) { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
+}
 
 async function answer(input: unknown, options: ReceiveOptions): Promise<GuestResponse> {
   const request = input as GuestRequest;
@@ -283,11 +297,14 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
   let store: RecordStore | undefined, ownsLock = false, keepLock = false;
   const ownerPath = join(lock, "owner.json");
   const operationPids: number[] = [];
-  let pendingSpawn = false;
-  const markLock = (active: boolean, settled = false): Promise<void> => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, settled });
-  const runOwned: typeof runArgv = async (argv, dispatchOptions) => {
+  // Which kind of process is being started but not yet recorded (DC-90): a capture issues no input.
+  let pendingSpawn: false | PendingSpawn = false;
+  /** The screenshot file the pending capture writes, which names its process. */
+  let capturePath: string | undefined;
+  const markLock = (active: boolean, settled = false): Promise<void> => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, ...(pendingSpawn === "capture" && capturePath ? { capturePath } : {}), settled });
+  const owned = (kind: PendingSpawn): typeof runArgv => async (argv, dispatchOptions) => {
     // Cover the crash window between spawn and durable process-ID retention.
-    pendingSpawn = true;
+    pendingSpawn = kind;
     await markLock(true);
     const result = await runArgv(argv, dispatchOptions, async pid => { operationPids.push(pid); pendingSpawn = false; await markLock(true); });
     if (result.terminationConfirmed === true) pendingSpawn = false;
@@ -295,6 +312,7 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
     if (!keepLock) await markLock(false);
     return result;
   };
+  const runOwned = owned("action");
   let reconcileGroup: ((diagnostic: string) => Promise<void>) | undefined;
   let dispatchResult: DispatchResult | undefined;
   /** The command the receiver built for the script; unset until the script is verified. */
@@ -323,15 +341,19 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
         : response("refused", `a previous run, ${safeId(owner?.executionId) ? `execution ${owner.executionId}` : "one its lock does not name"}, still holds the receiver lock (${detail}), ${notStarted}. A new run is accepted once the receiver can prove that run ended`);
       if (!owner) return held("the lock records no owner");
       if (!absent(owner.pid) && owner.settled !== true) return held(`its receiver, process ${owner.pid}, is still running`);
-      if (owner.active !== false && !(owner.pendingSpawn === false && Array.isArray(owner.operationPids) && owner.operationPids.length > 0 && owner.operationPids.every(pid => absent(pid, true)))) {
+      const groupsGone = Array.isArray(owner.operationPids) && owner.operationPids.every(pid => absent(pid, true));
+      // A dead receiver whose only unrecorded start is a capture left nothing that issues input (DC-90).
+      const captureOnly = owner.pendingSpawn === "capture" && absent(owner.pid) && groupsGone;
+      if (owner.active !== false && !captureOnly && !(owner.pendingSpawn === false && Array.isArray(owner.operationPids) && owner.operationPids.length > 0 && groupsGone)) {
         const groups = Array.isArray(owner.operationPids) ? owner.operationPids.filter(pid => !absent(pid, true)) : [];
-        return held(owner.pendingSpawn === true ? "its receiver ended while starting a process it had not yet recorded"
+        return held(owner.pendingSpawn === true || owner.pendingSpawn === "action" ? "its receiver ended while starting a process it had not yet recorded"
           : !groups.length ? "its receiver ended without recording the processes it started"
           : `its receiver ended, and its script's process group ${groups.join(", ")} still runs`);
       }
       try { await mkdir(join(lock, "recovery")); }
       catch { return response("refused", `receiver lock reconciliation is already in progress, ${notStarted}`); }
       if (JSON.stringify(await optionalJson(ownerPath)) !== JSON.stringify(owner)) return response("refused", `receiver lock changed during reconciliation, ${notStarted}`);
+      if (captureOnly) await stopCapture(owner.capturePath);
       await rename(lock, join(root, `.receiver-lock-retired-${randomUUID()}`));
       try { await mkdir(lock); ownsLock = true; }
       catch { return response("refused", `receiver acquired by another operation during reconciliation, ${notStarted}`); }
@@ -353,10 +375,10 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
     let captureFailure: string | undefined;
     const capture: SnapshotCaptureFn = async (out) => {
       try {
-        pendingSpawn = true;
+        pendingSpawn = "capture"; capturePath = out;
         await markLock(true);
-        await (options.capture ?? ((file) => captureWithDriver(file, options.cuaDriver ?? process.env.RELAY_CUA_DRIVER ?? (process.platform === "darwin" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver"), runOwned)))(out);
-        if (!keepLock) { pendingSpawn = false; await markLock(false); }
+        await (options.capture ?? ((file) => captureWithDriver(file, options.cuaDriver ?? process.env.RELAY_CUA_DRIVER ?? (process.platform === "darwin" ? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" : "cua-driver"), owned("capture"))))(out);
+        if (!keepLock) { pendingSpawn = false; capturePath = undefined; await markLock(false); }
         const file = await stat(out);
         if (!file.isFile() || file.size < 1 || file.size > 64 * 1024 * 1024) throw new Error("screenshot file missing, empty or oversized");
       } catch (error) { captureFailure = message(error); gate.reportLoss(captureFailure); throw error; }
@@ -450,7 +472,7 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
     try {
       const outcome = await engine.callWithHandle(actionId, params, async () => {
         dispatched = true;
-        pendingSpawn = true;
+        pendingSpawn = "action";
         await markLock(true);
         try {
           const dispatchOptions = { cwd: request.cwd, env: process.env, timeoutMs };
