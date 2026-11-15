@@ -24315,6 +24315,40 @@ var Transfer = class {
 
 // src/transport.ts
 import { join as join8 } from "node:path";
+
+// src/guest/image-evidence.ts
+var safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
+var declinedPath = (executionId) => ["state", "receiver", "declined", `${executionId}.json`];
+function afterRequested(request) {
+  return request?.diagnostic !== true && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
+}
+function validateImageEvidence(value, request, authoritativeSnapshots) {
+  const fail2 = () => {
+    throw new Error("invalid image evidence");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail2();
+  const evidence = value;
+  if (!["available", "not-requested", "capture-failed", "capture-unknown"].includes(evidence.status) || !Array.isArray(evidence.snapshots) || evidence.snapshots.length > 2) fail2();
+  const group = request.snapshots?.group;
+  const phases = /* @__PURE__ */ new Set();
+  let actionId;
+  for (const s of evidence.snapshots) {
+    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || request.capture === false || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail2();
+    phases.add(s.phase);
+    actionId = s.actionId;
+  }
+  if (evidence.status === "not-requested" !== !afterRequested(request) || evidence.status === "available" !== phases.has("after")) fail2();
+  if (authoritativeSnapshots !== void 0) {
+    if (authoritativeSnapshots.length !== evidence.snapshots.length) fail2();
+    const fields = ["sessionId", "attemptId", "executionId", "actionId", "stepId", "phase", "capturedAt", "sha256", "bytes", "mimeType", "declaredAfterIntervalMs", "fileName", "groupId"];
+    for (const s of evidence.snapshots) {
+      const original = authoritativeSnapshots.find((record3) => record3.phase === s.phase);
+      if (!original || fields.some((field) => original[field] !== s[field])) fail2();
+    }
+  }
+}
+
+// src/transport.ts
 var INVOKE = `const {spawnSync}=require('child_process');const [receiver,request]=process.argv.slice(1);const result=spawnSync(process.execPath,[receiver,request],{stdio:['ignore','ignore','inherit']});if(result.error)throw result.error;if(result.status!==0)process.exit(result.status??1);console.log('{"receiverExited":true}');`;
 var STOP_MS = 8e3;
 var STOP = `const fs=require('fs'),p=require('path'),cp=require('child_process');const [root,id]=process.argv.slice(1);
@@ -24324,16 +24358,21 @@ const alive=(pid,group)=>{try{process.kill(group?-pid:pid,0);return true;}catch(
 const kill=(pid,group)=>{try{process.kill(group?-pid:pid,'SIGKILL');}catch{}};
 const settle=left=>{const until=Date.now()+3000;while(left().length&&Date.now()<until)pause(25);return left();};
 const skip=new Set([process.pid,process.ppid]);
-const runners=cp.execFileSync('ps',['-axww','-o','pid=,command='],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\\n').map(l=>/^\\s*(\\d+)\\s+(.*)$/.exec(l)).filter(m=>m&&!skip.has(Number(m[1]))&&m[2].split(' ').includes(request)).map(m=>Number(m[1]));
-for(const pid of runners)kill(pid,false);
-const runnersLeft=settle(()=>runners.filter(pid=>alive(pid,false)));
 let record;try{record=JSON.parse(fs.readFileSync(owner,'utf8'));}catch{}
 const mine=!!record&&record.executionId===id;
+const capture=mine&&record.pendingSpawn==='capture'&&typeof record.capturePath==='string'&&record.capturePath?record.capturePath:undefined;
+const table=cp.execFileSync('ps',['-axww','-o','pid=,command='],{encoding:'utf8',maxBuffer:16*1024*1024}).split('\\n').map(l=>/^\\s*(\\d+)\\s+(.*)$/.exec(l)).filter(m=>m&&!skip.has(Number(m[1])));
+const captures=capture?table.filter(m=>m[2].includes(capture)&&m[2].includes('get_desktop_state')).map(m=>Number(m[1])):[];
+const runners=[...table.filter(m=>m[2].split(' ').includes(request)).map(m=>Number(m[1])),...captures];
+for(const pid of captures)kill(pid,true);
+for(const pid of runners)kill(pid,false);
+const runnersLeft=settle(()=>runners.filter(pid=>alive(pid,false)));
 const groups=mine&&Array.isArray(record.operationPids)?record.operationPids.filter(g=>Number.isInteger(g)&&g>1):[];
 for(const g of groups)if(alive(g,true))kill(g,true);
 const groupsLeft=settle(()=>groups.filter(g=>alive(g,true)));
-const pendingSpawn=mine&&record.pendingSpawn===true;
-console.log(JSON.stringify({stopped:!runnersLeft.length&&!groupsLeft.length&&!pendingSpawn,runners:runners.length,groups:groups.length,runnersLeft,groupsLeft,pendingSpawn}));`;
+const pendingSpawn=mine&&record.pendingSpawn?record.pendingSpawn:false;
+console.log(JSON.stringify({stopped:!runnersLeft.length&&!groupsLeft.length&&(!pendingSpawn||pendingSpawn==='capture'),runners:runners.length,groups:groups.length,runnersLeft,groupsLeft,pendingSpawn}));`;
+var PRESENT = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,...files]=process.argv.slice(1);console.log(JSON.stringify(files.map(f=>{check(root,f,true);try{return fs.lstatSync(f).isFile();}catch(e){if(e.code==='ENOENT')return false;throw e;}})));`;
 function validateResponse(data, executionId) {
   if (!data || typeof data !== "object" || data.executionId !== executionId || !["completed", "refused", "uncertain"].includes(data.outcome?.kind)) throw new Error("Malformed receiver response / identity mismatch");
   if (data.outcome.kind === "completed") {
@@ -24387,7 +24426,12 @@ var VmTransport = class {
       if (result2.code !== 0) throw new Error(`Receiver exit ${result2.code}: ${result2.stderr.slice(0, 1e3)}`);
       const guestReceipt = join8(this.guestRoot, "state", "receiver", "receipts", `${request.executionId}.json`);
       const originalReceipt = join8(this.hostRoot, "receiver-receipts", `${request.executionId}.json`);
-      const bytes = await this.transfer.pullFrame(guestReceipt, originalReceipt, this.guestRoot, this.hostRoot);
+      let bytes;
+      try {
+        bytes = await this.transfer.pullFrame(guestReceipt, originalReceipt, this.guestRoot, this.hostRoot);
+      } catch (error2) {
+        bytes = await this.declined(request.executionId, guestReceipt, error2);
+      }
       const data = JSON.parse(bytes.toString("utf8"));
       validateResponse(data, request.executionId);
       response = data;
@@ -24401,6 +24445,28 @@ var VmTransport = class {
     await assertHostPath(this.hostRoot, receipt);
     this.response = response;
     return response;
+  }
+  /**
+   * The receiver's answer when the execution has no receipt (DC-89): the
+   * receiver files an answer that writes no receipt under `declined/`, such as
+   * a refusal while an earlier run holds its lock. A receipt that exists but
+   * failed to pull keeps that failure; with neither file, the receiver gave no
+   * answer, said with whether the execution's started marker exists.
+   */
+  async declined(executionId, guestReceipt, failure2) {
+    const remote = join8(this.guestRoot, ...declinedPath(executionId));
+    const started = join8(this.guestRoot, "state", "receiver", "started", `${executionId}.json`);
+    let present2;
+    try {
+      present2 = JSON.parse((await this.transfer.checked([this.transfer.node, "-e", PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split("\n").at(-1) ?? "");
+    } catch {
+      throw failure2;
+    }
+    if (!Array.isArray(present2) || present2.length !== 3 || present2[0] !== false) throw failure2;
+    if (present2[1] !== true) throw new Error(`the receiver gave no answer: it exited without a receipt or a declined answer for this execution, and the execution's started marker ${present2[2] === true ? "exists, so it may have started" : "does not exist"}`);
+    const bytes = await this.transfer.pullFrame(remote, join8(this.hostRoot, "receiver-declined", `${executionId}.json`), this.guestRoot, this.hostRoot);
+    if (JSON.parse(bytes.toString("utf8"))?.outcome?.kind === "completed") throw new Error("Malformed receiver answer: a completion without a receipt");
+    return bytes;
   }
   /** Stop a cancelled execution in the guest, without the aborted signal and within STOP_MS; says what it found. */
   async stop(executionId) {
@@ -33283,37 +33349,6 @@ async function prepareImage(bytes, mimeType) {
   } catch (error2) {
     if (error2 instanceof PresentationUnavailableError) throw error2;
     throw new PresentationUnavailableError("Image presentation failed", { cause: error2 });
-  }
-}
-
-// src/guest/image-evidence.ts
-var safeId = (value) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(value);
-function afterRequested(request) {
-  return request?.diagnostic !== true && request?.capture !== false && !["first", "member"].includes(request?.snapshots?.group?.phase ?? "");
-}
-function validateImageEvidence(value, request, authoritativeSnapshots) {
-  const fail2 = () => {
-    throw new Error("invalid image evidence");
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail2();
-  const evidence = value;
-  if (!["available", "not-requested", "capture-failed", "capture-unknown"].includes(evidence.status) || !Array.isArray(evidence.snapshots) || evidence.snapshots.length > 2) fail2();
-  const group = request.snapshots?.group;
-  const phases = /* @__PURE__ */ new Set();
-  let actionId;
-  for (const s of evidence.snapshots) {
-    if (!s || typeof s !== "object" || Array.isArray(s) || s.sessionId !== request.sessionId || s.attemptId !== request.attemptId || s.executionId !== request.executionId || !safeId(s.actionId) || s.stepId !== request.step?.id || s.groupId !== group?.groupId || !["before", "after"].includes(s.phase) || phases.has(s.phase) || actionId !== void 0 && actionId !== s.actionId || typeof s.capturedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s.capturedAt) || !Number.isFinite(Date.parse(s.capturedAt)) || typeof s.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(s.sha256) || !Number.isSafeInteger(s.bytes) || s.bytes < 1 || s.bytes > 64 * 1024 * 1024 || s.mimeType !== "image/png" || typeof s.fileName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.png$/.test(s.fileName) || s.fileName.length > 255 || request.diagnostic === true || request.capture === false || s.phase === "before" && group && group.phase !== "first" || s.phase === "after" && !afterRequested(request) || s.declaredAfterIntervalMs !== (s.phase === "after" ? group?.afterIntervalMs ?? request.snapshots?.afterIntervalMs : void 0)) fail2();
-    phases.add(s.phase);
-    actionId = s.actionId;
-  }
-  if (evidence.status === "not-requested" !== !afterRequested(request) || evidence.status === "available" !== phases.has("after")) fail2();
-  if (authoritativeSnapshots !== void 0) {
-    if (authoritativeSnapshots.length !== evidence.snapshots.length) fail2();
-    const fields = ["sessionId", "attemptId", "executionId", "actionId", "stepId", "phase", "capturedAt", "sha256", "bytes", "mimeType", "declaredAfterIntervalMs", "fileName", "groupId"];
-    for (const s of evidence.snapshots) {
-      const original = authoritativeSnapshots.find((record3) => record3.phase === s.phase);
-      if (!original || fields.some((field) => original[field] !== s[field])) fail2();
-    }
   }
 }
 

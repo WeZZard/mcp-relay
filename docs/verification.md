@@ -413,6 +413,7 @@ The revised readiness loop has not yet been exercised in a new VM.
 | Release on failure, enclosure end, reload and shutdown | guarded operations, settled/shutdown handlers, durable ownership | nonzero/refused/uncertain runs, stage/extract corruption, shutdown/settle/recovery tests |
 | Multi-event guest browser-use | Fresh persistent Playwright server, per-event admitted clients | Browser subprocess/auth/persistence tests; live multi-event acceptance below |
 | Never blindly replay uncertain input | SDK submissions, started markers and durable guest receipts | guest duplicate/concurrent identity tests; manager uncertain transport and acquire reconciliation tests |
+| A run refused at a held receiver lock names the run that holds it, and a missing receipt never hides the receiver's answer (DC-89) | declined answers under `state/receiver/declined/`, the transport's presence check | guest held-lock refusal test; transport held-lock refusal through the built receiver, no-answer and malformed declined-answer tests |
 | Runtime and support staged per lease; no image changes | receiver bundle + hash-checked vm-service push | stage integration and corruption tests |
 | Recorded exec/uploaded script/streamed code/CUA events | SDK Session with VM-only transport; guest AdmissionEngine | actual built receiver CLI; script hashes; actual spawn/no-shell tests |
 | Before capture immediately before dispatch, after explicit interval | unmodified relay-driver SnapshotStore + AdmissionEngine | guest exact contract/order and missing-capture tests |
