@@ -4766,7 +4766,8 @@ var RelayClient = class {
     return { executionId: id, replayed: result.replayed, outcome: result.outcome, output: Buffer.concat(call.kept), ...stream && call.end ? { stream } : {} };
   }
   track(executionId, op, kind, upload, sink) {
-    return { executionId, op, kind, upload, sink, hash: createHash3("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {
+    return { executionId, op, kind, upload, sink, hash: createHash3("sha256"), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], touch: () => {
+    }, settle: () => {
     }, fail: () => {
     }, done: false };
   }
@@ -4823,7 +4824,16 @@ var RelayClient = class {
         call.fail(reason instanceof Error ? reason : new Error(String(reason)));
       };
       options.signal?.addEventListener("abort", abort, { once: true });
-      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === "query" || reads(call.kind) || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`) : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
+      const limit = options.idle ? `without progress for ${options.timeoutMs} ms` : `within ${options.timeoutMs} ms`;
+      const expire = () => call.fail(call.kind === "query" || reads(call.kind) || call.kind === "status" ? new Error(`relay: no answer for execution ${call.executionId} ${limit}`) : new RelayUncertainError(call.executionId, `no outcome ${limit}; it may still run, and query tells it later`));
+      if (options.timeoutMs) {
+        timer = setTimeout(expire, options.timeoutMs);
+        if (options.idle) call.touch = () => {
+          if (call.done) return;
+          clearTimeout(timer);
+          timer = setTimeout(expire, options.timeoutMs);
+        };
+      }
       this.send(call).catch((error) => call.fail(error));
     });
   }
@@ -4921,6 +4931,7 @@ var RelayClient = class {
       const data = await upload.read(at, length);
       if (stale()) return;
       session.send(encodeChunk(number, data));
+      call.touch();
       at += length;
     }
     if (stale()) return;
@@ -4941,6 +4952,7 @@ var RelayClient = class {
       const data = Buffer.from(message.chunk.data);
       call2.hash.update(data);
       call2.size += data.length;
+      call2.touch();
       if (call2.sink) {
         call2.sink.write(data);
         return;
@@ -4961,10 +4973,14 @@ var RelayClient = class {
         this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`);
         return;
       case "end":
-        if (call && value.execution === call.executionId) call.end = { size: value.size, sha256: value.sha256 };
+        if (call && value.execution === call.executionId) {
+          call.end = { size: value.size, sha256: value.sha256 };
+          call.touch();
+        }
         return;
       case "progress":
         if (!call || value.execution !== call.executionId || typeof value.committed !== "number") return;
+        if (value.committed > (call.committed ?? -1)) call.touch();
         call.committed = Math.max(call.committed ?? 0, value.committed);
         this.wakeAll(call);
         return;
@@ -5198,7 +5214,7 @@ var MachineService = class {
   async relayRun(client, op, upload, executionId, options) {
     let answer;
     try {
-      answer = await client.run(op, upload, { executionId, ...options.signal ? { signal: options.signal } : {}, ...options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}, ...options.sink ? { sink: options.sink } : {} });
+      answer = await client.run(op, upload, { executionId, ...options.signal ? { signal: options.signal } : {}, ...options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}, ...options.sink ? { sink: options.sink } : {}, ...options.idle ? { idle: true } : {} });
     } catch (cause) {
       if (options.signal?.aborted && cause === options.signal.reason) throw cause;
       throw new MachineServiceError(`machine-service relay link: ${cause.message}`, void 0, void 0, { cause });
@@ -5306,7 +5322,7 @@ var MachineService = class {
     const facts = client ? await stat(body.local_path) : void 0;
     if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
     const source = await fileSource(body.local_path);
-    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, source, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 511 } }, source, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true });
     const written = answer.outcome.written;
     if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
     return { vm, pushed: body.local_path, to: body.remote_path };
@@ -5346,7 +5362,7 @@ var MachineService = class {
       }
     };
     try {
-      const answer = await this.relayRun(client, { read: { path: remote } }, Buffer.alloc(0), randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs, sink });
+      const answer = await this.relayRun(client, { read: { path: remote } }, Buffer.alloc(0), randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true, sink });
       await writing;
       const read = answer.outcome.read;
       if (!read || !answer.stream || answer.stream.size !== read.size || answer.stream.sha256 !== read.sha256 || position !== read.size) throw new MachineServiceError(`machine-service relay link: the bytes of ${remote} do not match their SHA-256; pull again`);
@@ -5374,7 +5390,7 @@ var MachineService = class {
     const sha256 = createHash4("sha256").update(body.bytes).digest("hex");
     const client = await this.relayFor(vm);
     if (client) {
-      const answer2 = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+      const answer2 = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID3(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true });
       const written = answer2.outcome.written;
       if (!written || written.sha256 !== sha256 || written.size !== body.bytes.length) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer2.outcome)}, not what was sent`);
       return { sha256, bytes: body.bytes.length };

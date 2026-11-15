@@ -83,3 +83,26 @@ test('a lease adopted after a restart routes through the broker again', async t 
   f.service.useRelay('vm-1', { link: 'ssh-fallback' });
   assert.equal((await f.service.exec('vm-1', { argv: ['true'] })).output, 'over http\n');
 });
+
+// A transfer over the relay link times out only when it stops moving, as the HTTP pull does; an exec keeps its deadline (DC-91).
+test('a relay pull that keeps streaming past its timeout arrives whole; one that stops moving fails and leaves nothing', async t => {
+  const f = await fixture(t);
+  await f.service.acquire({ purpose: 'p', image: 'ubuntu2404' });
+  const dir = mkdtempSync(join(tmpdir(), 'relay-idle-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bytes = Buffer.alloc(20_000, 'p');
+  f.relay.files.set('/g/slow.bin', bytes); f.relay.pace = { chunk: 1000, gapMs: 25 }; // about 500 ms
+  const started = Date.now();
+  assert.deepEqual(await f.service.pull('vm-1', { remote_path: '/g/slow.bin', local_path: join(dir, 'slow.bin') }, { timeoutMs: 150 }), { vm: 'vm-1', pulled: '/g/slow.bin', to: join(dir, 'slow.bin') });
+  assert.ok(Date.now() - started > 300, `the pull took ${Date.now() - started} ms, not past the timeout`);
+  assert.deepEqual(readFileSync(join(dir, 'slow.bin')), bytes);
+  f.relay.pace = { chunk: 1000, gapMs: 25, stallAfter: 3000 };
+  await assert.rejects(f.service.pullBytes('vm-1', { remote_path: '/g/slow.bin', to: join(dir, 'stuck.bin') }, { timeoutMs: 150 }), /machine-service relay link: relay: no answer for execution \S+ without progress for 150 ms/);
+  assert.throws(() => readFileSync(join(dir, 'stuck.bin')), /ENOENT/);
+});
+
+test('a relay exec keeps its timeout from the start while its output streams', async t => {
+  const f = await fixture(t);
+  await f.service.acquire({ purpose: 'p', image: 'ubuntu2404' });
+  f.relay.pace = { chunk: 1000, gapMs: 25 };
+  await assert.rejects(f.service.exec('vm-1', { argv: ['drip'] }, { timeoutMs: 150 }), /no outcome within 150 ms/);
+});

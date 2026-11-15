@@ -157,7 +157,12 @@ export function expectMachineService(health: { service?: unknown }, origin: stri
   if (health.service === SERVICE_NAME) return;
   throw new Error(`The service at ${origin} answers as ${JSON.stringify(health.service ?? null)}, not ${SERVICE_NAME}. This relay speaks only machine-service's /machines API: install machine-service, which replaced vm-service.`);
 }
-/** A pull over the byte-carrying endpoint is abandoned when no byte arrives for this long, however large the file. */
+/**
+ * A transfer is abandoned when it makes no progress for this long, however
+ * large the file: a pull over the byte-carrying endpoint when no byte
+ * arrives, a read or write over the relay link when no byte arrives or goes
+ * and the relay agent reports no progress.
+ */
 const PULL_IDLE_MS = 120_000;
 /** No acquire retry is safe: the daemon has no idempotency key/cancel endpoint. */
 export class AcquireIndeterminateError extends MachineServiceError {
@@ -277,9 +282,9 @@ export class MachineService {
     return route.checked;
   }
   /** One operation through the broker, its `failed` and `interrupted` outcomes as errors. */
-  private async relayRun(client: RelayClient, op: Op, upload: Buffer | UploadSource, executionId: string, options: RequestOptions & { sink?: import('./relay-client.js').Sink }): Promise<CallAnswer> {
+  private async relayRun(client: RelayClient, op: Op, upload: Buffer | UploadSource, executionId: string, options: RequestOptions & { sink?: import('./relay-client.js').Sink; idle?: boolean }): Promise<CallAnswer> {
     let answer: CallAnswer;
-    try { answer = await client.run(op, upload, { executionId, ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), ...(options.sink ? { sink: options.sink } : {}) }); }
+    try { answer = await client.run(op, upload, { executionId, ...(options.signal ? { signal: options.signal } : {}), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), ...(options.sink ? { sink: options.sink } : {}), ...(options.idle ? { idle: true } : {}) }); }
     catch (cause) {
       if (options.signal?.aborted && cause === options.signal.reason) throw cause;
       throw new MachineServiceError(`machine-service relay link: ${(cause as Error).message}`, undefined, undefined, { cause });
@@ -383,7 +388,7 @@ export class MachineService {
     if (!client || !facts?.isFile()) return this.request(this.path(vm, "push"), body, options);
     // The file streams from the disk and continues after a loss (RP-15), so its size needs no memory.
     const source = await fileSource(body.local_path);
-    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 0o777 } }, source, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+    const answer = await this.relayRun(client, { write: { path: body.remote_path, name: basename(body.local_path), mode: facts.mode & 0o777 } }, source, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true });
     const written = (answer.outcome as { written?: { size: number; sha256: string } }).written;
     if (!written || written.size !== source.size || written.sha256 !== source.sha256) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
     return { vm, pushed: body.local_path, to: body.remote_path };
@@ -416,7 +421,7 @@ export class MachineService {
       reset: () => { position = 0; writing = writing.then(() => file.truncate(0)); },
     };
     try {
-      const answer = await this.relayRun(client, { read: { path: remote } }, Buffer.alloc(0), randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs, sink });
+      const answer = await this.relayRun(client, { read: { path: remote } }, Buffer.alloc(0), randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true, sink });
       await writing;
       const read = (answer.outcome as { read?: { size: number; sha256: string } }).read;
       if (!read || !answer.stream || answer.stream.size !== read.size || answer.stream.sha256 !== read.sha256 || position !== read.size) throw new MachineServiceError(`machine-service relay link: the bytes of ${remote} do not match their SHA-256; pull again`);
@@ -441,7 +446,7 @@ export class MachineService {
     const sha256 = createHash("sha256").update(body.bytes).digest("hex");
     const client = await this.relayFor(vm);
     if (client) {
-      const answer = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? this.timeoutMs });
+      const answer = await this.relayRun(client, { write: { path: body.remote_path, name: "", mode: null } }, body.bytes, randomUUID(), { ...options, timeoutMs: options.timeoutMs ?? PULL_IDLE_MS, idle: true });
       const written = (answer.outcome as { written?: BytesResponse & { size: number } }).written;
       if (!written || written.sha256 !== sha256 || written.size !== body.bytes.length) throw new MachineServiceError(`machine-service relay link: the relay agent wrote ${JSON.stringify(answer.outcome)}, not what was sent`);
       return { sha256, bytes: body.bytes.length };
