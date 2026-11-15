@@ -4,7 +4,7 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { hash, hashFile, inventory, within } from './util.js';
-import { archiveBytes, archiveChunks, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
+import { archiveBytes, archiveChunks, packArchive, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
 
 /** machine-service is the sole guest communication channel. */
 export interface VmChannel {
@@ -19,8 +19,8 @@ export interface TransferOptions {
   /** Temporary inventory frames, outside the delivered state/package. */
   hostTempRoot?: string;
   onRetry?: (event: { operation: 'push' | 'pull' | 'metadata'; attempt: number; diagnostic: string }) => Promise<void>;
-  /** A verified pull fell back from the archive to the per-file pull (AD-10). */
-  onArchiveFallback?: (event: { remote: string; files: number; diagnostic: string }) => Promise<void>;
+  /** A verified pull fell back from the archive to the per-file pull (AD-10), or a workspace push to the per-file push (AD-11). */
+  onArchiveFallback?: (event: { remote: string; files: number; diagnostic: string; direction?: 'push' }) => Promise<void>;
 }
 export interface FileFact { path: string; sha256: string; bytes: number }
 // Relay evidence has no size limit (owner decision PS-D12, docs/lifecycle-fixes.md):
@@ -110,6 +110,13 @@ const SIZE = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,
 // the guest's free space first and removes a partial archive on any failure. In `present` mode a
 // missing file is left out; otherwise it fails the archive.
 const ARCHIVE = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}const [root,approved,archive,archiveRoot,mode,...paths]=process.argv.slice(1);check(approved,root);check(archiveRoot,archive,true);const files=[];let need=0;for(const rel of paths){if(!rel||p.isAbsolute(rel)||rel.includes('\\\\')||rel.includes('\\0')||rel.split('/').some(x=>!x||x==='.'||x==='..'))throw Error('Invalid archive path '+rel);const f=p.join(root,rel);let s;try{check(approved,f);s=fs.lstatSync(f);}catch(e){if(mode==='present'&&e.code==='ENOENT')continue;throw e;}if(!s.isFile())throw Error('Not a regular file: '+rel);files.push([rel,f,s]);need+=s.size+Buffer.byteLength(rel)+128;}if(typeof fs.statfsSync==='function'){const s=fs.statfsSync(p.dirname(archive));if(Number(s.bavail)*Number(s.bsize)<need)throw Error('Not enough guest space for a '+need+'-byte archive');}const out=fs.openSync(archive,'wx',384);let total=0;function put(b){for(let o=0;o<b.length;)o+=fs.writeSync(out,b,o,b.length-o);total+=b.length;}try{const b=Buffer.alloc(8388608);for(const [rel,f] of files){check(approved,f);const s=fs.lstatSync(f);if(!s.isFile())throw Error('Not a regular file: '+rel);const fd=fs.openSync(f,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{put(Buffer.from(JSON.stringify({path:rel,bytes:s.size})+'\\n'));const h=c.createHash('sha256');let n=0,r;while(n<s.size&&(r=fs.readSync(fd,b,0,Math.min(b.length,s.size-n),null))>0){h.update(b.subarray(0,r));put(b.subarray(0,r));n+=r;}if(n!==s.size||fs.readSync(fd,b,0,1,null)!==0)throw Error('Source changed during archive: '+rel);put(Buffer.from(JSON.stringify({sha256:h.digest('hex')})+'\\n'));}finally{fs.closeSync(fd);}}fs.closeSync(out);}catch(e){try{fs.closeSync(out);}catch{}fs.rmSync(archive,{force:true});throw e;}check(archiveRoot,archive);console.log(JSON.stringify({path:archive,bytes:total}));`;
+// Unpacks one pushed archive into the tree `root` (AD-11). The argv names each expected file as its
+// permission bits (octal) and its relative path, in archive order, and the archive's exact size and
+// SHA-256. Every entry is written into a staging folder in the guest root and checked: path, order,
+// size, hash line, no trailing bytes, then the whole archive's hash, then every target's path. Only when
+// all are valid is each file renamed into place, so no reader sees a partly written file and a refused archive leaves
+// none. The staging folder and the archive are removed on every exit; only a small count is printed.
+const UNPACK = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}const [root,approved,archive,size,sum,...pairs]=process.argv.slice(1);const want=[],seen=new Set();for(let i=0;i<pairs.length;i+=2){const mode=parseInt(pairs[i],8),rel=pairs[i+1];if(!/^[0-7]{1,3}$/.test(pairs[i])||typeof rel!=='string'||!rel||p.isAbsolute(rel)||rel.includes('\\\\')||rel.includes('\\0')||rel.split('/').some(x=>!x||x==='.'||x==='..')||seen.has(rel))throw Error('Invalid archive path '+rel);seen.add(rel);want.push([rel,mode]);}const staging=p.join(approved,'.unpack-'+c.randomUUID());let made=false;try{check(approved,root,true);check(approved,archive);const s=fs.lstatSync(archive);if(!s.isFile()||s.size!==Number(size))throw Error('Archive size mismatch: '+archive);if(typeof fs.statfsSync==='function'){const f=fs.statfsSync(approved);if(Number(f.bavail)*Number(f.bsize)<s.size)throw Error('Not enough guest space to unpack a '+s.size+'-byte archive');}fs.mkdirSync(staging,{mode:448});made=true;check(approved,staging);const fd=fs.openSync(archive,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),whole=c.createHash('sha256'),b=Buffer.alloc(8388608),done=[];let start=0,end=0,eof=false;function fill(){if(start>0){b.copy(b,0,start,end);end-=start;start=0;}const r=fs.readSync(fd,b,end,b.length-end,null);if(!r)eof=true;else whole.update(b.subarray(end,end+r));end+=r;}function line(){for(;;){const at=b.indexOf(10,start);if(at>=0&&at<end){const v=JSON.parse(b.toString('utf8',start,at));start=at+1;if(!v||typeof v!=='object'||Array.isArray(v))throw Error('Invalid archive line');return v;}if(end-start>65536)throw Error('Archive line too long');if(eof)throw Error('Archive truncated');fill();}}try{for(let i=0;i<want.length;i++){const [rel,mode]=want[i],h=line();if(h.path!==rel||!Number.isSafeInteger(h.bytes)||h.bytes<0||Object.keys(h).length!==2)throw Error('Unexpected archive entry: '+String(h.path));const temp=p.join(staging,String(i)),out=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,384),d=c.createHash('sha256');try{for(let left=h.bytes;left>0;){if(start===end){if(eof)throw Error('Archive truncated');fill();continue;}const k=b.subarray(start,start+Math.min(left,end-start));d.update(k);for(let o=0;o<k.length;)o+=fs.writeSync(out,k,o,k.length-o);start+=k.length;left-=k.length;}fs.fchmodSync(out,mode);}finally{fs.closeSync(out);}const t=line();if(t.sha256!==d.digest('hex')||Object.keys(t).length!==1)throw Error('Archive entry checksum mismatch: '+rel);done.push([temp,rel]);}if(start===end&&!eof)fill();if(start!==end)throw Error('Archive has trailing bytes');}finally{fs.closeSync(fd);}if(whole.digest('hex')!==sum)throw Error('Archive checksum mismatch: '+archive);for(const [,rel] of done)check(approved,p.join(root,rel),true);for(const [temp,rel] of done){const target=p.join(root,rel);check(approved,target,true);fs.mkdirSync(p.dirname(target),{recursive:true,mode:448});check(approved,target,true);check(approved,temp);fs.renameSync(temp,target);}console.log(JSON.stringify({files:done.length,bytes:s.size}));}finally{if(made){try{check(approved,staging);fs.rmSync(staging,{recursive:true,force:true});}catch{}}try{check(approved,archive,true);fs.rmSync(archive,{force:true});}catch{}}`;
 const REMOVE_FRAME = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,file]=process.argv.slice(1);check(root,file,true);fs.rmSync(file,{force:true});`;
 
 // Image metadata is one bounded command per check, never an inventory transfer.
@@ -139,6 +146,15 @@ try {
 const SCAN_BASE_MS = 120_000;
 const SCAN_MS_PER_MIB = 125;
 export function scanTimeoutMs(bytes: number): number { return SCAN_BASE_MS + Math.ceil(bytes / 1048576) * SCAN_MS_PER_MIB; }
+
+/** The host source of a push changed or is not safe to read: the stage is refused, never retried per file. */
+export class StagingSourceError extends Error {
+  constructor(message: string, options?: ErrorOptions) { super(message, options); this.name = 'StagingSourceError'; }
+}
+/** A pushed archive's guest command names each file as its octal permission bits and its path (AD-11). */
+function pushChunks(files: readonly FileFact[]): FileFact[][] {
+  return archiveChunks(files, 64 * 1024, file => Buffer.byteLength(file.path) + 5);
+}
 
 function validFact(value: unknown): value is FileFact {
   const f = value as FileFact | null;
@@ -192,19 +208,80 @@ export class Transfer {
     if (facts.length !== 1 || facts[0].sha256 !== before || facts[0].bytes !== bytes.length) throw new Error(`Staging checksum mismatch: ${local}`);
     return { local, remote, sha256: before, bytes: facts[0].bytes };
   }
+  /**
+   * Push a host tree into the guest tree `remote` (AD-11). The files go in archives, one per bounded
+   * chunk of paths as the pull bounds them (`archiveChunks`); a chunk of one file goes as a plain
+   * `pushFile`. One guest scan then checks every archived file. A chunk whose archive cannot be pushed,
+   * unpacked or checked falls back to the per-file push, and the fallback is logged with its reason.
+   * A host file that changes, or a link on the host, refuses the stage and never falls back.
+   */
   async pushTree(local: string, remote: string, approvedLocalRoot = local) {
     await assertHostPath(approvedLocalRoot, local);
     const files = await inventory(local);
     if (files.length > STAGING_MAX_FILES || files.reduce((sum, file) => sum + file.bytes, 0) > STAGING_MAX_BYTES) throw new Error('Staging exceeds 512MiB / 10000 files');
-    const result = [];
-    for (const file of files) {
-      const staged = await this.pushFile(within(local, file.path), within(remote, file.path), approvedLocalRoot);
-      if (staged.sha256 !== file.sha256 || staged.bytes !== file.bytes) throw new Error(`Staging source changed: ${local}`);
-      result.push(staged);
+    const guestRoot = this.options.guestRoot ?? dirname(remote);
+    const staged = new Map<string, { local: string; remote: string; sha256: string; bytes: number }>();
+    const archived: FileFact[] = [], single: FileFact[] = [];
+    const fallback = async (chunk: readonly FileFact[], error: unknown) => {
+      await this.options.onArchiveFallback?.({ remote, files: chunk.length, diagnostic: String(error), direction: 'push' });
+      single.push(...chunk);
+    };
+    for (const chunk of pushChunks(files)) {
+      if (chunk.length === 1) { single.push(chunk[0]); continue; }
+      try { await this.pushArchive(local, remote, chunk, approvedLocalRoot); archived.push(...chunk); }
+      catch (error) { if (error instanceof StagingSourceError) throw error; await fallback(chunk, error); }
+    }
+    if (archived.length) {
+      // One scan of the guest tree checks every archived file, as each pushFile's own scan does.
+      let facts: Map<string, FileFact> | undefined, failure: unknown;
+      try { facts = new Map((await this.scan(remote, guestRoot, files.reduce((sum, file) => sum + file.bytes, 0))).map(fact => [fact.path, fact])); }
+      catch (error) { failure = error; }
+      const wrong = archived.filter(file => { const fact = facts?.get(file.path); return !fact || fact.sha256 !== file.sha256 || fact.bytes !== file.bytes; });
+      for (const file of archived) if (!wrong.includes(file)) staged.set(file.path, { local: within(local, file.path), remote: within(remote, file.path), sha256: file.sha256, bytes: facts!.get(file.path)!.bytes });
+      if (wrong.length) await fallback(wrong, failure ?? new Error(`Staging checksum mismatch: ${within(remote, wrong[0].path)}`));
+    }
+    for (const file of single) {
+      const result = await this.pushFile(within(local, file.path), within(remote, file.path), approvedLocalRoot);
+      if (result.sha256 !== file.sha256 || result.bytes !== file.bytes) throw new Error(`Staging source changed: ${local}`);
+      staged.set(file.path, result);
     }
     await assertHostPath(approvedLocalRoot, local);
     if (JSON.stringify(await inventory(local)) !== JSON.stringify(files)) throw new Error(`Staging source changed: ${local}`);
-    return result;
+    return files.map(file => staged.get(file.path)!);
+  }
+  /**
+   * Push the host files `files` of the tree `local` into the guest tree `remote` as one archive (AD-11): the
+   * host packs them, pushes the archive as one file into the guest root, and one guest command unpacks it,
+   * checks every entry and the whole archive, renames each file into place and removes the archive. It
+   * throws on any failure, leaving no partial file; a `StagingSourceError` means the host source changed.
+   */
+  async pushArchive(local: string, remote: string, files: readonly FileFact[], approvedLocalRoot = local): Promise<void> {
+    const guestRoot = this.options.guestRoot ?? dirname(remote);
+    const tempRoot = this.options.hostTempRoot ?? tmpdir();
+    await assertHostPath(tempRoot, tempRoot, true);
+    await mkdir(tempRoot, { recursive: true, mode: 0o700 });
+    await assertHostPath(tempRoot, tempRoot);
+    const hostDirectory = await mkdtemp(join(tempRoot, 'relay-push-'));
+    const archive = join(guestRoot, `.archive-${randomUUID()}`);
+    let unpacked = false;
+    try {
+      const staged = join(hostDirectory, 'archive');
+      let packed: { bytes: number; sha256: string; modes: number[] };
+      try {
+        packed = await packArchive(staged, files.map(file => ({ ...file, source: within(local, file.path) })), source => assertHostPath(approvedLocalRoot, source));
+      } catch (error) { throw new StagingSourceError(error instanceof Error ? error.message : String(error), { cause: error }); }
+      const prepare = () => this.checked([this.node, '-e', PREPARE, guestRoot, archive]);
+      await prepare();
+      await this.copy('push', () => this.vm.push(this.name, staged, archive), async () => { await assertHostPath(tempRoot, staged); await prepare(); });
+      const argv = [this.node, '-e', UNPACK, remote, guestRoot, archive, String(packed.bytes), packed.sha256, ...files.flatMap((file, at) => [packed.modes[at].toString(8), file.path])];
+      const ack: unknown = JSON.parse(await this.checked(argv, scanTimeoutMs(2 * packed.bytes)));
+      unpacked = true;
+      if ((ack as { files?: unknown } | null)?.files !== files.length || (ack as { bytes?: unknown }).bytes !== packed.bytes) throw new Error('Invalid remote unpack acknowledgement');
+    } finally {
+      // The unpack removes the archive on every exit it reaches; a command that never ran may leave it.
+      try { if (!unpacked) await this.checked([this.node, '-e', REMOVE_FRAME, guestRoot, archive]); }
+      finally { await assertHostPath(tempRoot, hostDirectory); await rm(hostDirectory, { recursive: true, force: true }); }
+    }
   }
   private async guestPath(root: string, target: string) {
     await this.checked([this.node, '-e', `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);

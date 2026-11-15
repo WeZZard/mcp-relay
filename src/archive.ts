@@ -21,17 +21,62 @@ export function archiveBytes(files: readonly ArchiveEntry[]): number {
   return files.reduce((sum, file) => sum + Buffer.byteLength(header(file.path, file.bytes)) + file.bytes + Buffer.byteLength(trailer(file.sha256)), 0);
 }
 
-/** Split a request so each guest command's path arguments stay within `maxArgvBytes`. */
-export function archiveChunks<T extends { path: string }>(files: readonly T[], maxArgvBytes = 64 * 1024): T[][] {
+/** Split a request so each guest command's path arguments stay within `maxArgvBytes`; `argvBytes` is what one file adds. */
+export function archiveChunks<T extends { path: string }>(files: readonly T[], maxArgvBytes = 64 * 1024, argvBytes = (file: T) => Buffer.byteLength(file.path) + 1): T[][] {
   const chunks: T[][] = [];
   let chunk: T[] = [], size = 0;
   for (const file of files) {
-    const bytes = Buffer.byteLength(file.path) + 1;
+    const bytes = argvBytes(file);
     if (chunk.length && size + bytes > maxArgvBytes) { chunks.push(chunk); chunk = []; size = 0; }
     chunk.push(file); size += bytes;
   }
   if (chunk.length) chunks.push(chunk);
   return chunks;
+}
+
+/** A host file to pack: `source` is where its bytes are, `path` its relative path in the archive. */
+export interface PackEntry extends ArchiveEntry { source: string }
+
+/**
+ * Write the host files into a new archive at `archive`, in the format above, for the push of a
+ * workspace (AD-11). Each file is opened without following a link and must still have the size and
+ * hash of the inventory, or the pack fails with `Staging source changed`. `beforeOpen` checks each
+ * source's path first. Returns the archive's size and SHA-256 and each file's permission bits.
+ */
+export async function packArchive(archive: string, files: readonly PackEntry[], beforeOpen: (source: string) => Promise<void> = async () => {}): Promise<{ bytes: number; sha256: string; modes: number[] }> {
+  const output = await open(archive, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  const whole = createHash('sha256'), modes: number[] = [];
+  let total = 0;
+  const put = async (bytes: Buffer) => {
+    whole.update(bytes); total += bytes.length;
+    for (let written = 0; written < bytes.length;) written += (await output.write(bytes, written, bytes.length - written)).bytesWritten;
+  };
+  try {
+    const buffer = Buffer.alloc(8 * 1024 * 1024);
+    for (const file of files) {
+      await beforeOpen(file.source);
+      const input = await open(file.source, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const info = await input.stat();
+        if (!info.isFile() || info.size !== file.bytes) throw new Error(`Staging source changed: ${file.source}`);
+        modes.push(info.mode & 0o777);
+        await put(Buffer.from(header(file.path, file.bytes)));
+        const digest = createHash('sha256');
+        let read = 0;
+        for (;;) {
+          const { bytesRead } = await input.read(buffer, 0, buffer.length, null);
+          if (!bytesRead) break;
+          read += bytesRead;
+          if (read > file.bytes) break;
+          const chunk = buffer.subarray(0, bytesRead);
+          digest.update(chunk); await put(chunk);
+        }
+        if (read !== file.bytes || digest.digest('hex') !== file.sha256) throw new Error(`Staging source changed: ${file.source}`);
+        await put(Buffer.from(trailer(file.sha256)));
+      } finally { await input.close(); }
+    }
+  } finally { await output.close(); }
+  return { bytes: total, sha256: whole.digest('hex'), modes };
 }
 
 /** A requested file; a step's download knows neither size nor hash before the archive arrives. */
