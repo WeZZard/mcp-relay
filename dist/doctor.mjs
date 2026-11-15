@@ -4969,7 +4969,9 @@ var RelayClient = class {
         handle.readyInfo = value;
         readyResolve(value);
         return;
+      // The broker holds the call while the relay agent is away, within its own grace: an idle transfer waits with it.
       case "pending":
+        if (call && value.execution === call.executionId) call.touch();
         this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`);
         return;
       case "end":

@@ -220,7 +220,9 @@ export interface CallOptions {
   /**
    * `timeoutMs` counts from the call's last progress, not from its start: a
    * byte of its stream received, a chunk of its upload sent, or the relay
-   * agent's `progress` or `end`. A transfer that keeps moving never times out.
+   * agent's `progress` or `end`, or the broker's `pending` while it holds the
+   * call for an absent relay agent (RP-8). A transfer that keeps moving, or
+   * that the broker still holds, never times out.
    */
   idle?: boolean;
   /** The stream goes here instead of being kept. */
@@ -490,7 +492,8 @@ export class RelayClient {
     const call = typeof value?.call === 'number' ? handle.calls.get(value.call) : undefined;
     switch (name) {
       case 'ready': handle.readyInfo = value; readyResolve(value); return;
-      case 'pending': this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`); return;
+      // The broker holds the call while the relay agent is away, within its own grace: an idle transfer waits with it.
+      case 'pending': if (call && value.execution === call.executionId) call.touch(); this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`); return;
       case 'end': if (call && value.execution === call.executionId) { call.end = { size: value.size, sha256: value.sha256 }; call.touch(); } return;
       case 'progress':
         if (!call || value.execution !== call.executionId || typeof value.committed !== 'number') return;

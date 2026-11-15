@@ -159,7 +159,7 @@ test('a call without an outcome by its deadline is uncertain', async t => {
   relay.finish('slow-1');
 });
 
-// ------------------------------------------- idle timeouts for transfers (DC-91)
+// ------------------------------------------- idle timeouts for transfers (DC-91, DC-92)
 
 const IDLE = 150;
 const pace = { chunk: 1000, gapMs: 25 }; // 20 pieces of a 20 000-byte stream take about 500 ms, past IDLE
@@ -181,6 +181,20 @@ test('an idle read that stops moving fails once no byte came for its timeout', a
   await client.ready();
   relay.files.set('stuck.bin', Buffer.alloc(20 * pace.chunk, 's')); relay.pace = { ...pace, stallAfter: 3 * pace.chunk };
   await assert.rejects(client.run({ read: { path: 'stuck.bin' } }, Buffer.alloc(0), { timeoutMs: IDLE, idle: true }), /relay: no answer for execution \S+ without progress for 150 ms/);
+});
+
+test('an idle read the broker holds for an absent relay agent past its timeout waits, then streams; with nothing at all it fails at its timeout', async t => {
+  const { relay, client } = fixture(t);
+  await client.ready();
+  const bytes = Buffer.alloc(5 * pace.chunk, 'h');
+  relay.files.set('held.bin', bytes); relay.pace = pace;
+  relay.pendingFor = { count: 12, gapMs: 40 }; // about 480 ms of pending, then about 125 ms of bytes
+  const started = Date.now();
+  const answer = await client.run({ read: { path: 'held.bin' } }, Buffer.alloc(0), { timeoutMs: IDLE, idle: true });
+  assert.ok(Date.now() - started > 3 * IDLE, `the read took ${Date.now() - started} ms, not past the timeout`);
+  assert.deepEqual(answer.outcome, { read: { size: bytes.length, sha256: sha(bytes) } });
+  relay.pace = { ...pace, stallAfter: 0 }; // no pending and no byte
+  await assert.rejects(client.run({ read: { path: 'held.bin' } }, Buffer.alloc(0), { timeoutMs: IDLE, idle: true }), /without progress for 150 ms/);
 });
 
 test('an idle write whose progress keeps coming past its timeout succeeds', async t => {

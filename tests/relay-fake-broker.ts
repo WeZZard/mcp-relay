@@ -169,6 +169,8 @@ export class FakeRelay {
    * many bytes and send nothing more, as a link that stops moving does.
    */
   pace?: { chunk: number; gapMs: number; stallAfter?: number };
+  /** Hold the next read or exec for an absent relay agent: send `pending` this many times, one every `gapMs`, then run it, as the broker does (RP-8). */
+  pendingFor?: { count: number; gapMs: number };
   /** Send each upload `progress` this long after its bytes arrive, as a slow link acknowledges. */
   progressDelayMs = 0;
   private report?: () => void;
@@ -217,6 +219,16 @@ export class FakeRelay {
           this.calls.push({ execution: value.execution, op: value.op, size: -1, resume: !!value.resume });
           if (this.protocol >= 2) reply('progress', { call: value.call, execution: value.execution, committed: held.size });
           return;
+        }
+        if (this.pendingFor) {
+          const { count, gapMs } = this.pendingFor; this.pendingFor = undefined;
+          let sent = 0;
+          const hold = () => {
+            if (sent++ === count) return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, value.offset ?? 0);
+            reply('pending', { call: value.call, execution: value.execution, code: 'agent_not_connected', message: 'the relay agent has no session', wait_ms: (count - sent) * gapMs });
+            setTimeout(hold, gapMs);
+          };
+          return hold();
         }
         return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, value.offset ?? 0);
       }
