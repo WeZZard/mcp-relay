@@ -23461,11 +23461,11 @@ var trailer = (sha256) => `${JSON.stringify({ sha256 })}
 function archiveBytes(files) {
   return files.reduce((sum, file) => sum + Buffer.byteLength(header(file.path, file.bytes)) + file.bytes + Buffer.byteLength(trailer(file.sha256)), 0);
 }
-function archiveChunks(files, maxArgvBytes = 64 * 1024) {
+function archiveChunks(files, maxArgvBytes = 64 * 1024, argvBytes = (file) => Buffer.byteLength(file.path) + 1) {
   const chunks = [];
   let chunk = [], size = 0;
   for (const file of files) {
-    const bytes = Buffer.byteLength(file.path) + 1;
+    const bytes = argvBytes(file);
     if (chunk.length && size + bytes > maxArgvBytes) {
       chunks.push(chunk);
       chunk = [];
@@ -23476,6 +23476,63 @@ function archiveChunks(files, maxArgvBytes = 64 * 1024) {
   }
   if (chunk.length) chunks.push(chunk);
   return chunks;
+}
+var StagingSourceError = class extends Error {
+  constructor(message3, options) {
+    super(message3, options);
+    this.name = "StagingSourceError";
+  }
+};
+async function packArchive(archive, files, beforeOpen = async () => {
+}) {
+  const output = await open6(archive, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, 384);
+  const whole = createHash6("sha256"), modes = [];
+  let total = 0;
+  const put = async (bytes) => {
+    whole.update(bytes);
+    total += bytes.length;
+    for (let written = 0; written < bytes.length; ) written += (await output.write(bytes, written, bytes.length - written)).bytesWritten;
+  };
+  try {
+    const buffer = Buffer.alloc(8 * 1024 * 1024);
+    const source = async (file, step2) => {
+      try {
+        return await step2();
+      } catch (error2) {
+        throw error2 instanceof StagingSourceError ? error2 : new StagingSourceError(`Staging source changed: ${file.source}: ${error2 instanceof Error ? error2.message : String(error2)}`, { cause: error2 });
+      }
+    };
+    for (const file of files) {
+      const input = await source(file, async () => {
+        await beforeOpen(file.source);
+        return open6(file.source, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+      });
+      try {
+        const info = await source(file, () => input.stat());
+        if (!info.isFile() || info.size !== file.bytes) throw new StagingSourceError(`Staging source changed: ${file.source}`);
+        modes.push(info.mode & 511);
+        await put(Buffer.from(header(file.path, file.bytes)));
+        const digest = createHash6("sha256");
+        let read = 0;
+        for (; ; ) {
+          const { bytesRead } = await source(file, () => input.read(buffer, 0, buffer.length, null));
+          if (!bytesRead) break;
+          read += bytesRead;
+          if (read > file.bytes) break;
+          const chunk = buffer.subarray(0, bytesRead);
+          digest.update(chunk);
+          await put(chunk);
+        }
+        if (read !== file.bytes || digest.digest("hex") !== file.sha256) throw new StagingSourceError(`Staging source changed: ${file.source}`);
+        await put(Buffer.from(trailer(file.sha256)));
+      } finally {
+        await input.close();
+      }
+    }
+  } finally {
+    await output.close();
+  }
+  return { bytes: total, sha256: whole.digest("hex"), modes };
 }
 async function unpackArchive(archive, directory2, requested, options = {}) {
   const input = await open6(archive, constants2.O_RDONLY | constants2.O_NOFOLLOW);
@@ -23619,6 +23676,7 @@ var SCAN = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST
 var FILE_FACT = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}${GUEST_DIGEST}const [root,file]=process.argv.slice(1);check(root,file);const s=fs.lstatSync(file);if(!s.isFile())throw Error('Invalid frame file');const sha256=digest(file,s.size);check(root,file);console.log(JSON.stringify({path:file,sha256,bytes:s.size}));`;
 var SIZE = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,approved]=process.argv.slice(1);check(approved,root);let bytes=0,files=0;function walk(f){const s=fs.lstatSync(f);if(s.isSymbolicLink())throw Error('symlink '+f);if(s.isDirectory()){for(const n of fs.readdirSync(f))walk(p.join(f,n));}else if(s.isFile()){bytes+=s.size;files++;}else throw Error('special file '+f);}walk(root);console.log(JSON.stringify({bytes,files}));`;
 var ARCHIVE = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}const [root,approved,archive,archiveRoot,mode,...paths]=process.argv.slice(1);check(approved,root);check(archiveRoot,archive,true);const files=[];let need=0;for(const rel of paths){if(!rel||p.isAbsolute(rel)||rel.includes('\\\\')||rel.includes('\\0')||rel.split('/').some(x=>!x||x==='.'||x==='..'))throw Error('Invalid archive path '+rel);const f=p.join(root,rel);let s;try{check(approved,f);s=fs.lstatSync(f);}catch(e){if(mode==='present'&&e.code==='ENOENT')continue;throw e;}if(!s.isFile())throw Error('Not a regular file: '+rel);files.push([rel,f,s]);need+=s.size+Buffer.byteLength(rel)+128;}if(typeof fs.statfsSync==='function'){const s=fs.statfsSync(p.dirname(archive));if(Number(s.bavail)*Number(s.bsize)<need)throw Error('Not enough guest space for a '+need+'-byte archive');}const out=fs.openSync(archive,'wx',384);let total=0;function put(b){for(let o=0;o<b.length;)o+=fs.writeSync(out,b,o,b.length-o);total+=b.length;}try{const b=Buffer.alloc(8388608);for(const [rel,f] of files){check(approved,f);const s=fs.lstatSync(f);if(!s.isFile())throw Error('Not a regular file: '+rel);const fd=fs.openSync(f,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{put(Buffer.from(JSON.stringify({path:rel,bytes:s.size})+'\\n'));const h=c.createHash('sha256');let n=0,r;while(n<s.size&&(r=fs.readSync(fd,b,0,Math.min(b.length,s.size-n),null))>0){h.update(b.subarray(0,r));put(b.subarray(0,r));n+=r;}if(n!==s.size||fs.readSync(fd,b,0,1,null)!==0)throw Error('Source changed during archive: '+rel);put(Buffer.from(JSON.stringify({sha256:h.digest('hex')})+'\\n'));}finally{fs.closeSync(fd);}}fs.closeSync(out);}catch(e){try{fs.closeSync(out);}catch{}fs.rmSync(archive,{force:true});throw e;}check(archiveRoot,archive);console.log(JSON.stringify({path:archive,bytes:total}));`;
+var UNPACK = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}const [root,approved,archive,size,sum,...pairs]=process.argv.slice(1);const want=[],seen=new Set();for(let i=0;i<pairs.length;i+=2){const mode=parseInt(pairs[i],8),rel=pairs[i+1];if(!/^[0-7]{1,3}$/.test(pairs[i])||typeof rel!=='string'||!rel||p.isAbsolute(rel)||rel.includes('\\\\')||rel.includes('\\0')||rel.split('/').some(x=>!x||x==='.'||x==='..')||seen.has(rel))throw Error('Invalid archive path '+rel);seen.add(rel);want.push([rel,mode]);}const staging=p.join(approved,'.unpack-'+c.randomUUID());let made=false;try{check(approved,root,true);check(approved,archive);const s=fs.lstatSync(archive);if(!s.isFile()||s.size!==Number(size))throw Error('Archive size mismatch: '+archive);if(typeof fs.statfsSync==='function'){const f=fs.statfsSync(approved);if(Number(f.bavail)*Number(f.bsize)<s.size)throw Error('Not enough guest space to unpack a '+s.size+'-byte archive');}fs.mkdirSync(staging,{mode:448});made=true;check(approved,staging);const fd=fs.openSync(archive,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW),whole=c.createHash('sha256'),b=Buffer.alloc(8388608),done=[];let start=0,end=0,eof=false;function fill(){if(start>0){b.copy(b,0,start,end);end-=start;start=0;}const r=fs.readSync(fd,b,end,b.length-end,null);if(!r)eof=true;else whole.update(b.subarray(end,end+r));end+=r;}function line(){for(;;){const at=b.indexOf(10,start);if(at>=0&&at<end){const v=JSON.parse(b.toString('utf8',start,at));start=at+1;if(!v||typeof v!=='object'||Array.isArray(v))throw Error('Invalid archive line');return v;}if(end-start>65536)throw Error('Archive line too long');if(eof)throw Error('Archive truncated');fill();}}try{for(let i=0;i<want.length;i++){const [rel,mode]=want[i],h=line();if(h.path!==rel||!Number.isSafeInteger(h.bytes)||h.bytes<0||Object.keys(h).length!==2)throw Error('Unexpected archive entry: '+String(h.path));const temp=p.join(staging,String(i)),out=fs.openSync(temp,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,384),d=c.createHash('sha256');try{for(let left=h.bytes;left>0;){if(start===end){if(eof)throw Error('Archive truncated');fill();continue;}const k=b.subarray(start,start+Math.min(left,end-start));d.update(k);for(let o=0;o<k.length;)o+=fs.writeSync(out,k,o,k.length-o);start+=k.length;left-=k.length;}fs.fchmodSync(out,mode);}finally{fs.closeSync(out);}const t=line();if(t.sha256!==d.digest('hex')||Object.keys(t).length!==1)throw Error('Archive entry checksum mismatch: '+rel);done.push([temp,rel]);}if(start===end&&!eof)fill();if(start!==end)throw Error('Archive has trailing bytes');}finally{fs.closeSync(fd);}if(whole.digest('hex')!==sum)throw Error('Archive checksum mismatch: '+archive);for(const [,rel] of done)check(approved,p.join(root,rel),true);for(const [temp,rel] of done){const target=p.join(root,rel);check(approved,target,true);fs.mkdirSync(p.dirname(target),{recursive:true,mode:448});check(approved,target,true);check(approved,temp);fs.renameSync(temp,target);}console.log(JSON.stringify({files:done.length,bytes:s.size}));}finally{if(made){try{check(approved,staging);fs.rmSync(staging,{recursive:true,force:true});}catch{}}try{check(approved,archive,true);fs.rmSync(archive,{force:true});}catch{}}`;
 var REMOVE_FRAME = `const fs=require('fs'),p=require('path');${GUEST_PATH}const [root,file]=process.argv.slice(1);check(root,file,true);fs.rmSync(file,{force:true});`;
 var IMAGE_FACT = `const fs=require('fs'),p=require('path'),c=require('crypto');${GUEST_PATH}
 const [root,file,limit='67108864',kind='image']=process.argv.slice(1);
@@ -23645,6 +23703,9 @@ var SCAN_BASE_MS = 12e4;
 var SCAN_MS_PER_MIB = 125;
 function scanTimeoutMs(bytes) {
   return SCAN_BASE_MS + Math.ceil(bytes / 1048576) * SCAN_MS_PER_MIB;
+}
+function pushChunks(files) {
+  return archiveChunks(files, 64 * 1024, (file) => Buffer.byteLength(file.path) + 5);
 }
 function validFact(value) {
   const f = value;
@@ -23709,19 +23770,96 @@ var Transfer = class {
     if (facts.length !== 1 || facts[0].sha256 !== before || facts[0].bytes !== bytes.length) throw new Error(`Staging checksum mismatch: ${local}`);
     return { local, remote, sha256: before, bytes: facts[0].bytes };
   }
+  /**
+   * Push a host tree into the guest tree `remote` (AD-11). The files go in archives, one per bounded
+   * chunk of paths as the pull bounds them (`archiveChunks`); a chunk of one file goes as a plain
+   * `pushFile`. One guest scan then checks every archived file. A chunk whose archive cannot be pushed,
+   * unpacked or checked falls back to the per-file push, and the fallback is logged with its reason.
+   * A host file that changes, or a link on the host, refuses the stage and never falls back.
+   */
   async pushTree(local, remote, approvedLocalRoot = local) {
     await assertHostPath(approvedLocalRoot, local);
     const files = await inventory(local);
     if (files.length > STAGING_MAX_FILES || files.reduce((sum, file) => sum + file.bytes, 0) > STAGING_MAX_BYTES) throw new Error("Staging exceeds 512MiB / 10000 files");
-    const result2 = [];
-    for (const file of files) {
-      const staged = await this.pushFile(within(local, file.path), within(remote, file.path), approvedLocalRoot);
-      if (staged.sha256 !== file.sha256 || staged.bytes !== file.bytes) throw new Error(`Staging source changed: ${local}`);
-      result2.push(staged);
+    const guestRoot = this.options.guestRoot ?? dirname6(remote);
+    const staged = /* @__PURE__ */ new Map();
+    const archived = [], single = [];
+    const fallback = async (chunk, error2) => {
+      await this.options.onArchiveFallback?.({ remote, files: chunk.length, diagnostic: String(error2), direction: "push" });
+      single.push(...chunk);
+    };
+    for (const chunk of pushChunks(files)) {
+      if (chunk.length === 1) {
+        single.push(chunk[0]);
+        continue;
+      }
+      try {
+        await this.pushArchive(local, remote, chunk, approvedLocalRoot);
+        archived.push(...chunk);
+      } catch (error2) {
+        if (error2 instanceof StagingSourceError) throw error2;
+        await fallback(chunk, error2);
+      }
+    }
+    if (archived.length) {
+      let facts, failure2;
+      try {
+        facts = new Map((await this.scan(remote, guestRoot, files.reduce((sum, file) => sum + file.bytes, 0))).map((fact) => [fact.path, fact]));
+      } catch (error2) {
+        failure2 = error2;
+      }
+      const wrong = archived.filter((file) => {
+        const fact = facts?.get(file.path);
+        return !fact || fact.sha256 !== file.sha256 || fact.bytes !== file.bytes;
+      });
+      for (const file of archived) if (!wrong.includes(file)) staged.set(file.path, { local: within(local, file.path), remote: within(remote, file.path), sha256: file.sha256, bytes: facts.get(file.path).bytes });
+      if (wrong.length) await fallback(wrong, failure2 ?? new Error(`Staging checksum mismatch: ${within(remote, wrong[0].path)}`));
+    }
+    for (const file of single) {
+      const result2 = await this.pushFile(within(local, file.path), within(remote, file.path), approvedLocalRoot);
+      if (result2.sha256 !== file.sha256 || result2.bytes !== file.bytes) throw new Error(`Staging source changed: ${local}`);
+      staged.set(file.path, result2);
     }
     await assertHostPath(approvedLocalRoot, local);
     if (JSON.stringify(await inventory(local)) !== JSON.stringify(files)) throw new Error(`Staging source changed: ${local}`);
-    return result2;
+    return files.map((file) => staged.get(file.path));
+  }
+  /**
+   * Push the host files `files` of the tree `local` into the guest tree `remote` as one archive (AD-11): the
+   * host packs them, pushes the archive as one file into the guest root, and one guest command unpacks it,
+   * checks every entry and the whole archive, renames each file into place and removes the archive. It
+   * throws on any failure, leaving no partial file; a `StagingSourceError` means the host source changed.
+   */
+  async pushArchive(local, remote, files, approvedLocalRoot = local) {
+    const guestRoot = this.options.guestRoot ?? dirname6(remote);
+    const tempRoot = this.options.hostTempRoot ?? tmpdir();
+    await assertHostPath(tempRoot, tempRoot, true);
+    await mkdir5(tempRoot, { recursive: true, mode: 448 });
+    await assertHostPath(tempRoot, tempRoot);
+    const hostDirectory = await mkdtemp(join7(tempRoot, "relay-push-"));
+    const archive = join7(guestRoot, `.archive-${randomUUID5()}`);
+    let unpacked = false;
+    try {
+      const staged = join7(hostDirectory, "archive");
+      const packed = await packArchive(staged, files.map((file) => ({ ...file, source: within(local, file.path) })), (source) => assertHostPath(approvedLocalRoot, source));
+      const prepare = () => this.checked([this.node, "-e", PREPARE, guestRoot, archive]);
+      await prepare();
+      await this.copy("push", () => this.vm.push(this.name, staged, archive), async () => {
+        await assertHostPath(tempRoot, staged);
+        await prepare();
+      });
+      const argv = [this.node, "-e", UNPACK, remote, guestRoot, archive, String(packed.bytes), packed.sha256, ...files.flatMap((file, at) => [packed.modes[at].toString(8), file.path])];
+      const ack = JSON.parse(await this.checked(argv, scanTimeoutMs(2 * packed.bytes)));
+      unpacked = true;
+      if (ack?.files !== files.length || ack.bytes !== packed.bytes) throw new Error("Invalid remote unpack acknowledgement");
+    } finally {
+      try {
+        if (!unpacked) await this.checked([this.node, "-e", REMOVE_FRAME, guestRoot, archive]);
+      } finally {
+        await assertHostPath(tempRoot, hostDirectory);
+        await rm2(hostDirectory, { recursive: true, force: true });
+      }
+    }
   }
   async guestPath(root, target) {
     await this.checked([this.node, "-e", `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);

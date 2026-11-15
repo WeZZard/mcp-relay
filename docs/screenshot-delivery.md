@@ -304,3 +304,19 @@ imageDelivery: {
 - Before the archive is built, the relay checks the guest's free space for the archive's size, as it checks the host's free space now.
 - When the guest lacks the space, or when building, pulling or unpacking the archive fails, the finish falls back to the per-file pull for the files it still lacks. The fallback is slower but needs no extra guest space.
 - The fallback is logged with its reason, so a slow finish can be explained from the evidence.
+
+### AD-11: a workspace is staged in archives, as the finish pulls them
+
+- `relay_stage` with a `workspace` pushes the tree in archives of the format of AD-8, one per chunk of paths. A chunk follows the bound of AD-8: one guest command carries at most 64 KiB of arguments, here each file's permission bits and path. A chunk of one file goes as a plain file push. A file of any size may ride in an archive, as in the pull (DC-88).
+- The host writes each chunk's archive in its own temporary folder. It reads each file once, without following a link, and refuses the stage with `Staging source changed` when a file's size or hash differs from the inventory taken first. A refusal for a host file never falls back; a failure to write the archive on the host does.
+- The archive is pushed as one file into the guest root, beside the inventory frames, with the checks of a file push.
+- One guest command unpacks it. It receives each expected file's path and permission bits, in order, and the archive's exact size and SHA-256. It refuses an archive unless every check passes:
+  - each path is relative and has no `..`, `.` or empty segment, and no path appears twice;
+  - the archive has the expected size and the guest has free space for it;
+  - the entries are exactly the expected paths, in order, each with its size, bytes and hash line, and the archive ends right after the last one;
+  - the whole archive has the expected hash;
+  - every target stays inside the guest root and no ancestor is a link.
+- The command writes each entry into a staging folder in the guest root and renames it into place only after every check passes. A reader therefore never sees a partly written file, and a refused archive leaves no file in the workspace. Each file keeps its permission bits, as the file push over the relay link keeps them. The staging folder and the archive are removed on every exit. The command prints only a count.
+- After the last archive, one guest scan checks every archived file's size and hash. The `staged` results keep their shape and the inventory's order. The inventory before and after the push is compared, as before.
+- A chunk whose archive cannot be pushed, unpacked or checked falls back to the per-file push for its files. The fallback is logged with its reason as `archive-fallback`, as AD-10 logs the pull's.
+- The archive removes the per-file round trips: the number of requests grows with the bytes of the paths, not with the number of files.
