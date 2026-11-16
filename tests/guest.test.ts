@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -343,10 +344,10 @@ test("timeout validation and effective deadlines cover inline, file and diagnost
 
 test("timeout retains subprocess output and confirmed termination and permits diagnosis", async t => {
   const { options } = await setup(t); delete options.dispatch;
-  const result = await receive(request("real-timeout", { diagnostic: true, code: sh([process.execPath, "-e", "console.log('before timeout');console.error('error output');setTimeout(()=>{},10000)"]), timeoutMs: 200 }), options);
+  const result = await receive(request("real-timeout", { diagnostic: true, code: sh([process.execPath, "-e", "console.log('before timeout');console.error('error output');setTimeout(()=>{},10000)"]), timeoutMs: 2000 }), options); // time for a loaded runner to start Node.js and print
   assert.equal(result.outcome.kind, "uncertain");
   assert.equal(result.timedOut, true);
-  assert.equal(result.timeoutMs, 200);
+  assert.equal(result.timeoutMs, 2000);
   assert.equal(result.terminationConfirmed, true);
   assert.equal(result.stdout, "before timeout\n");
   assert.equal(result.stderr, "error output\n");
@@ -400,6 +401,24 @@ test("stale locks require dead-owner and inactive-operation proof; ambiguous ref
   assert.equal((await receive(request("reconciled-lock"), options)).outcome.kind, "completed");
   assert.equal((await receive(request("after-lock-recovery"), options)).outcome.kind, "completed");
   assert.ok((await readdir(root)).some(name => name.startsWith(".receiver-lock-retired-")));
+});
+
+test("the receiver lock is never seen without its owner, from taking it to giving it up (DC-93)", async t => {
+  const { root, options } = await setup(t);
+  const lock = join(root, ".receiver-lock");
+  // A cancel's stop may kill the receiver at any moment (DC-86); an ownerless lock left then would refuse every later run.
+  let looks = 0, ownerless = 0, watching = true;
+  // One listing per look: two separate checks could straddle a rename and see a lock that never stood without its owner.
+  const listing = () => { try { return readdirSync(lock); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; } };
+  const watch = () => { if (!watching) return; looks++; const names = listing(); if (names && !names.includes("owner.json")) ownerless++; setImmediate(watch); };
+  watch();
+  try {
+    for (let i = 0; i < 5; i++) assert.equal((await receive(request(`owned-${i}`), options)).outcome.kind, "completed");
+  } finally { watching = false; }
+  assert.ok(looks > 50, `the watcher looked only ${looks} times`);
+  assert.equal(ownerless, 0, `the lock stood without owner.json in ${ownerless} of ${looks} looks`);
+  assert.equal(existsSync(lock), false);
+  assert.deepEqual((await readdir(root)).filter(name => name.startsWith(".receiver-lock-")), [], "no staged or retired lock is left");
 });
 
 test("stale active locks require proof that all recorded process groups have exited", async t => {

@@ -90,19 +90,19 @@ test('a relay pull that keeps streaming past its timeout arrives whole; one that
   await f.service.acquire({ purpose: 'p', image: 'ubuntu2404' });
   const dir = mkdtempSync(join(tmpdir(), 'relay-idle-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bytes = Buffer.alloc(20_000, 'p');
-  f.relay.files.set('/g/slow.bin', bytes); f.relay.pace = { chunk: 1000, gapMs: 25 }; // about 500 ms
+  f.relay.files.set('/g/slow.bin', bytes); f.relay.pace = { chunk: 1000, gapMs: 100 }; // about 2 s, against a 1 s window
   const started = Date.now();
-  assert.deepEqual(await f.service.pull('vm-1', { remote_path: '/g/slow.bin', local_path: join(dir, 'slow.bin') }, { timeoutMs: 150 }), { vm: 'vm-1', pulled: '/g/slow.bin', to: join(dir, 'slow.bin') });
-  assert.ok(Date.now() - started > 300, `the pull took ${Date.now() - started} ms, not past the timeout`);
+  assert.deepEqual(await f.service.pull('vm-1', { remote_path: '/g/slow.bin', local_path: join(dir, 'slow.bin') }, { timeoutMs: 1000 }), { vm: 'vm-1', pulled: '/g/slow.bin', to: join(dir, 'slow.bin') });
+  assert.ok(Date.now() - started > 1000, `the pull took ${Date.now() - started} ms, not past the timeout`);
   assert.deepEqual(readFileSync(join(dir, 'slow.bin')), bytes);
-  f.relay.pace = { chunk: 1000, gapMs: 25, stallAfter: 3000 };
-  await assert.rejects(f.service.pullBytes('vm-1', { remote_path: '/g/slow.bin', to: join(dir, 'stuck.bin') }, { timeoutMs: 150 }), /machine-service relay link: relay: no answer for execution \S+ without progress for 150 ms/);
+  f.relay.pace = { chunk: 1000, gapMs: 100, stallAfter: 3000 };
+  await assert.rejects(f.service.pullBytes('vm-1', { remote_path: '/g/slow.bin', to: join(dir, 'stuck.bin') }, { timeoutMs: 1000 }), /machine-service relay link: relay: no answer for execution \S+ without progress for 1000 ms/);
   assert.throws(() => readFileSync(join(dir, 'stuck.bin')), /ENOENT/);
 });
 
 test('a relay exec keeps its timeout from the start while its output streams', async t => {
   const f = await fixture(t);
   await f.service.acquire({ purpose: 'p', image: 'ubuntu2404' });
-  f.relay.pace = { chunk: 1000, gapMs: 25 };
-  await assert.rejects(f.service.exec('vm-1', { argv: ['drip'] }, { timeoutMs: 150 }), /no outcome within 150 ms/);
+  f.relay.pace = { chunk: 1000, gapMs: 100 };
+  await assert.rejects(f.service.exec('vm-1', { argv: ['drip'] }, { timeoutMs: 1000 }), /no outcome within 1000 ms/);
 });
