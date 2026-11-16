@@ -200,7 +200,22 @@ export function webSocketDial(url: string, caPem: string, handshakeMs = 10000, r
 
 /** An operation whose effect is uncertain: it may have run, and it is never sent again. */
 export class RelayUncertainError extends Error {
-  constructor(readonly executionId: string, message: string, options?: ErrorOptions) { super(`${message}; whether execution ${executionId} took effect is uncertain, and it is not sent again`, options); this.name = 'RelayUncertainError'; }
+  /** True when the link lost the execution itself (no record after a lost session, a record that could not be queried, or a relay agent stop): a step that only looks may be made again under a new execution ID (DC-94). */
+  readonly lost: boolean;
+  constructor(readonly executionId: string, message: string, options?: ErrorOptions & { lost?: boolean }) { super(`${message}; whether execution ${executionId} took effect is uncertain, and it is not sent again`, options); this.name = 'RelayUncertainError'; this.lost = options?.lost ?? false; }
+}
+/**
+ * Whether an error, or one of its causes, says the relay link lost the
+ * operation's own execution, so a step that only looks at the guest may be
+ * made again under a new execution ID (vm-service RP-7, DC-94). A timeout, a
+ * refusal, a session ended for good (closed, revoked) or a guest failure is
+ * not such a loss.
+ */
+export function lostExecution(error: unknown): boolean {
+  for (let e = error, depth = 0; e && depth < 8; e = (e as { cause?: unknown }).cause, depth++) {
+    if (e instanceof RelayUncertainError) return e.lost;
+  }
+  return false;
 }
 /** An operation the broker or the relay agent answered with `failed`. */
 export class RelayFailedError extends Error {
@@ -569,8 +584,8 @@ export class RelayClient {
     if (!this.mayHaveRun(call)) { if (reads(call.kind)) call.executionId = randomUUID(); return this.send(call); }
     let state: ExecutionState;
     try { state = await this.query(call.executionId); }
-    catch (error) { throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${(error as Error).message}`, { cause: error }); }
-    if (state === 'unknown') throw new RelayUncertainError(call.executionId, 'the session was lost and neither the broker nor the relay agent has a record of the execution');
+    catch (error) { throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${(error as Error).message}`, { cause: error, lost: true }); }
+    if (state === 'unknown') throw new RelayUncertainError(call.executionId, 'the session was lost and neither the broker nor the relay agent has a record of the execution', { lost: true });
     if (call.done) return;
     // Completed or running: the same call under the same execution ID takes the recorded answer and never runs again;
     // with `resume`, a running upload is not started again either.

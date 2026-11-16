@@ -295,7 +295,7 @@ export class MachineService {
       throw new MachineServiceError(failure.message, undefined, undefined, { cause: failure });
     }
     if (outcome.interrupted) {
-      const failure = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`);
+      const failure = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`, { lost: true });
       throw new MachineServiceError(failure.message, undefined, undefined, { cause: failure });
     }
     return answer;

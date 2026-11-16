@@ -173,6 +173,18 @@ export class FakeRelay {
   pendingFor?: { count: number; gapMs: number };
   /** Send each upload `progress` this long after its bytes arrive, as a slow link acknowledges. */
   progressDelayMs = 0;
+  /** Run an exec's command for real, as a guest would, instead of the tiny command language; its output is what the command prints. */
+  run?: (command: string) => Promise<{ rc: number; output: Buffer }>;
+  /** Where a write's bytes go, by path, as a guest's disk takes them; a read's bytes come from `readFrom` when it has the path. */
+  writeTo?: (path: string, bytes: Buffer) => void;
+  readFrom?: (path: string) => Buffer | undefined;
+  /**
+   * Lose an operation in a forgotten session, as a broker restart past the
+   * session's grace does: `before` keeps no record of it and never runs it;
+   * `after` runs it, then forgets its record before it answers. Either way a
+   * query for it answers `unknown`.
+   */
+  lose?: (op: Op, execution: string) => 'before' | 'after' | undefined;
   private report?: () => void;
   constructor(readonly broker: FakeBroker) {
     broker.onOpen = session => broker.send(session, encodeControl('ready', { protocol: this.protocol, lease: 'fake-lease', agent: { os: 'macos', arch: 'aarch64', build: 'f'.repeat(64), protocol: this.protocol } }));
@@ -280,8 +292,19 @@ export class FakeRelay {
       const waiting = this.holds.get(execution) ?? []; waiting.push(() => answer(known, true)); this.holds.set(execution, waiting);
       return;
     }
+    const lost = this.lose?.(op, execution);
+    if (lost === 'before') { later(() => this.broker.forget()); return; }
     const record: Execution = { op, output: Buffer.alloc(0), runs: 1 };
     this.executions.set(execution, record);
+    if (typeof op === 'object' && 'exec' in op && this.run) {
+      void this.run(op.exec.command).then(({ rc, output }) => {
+        record.output = output;
+        record.outcome = { exit: { rc, signal: null, timed_out: false, cancelled: false, output: digest(output) } };
+        if (lost === 'after') { this.executions.delete(execution); this.broker.forget(); return; }
+        answer(record, false);
+      });
+      return;
+    }
     if (typeof op === 'object' && 'exec' in op) {
       const command = op.exec.command;
       const done = () => { record.outcome = { exit: { rc: 0, signal: null, timed_out: false, cancelled: false, output: digest(record.output) } }; };
@@ -304,10 +327,10 @@ export class FakeRelay {
       record.outcome = { exit: { rc: 0, signal: null, timed_out: false, cancelled: false, output: digest(record.output) } };
       return answer(record, false);
     }
-    if (typeof op === 'object' && ('write' in op || 'write_tree' in op)) { record.output = upload; record.outcome = { written: digest(upload) }; return answer(record, false); }
+    if (typeof op === 'object' && ('write' in op || 'write_tree' in op)) { if ('write' in op) this.writeTo?.(op.write.path, upload); record.output = upload; record.outcome = { written: digest(upload) }; return answer(record, false); }
     if (typeof op === 'object' && ('read' in op || 'read_tree' in op)) {
       const path = 'read' in op ? op.read.path : op.read_tree.path;
-      const data = this.files.get(path) ?? Buffer.from(`contents of ${path}`);
+      const data = this.files.get(path) ?? this.readFrom?.(path) ?? Buffer.from(`contents of ${path}`);
       record.outcome = { read: digest(data) };
       if (this.cutReadAt !== undefined) {
         const cut = this.cutReadAt; this.cutReadAt = undefined;

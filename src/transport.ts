@@ -118,7 +118,7 @@ export class VmTransport implements SessionTransport {
     const remote = join(this.guestRoot, ...declinedPath(executionId));
     const started = join(this.guestRoot, 'state', 'receiver', 'started', `${executionId}.json`);
     let present: unknown;
-    try { present = JSON.parse((await this.transfer.checked([this.transfer.node, '-e', PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split('\n').at(-1) ?? ''); }
+    try { present = JSON.parse((await this.transfer.look([this.transfer.node, '-e', PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split('\n').at(-1) ?? ''); }
     catch { throw failure; }
     if (!Array.isArray(present) || present.length !== 3 || present[0] !== false) throw failure;
     if (present[1] !== true) throw new Error(`the receiver gave no answer: it exited without a receipt or a declined answer for this execution, and the execution's started marker ${present[2] === true ? 'exists, so it may have started' : 'does not exist'}`);
