@@ -4682,8 +4682,11 @@ var RelayUncertainError = class extends Error {
     super(`${message}; whether execution ${executionId} took effect is uncertain, and it is not sent again`, options);
     this.executionId = executionId;
     this.name = "RelayUncertainError";
+    this.lost = options?.lost ?? false;
   }
   executionId;
+  /** True when the link lost the execution itself (no record after a lost session, a record that could not be queried, or a relay agent stop): a step that only looks may be made again under a new execution ID (DC-94). */
+  lost;
 };
 var RelayFailedError = class extends Error {
   constructor(executionId, code, detail, committed) {
@@ -5064,9 +5067,9 @@ var RelayClient = class {
     try {
       state = await this.query(call.executionId);
     } catch (error) {
-      throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${error.message}`, { cause: error });
+      throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${error.message}`, { cause: error, lost: true });
     }
-    if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution");
+    if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution", { lost: true });
     if (call.done) return;
     call.resume = true;
     return this.send(call);
@@ -5227,7 +5230,7 @@ var MachineService = class {
       throw new MachineServiceError(failure.message, void 0, void 0, { cause: failure });
     }
     if (outcome.interrupted) {
-      const failure = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`);
+      const failure = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`, { lost: true });
       throw new MachineServiceError(failure.message, void 0, void 0, { cause: failure });
     }
     return answer;

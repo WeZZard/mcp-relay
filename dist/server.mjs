@@ -22193,9 +22193,18 @@ var RelayUncertainError = class extends Error {
     super(`${message3}; whether execution ${executionId} took effect is uncertain, and it is not sent again`, options);
     this.executionId = executionId;
     this.name = "RelayUncertainError";
+    this.lost = options?.lost ?? false;
   }
   executionId;
+  /** True when the link lost the execution itself (no record after a lost session, a record that could not be queried, or a relay agent stop): a step that only looks may be made again under a new execution ID (DC-94). */
+  lost;
 };
+function lostExecution(error2) {
+  for (let e = error2, depth = 0; e && depth < 8; e = e.cause, depth++) {
+    if (e instanceof RelayUncertainError) return e.lost;
+  }
+  return false;
+}
 var RelayFailedError = class extends Error {
   constructor(executionId, code, detail, committed) {
     super(`relay: ${code}: ${detail}${committed ? `; execution ${executionId} passed its commit point, so whether it took effect is uncertain` : ""}`);
@@ -22575,9 +22584,9 @@ var RelayClient = class {
     try {
       state = await this.query(call.executionId);
     } catch (error2) {
-      throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${error2.message}`, { cause: error2 });
+      throw new RelayUncertainError(call.executionId, `the session was lost and the execution could not be queried: ${error2.message}`, { cause: error2, lost: true });
     }
-    if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution");
+    if (state === "unknown") throw new RelayUncertainError(call.executionId, "the session was lost and neither the broker nor the relay agent has a record of the execution", { lost: true });
     if (call.done) return;
     call.resume = true;
     return this.send(call);
@@ -22738,7 +22747,7 @@ var MachineService = class {
       throw new MachineServiceError(failure2.message, void 0, void 0, { cause: failure2 });
     }
     if (outcome.interrupted) {
-      const failure2 = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`);
+      const failure2 = new RelayUncertainError(answer.executionId, `relay: the relay agent stopped while the operation ran: ${outcome.interrupted.message}`, { lost: true });
       throw new MachineServiceError(failure2.message, void 0, void 0, { cause: failure2 });
     }
     return answer;
@@ -23630,6 +23639,7 @@ async function unpackArchive(archive, directory2, requested, options = {}) {
 }
 
 // src/transfer.ts
+var LOST_STEP_RETRIES = 3;
 var STAGING_MAX_BYTES = 512 * 1024 * 1024;
 var STAGING_MAX_FILES = 1e4;
 var MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -23769,6 +23779,25 @@ var Transfer = class {
       await new Promise((resolve11) => setTimeout(resolve11, attempt * 250));
     }
   }
+  /**
+   * A guest command that only looks at the guest: a file fact, a path check,
+   * a presence check. It is not an effect (vm-service RP-7), so when the relay
+   * link lost its execution (`lostExecution`) it is made again, under a new
+   * execution ID, at most LOST_STEP_RETRIES more times (DC-94). Any other
+   * failure, a timeout included, is thrown as `checked` throws it. Never use it
+   * for a command that writes, moves, removes or stops anything.
+   */
+  async look(argv, timeoutMs2) {
+    for (let retry = 0; ; retry++) {
+      try {
+        return await this.checked(argv, timeoutMs2);
+      } catch (error2) {
+        if (retry >= LOST_STEP_RETRIES || !lostExecution(error2)) throw error2;
+        await this.options.onRetry?.({ operation: "metadata", attempt: retry + 1, diagnostic: String(error2) });
+        await new Promise((resolve11) => setTimeout(resolve11, this.options.lostRetryDelayMs ?? 1e3));
+      }
+    }
+  }
   async pushFile(local, remote, approvedLocalRoot = dirname6(local)) {
     await assertHostPath(approvedLocalRoot, local);
     const info = await lstat3(local);
@@ -23880,11 +23909,11 @@ var Transfer = class {
     }
   }
   async guestPath(root, target) {
-    await this.checked([this.node, "-e", `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);
+    await this.look([this.node, "-e", `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);
   }
   /** Small stat/hash acknowledgement only; never carry a JSON document on exec stdout. */
   async fileFact(remote, approvedRoot) {
-    const fact = JSON.parse(await this.checked([this.node, "-e", FILE_FACT, approvedRoot, remote], 12e4));
+    const fact = JSON.parse(await this.look([this.node, "-e", FILE_FACT, approvedRoot, remote], 12e4));
     if (!validFact(fact) || fact.path !== remote) throw new Error("Invalid remote frame fact");
     return fact;
   }
@@ -24476,7 +24505,7 @@ var VmTransport = class {
     const started = join8(this.guestRoot, "state", "receiver", "started", `${executionId}.json`);
     let present2;
     try {
-      present2 = JSON.parse((await this.transfer.checked([this.transfer.node, "-e", PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split("\n").at(-1) ?? "");
+      present2 = JSON.parse((await this.transfer.look([this.transfer.node, "-e", PRESENT, this.guestRoot, guestReceipt, remote, started])).trim().split("\n").at(-1) ?? "");
     } catch {
       throw failure2;
     }

@@ -4,6 +4,7 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { hash, hashFile, inventory, within } from './util.js';
+import { lostExecution } from './relay-client.js';
 import { archiveBytes, archiveChunks, packArchive, StagingSourceError, unpackArchive, type ArchiveEntry, type ArchiveRequest } from './archive.js';
 export { StagingSourceError } from './archive.js';
 
@@ -22,7 +23,11 @@ export interface TransferOptions {
   onRetry?: (event: { operation: 'push' | 'pull' | 'metadata'; attempt: number; diagnostic: string }) => Promise<void>;
   /** A verified pull fell back from the archive to the per-file pull (AD-10), or a workspace push to the per-file push (AD-11). */
   onArchiveFallback?: (event: { remote: string; files: number; diagnostic: string; direction?: 'push' }) => Promise<void>;
+  /** The wait before a read-only step whose execution the relay link lost is made again (DC-94); 1 s unless a test names it. */
+  lostRetryDelayMs?: number;
 }
+/** How many more times a read-only step whose execution the relay link lost is made, under a new execution ID each time (DC-94). */
+export const LOST_STEP_RETRIES = 3;
 export interface FileFact { path: string; sha256: string; bytes: number }
 // Relay evidence has no size limit (owner decision PS-D12, docs/lifecycle-fixes.md):
 // inventories and pulls carry no total-size or file-count bound. Only what a
@@ -180,7 +185,9 @@ export class Transfer {
       : argv;
     // These are infrastructure/hash/path commands, never receiver input. Retry
     // only an explicit SSH authentication refusal (before remote dispatch).
-    // Network loss and arbitrary nonzero guest outcomes are not replayed.
+    // Network loss and arbitrary nonzero guest outcomes are not replayed here;
+    // a command that only looks at the guest goes through `look`, which makes
+    // it again when the relay link lost its execution (DC-94).
     for (let attempt = 1; ; attempt++) {
       const result = await (signal ? this.vm.exec(this.name, framed, timeoutMs, { signal, ...(timeoutMs ? { timeoutMs } : {}) }) : this.vm.exec(this.name, framed, timeoutMs));
       if (result.code === 0) return result.stdout;
@@ -188,6 +195,24 @@ export class Transfer {
       if (attempt >= 3 || result.code !== 255 || !/Permission denied \((?:publickey,)?password(?:,keyboard-interactive)?\)/.test(result.stderr)) throw new Error(diagnostic);
       await this.options.onRetry?.({ operation: 'metadata', attempt, diagnostic });
       await new Promise(resolve => setTimeout(resolve, attempt * 250));
+    }
+  }
+  /**
+   * A guest command that only looks at the guest: a file fact, a path check,
+   * a presence check. It is not an effect (vm-service RP-7), so when the relay
+   * link lost its execution (`lostExecution`) it is made again, under a new
+   * execution ID, at most LOST_STEP_RETRIES more times (DC-94). Any other
+   * failure, a timeout included, is thrown as `checked` throws it. Never use it
+   * for a command that writes, moves, removes or stops anything.
+   */
+  async look(argv: string[], timeoutMs?: number) {
+    for (let retry = 0; ; retry++) {
+      try { return await this.checked(argv, timeoutMs); }
+      catch (error) {
+        if (retry >= LOST_STEP_RETRIES || !lostExecution(error)) throw error;
+        await this.options.onRetry?.({ operation: 'metadata', attempt: retry + 1, diagnostic: String(error) });
+        await new Promise(resolve => setTimeout(resolve, this.options.lostRetryDelayMs ?? 1000));
+      }
     }
   }
   async pushFile(local: string, remote: string, approvedLocalRoot = dirname(local)) {
@@ -279,11 +304,11 @@ export class Transfer {
     }
   }
   private async guestPath(root: string, target: string) {
-    await this.checked([this.node, '-e', `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);
+    await this.look([this.node, '-e', `const fs=require('fs'),p=require('path');${GUEST_PATH}check(process.argv[1],process.argv[2]);`, root, target]);
   }
   /** Small stat/hash acknowledgement only; never carry a JSON document on exec stdout. */
   private async fileFact(remote: string, approvedRoot: string): Promise<FileFact> {
-    const fact: unknown = JSON.parse(await this.checked([this.node, '-e', FILE_FACT, approvedRoot, remote], 120000));
+    const fact: unknown = JSON.parse(await this.look([this.node, '-e', FILE_FACT, approvedRoot, remote], 120000));
     if (!validFact(fact) || fact.path !== remote) throw new Error('Invalid remote frame fact');
     return fact;
   }
