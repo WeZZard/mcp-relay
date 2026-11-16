@@ -110,6 +110,21 @@ for (const nth of [1, 2, 3, 4]) test(`a run whose receipt look ${nth} is lost on
   assert.equal(await readFile(join(f.host, 'receiver-receipts/execution-1.json'), 'utf8'), JSON.stringify(completed));
 });
 
+test('a run whose receipt read is cut by a forgotten session still returns the script\'s outcome, and runs once (DC-48, DC-94)', async t => {
+  const f = await fixture(t);
+  let looks = 0;
+  // The read follows the third look (the path check before it): cut it after 5 bytes, then forget every session.
+  f.relay.lose = op => { if (f.receiptLook(op) && ++looks === 3) f.relay.cutReadAt = 5; return undefined; };
+  const result = await f.transport.send(request());
+  assert.deepEqual(result, completed, JSON.stringify(result));
+  const reads = f.relay.calls.filter(call => typeof call.op === 'object' && 'read' in call.op && call.op.read.path === f.guestReceipt);
+  assert.equal(reads.length, 2, 'the cut read continued once');
+  assert.notEqual(reads[0].execution, reads[1].execution, 'under a new execution ID');
+  assert.equal(reads[1].offset, 5);
+  assert.equal(await f.runs(), 1);
+  assert.equal(f.relay.calls.filter(call => call.execution === 'execution-1').length, 1);
+});
+
 for (const when of ['before', 'after'] as const) test(`a lost dispatch of the receiver (${when === 'before' ? 'never ran' : 'ran, then its record was lost'}) stays uncertain and is not sent again (DC-94)`, async t => {
   const f = await fixture(t);
   f.relay.lose = (op, execution) => f.dispatch(op) && execution === 'execution-1' ? when : undefined;

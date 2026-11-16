@@ -23781,7 +23781,8 @@ var Transfer = class {
   }
   /**
    * A guest command that only looks at the guest: a file fact, a path check,
-   * a presence check. It is not an effect (vm-service RP-7), so when the relay
+   * a presence check. It has no effect (the relay's reading of vm-service RP-7,
+   * which reads a cut read again under a new execution ID), so when the relay
    * link lost its execution (`lostExecution`) it is made again, under a new
    * execution ID, at most LOST_STEP_RETRIES more times (DC-94). Any other
    * failure, a timeout included, is thrown as `checked` throws it. Never use it
