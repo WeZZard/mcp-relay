@@ -301,7 +301,35 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
   let pendingSpawn: false | PendingSpawn = false;
   /** The screenshot file the pending capture writes, which names its process. */
   let capturePath: string | undefined;
-  const markLock = (active: boolean, settled = false): Promise<void> => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, ...(pendingSpawn === "capture" && capturePath ? { capturePath } : {}), settled });
+  const ownerRecord = (active: boolean, settled = false) => ({ pid: process.pid, executionId, active, operationPids, pendingSpawn, ...(pendingSpawn === "capture" && capturePath ? { capturePath } : {}), settled });
+  const markLock = (active: boolean, settled = false): Promise<void> => durableJson(ownerPath, ownerRecord(active, settled));
+  /**
+   * Take the lock so that it is never seen without its owner (DC-93): the
+   * lock is made beside its place with owner.json in it and renamed into
+   * place, and a receiver killed at any point, as a cancel's stop kills it
+   * (DC-86), leaves either no lock or one that names it. A lock already in
+   * place is not empty, so the rename fails as `mkdir` did; only an empty
+   * lock, which no receiver since DC-93 leaves, is replaced.
+   */
+  const takeLock = async (): Promise<boolean> => {
+    const staged = join(root, `.receiver-lock-new-${randomUUID()}`);
+    await mkdir(staged);
+    try {
+      await durableJson(join(staged, "owner.json"), ownerRecord(false));
+      await rename(staged, lock);
+      return true;
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true }).catch(() => {});
+      if (["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      throw error;
+    }
+  };
+  /** Give the lock up the same way: moved aside whole, then removed, so it never stands without its owner. */
+  const dropLock = async (): Promise<void> => {
+    const retired = join(root, `.receiver-lock-retired-${randomUUID()}`);
+    await rename(lock, retired);
+    await rm(retired, { recursive: true, force: true });
+  };
   const owned = (kind: PendingSpawn): typeof runArgv => async (argv, dispatchOptions) => {
     // Cover the crash window between spawn and durable process-ID retention.
     pendingSpawn = kind;
@@ -324,8 +352,8 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
     const receipt = await optionalJson<GuestResponse>(receiptPath);
     if (receipt) return receipt;
     if (await optionalJson(startedPath)) return response("uncertain", "execution was already started; it will not be replayed");
-    try { await mkdir(lock); ownsLock = true; } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    ownsLock = await takeLock();
+    if (!ownsLock) {
       const owner = await optionalJson<LockOwner>(ownerPath);
       const absent = (pid: number | undefined, group = false): boolean => {
         if (!Number.isInteger(pid) || !pid || pid < 1) return false;
@@ -355,10 +383,9 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
       if (JSON.stringify(await optionalJson(ownerPath)) !== JSON.stringify(owner)) return response("refused", `receiver lock changed during reconciliation, ${notStarted}`);
       if (captureOnly) await stopCapture(owner.capturePath);
       await rename(lock, join(root, `.receiver-lock-retired-${randomUUID()}`));
-      try { await mkdir(lock); ownsLock = true; }
-      catch { return response("refused", `receiver acquired by another operation during reconciliation, ${notStarted}`); }
+      ownsLock = await takeLock().catch(() => false);
+      if (!ownsLock) return response("refused", `receiver acquired by another operation during reconciliation, ${notStarted}`);
     }
-    await markLock(false);
     // Recheck after acquiring the shared lock (another invocation may just have finished).
     const recovered = await optionalJson<GuestResponse>(receiptPath);
     if (recovered) return recovered;
@@ -506,7 +533,7 @@ async function answer(input: unknown, options: ReceiveOptions): Promise<GuestRes
     return { ...response("uncertain", `receiver error: ${message(error)}`), ...output() };
   } finally {
     try { await store?.close(); } catch { keepLock = true; }
-    if (ownsLock && !keepLock) await rm(lock, { recursive: true, force: true }).catch(() => {});
+    if (ownsLock && !keepLock) await dropLock().catch(() => {});
     else if (ownsLock) await markLock(true, true).catch(() => {});
   }
 }

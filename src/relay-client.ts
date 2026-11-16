@@ -217,6 +217,14 @@ export interface CallOptions {
   signal?: AbortSignal;
   /** No outcome within this long makes the call uncertain. */
   timeoutMs?: number;
+  /**
+   * `timeoutMs` counts from the call's last progress, not from its start: a
+   * byte of its stream received, a chunk of its upload sent, or the relay
+   * agent's `progress` or `end`, or the broker's `pending` while it holds the
+   * call for an absent relay agent (RP-8). A transfer that keeps moving, or
+   * that the broker still holds, never times out.
+   */
+  idle?: boolean;
   /** The stream goes here instead of being kept. */
   sink?: Sink;
 }
@@ -251,6 +259,8 @@ interface Call {
   continuations: number;
   /** Waiters for the next `progress`, the end of the call or of its session. */
   wake: Array<() => void>;
+  /** The call made progress: an idle timeout starts again. */
+  touch: () => void;
   /** A read whose execution IDs so far; a re-read takes a new one. */
   settle: (answer: { result?: { replayed: boolean; outcome: Outcome }; state?: ExecutionState }) => void;
   fail: (error: Error) => void;
@@ -337,7 +347,7 @@ export class RelayClient {
   }
 
   private track(executionId: string, op: Op, kind: OpKind | 'query', upload: UploadSource, sink?: Sink): Call {
-    return { executionId, op, kind, upload, sink, hash: createHash('sha256'), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], settle: () => {}, fail: () => {}, done: false };
+    return { executionId, op, kind, upload, sink, hash: createHash('sha256'), size: 0, kept: [], keptBytes: 0, committedSend: false, resume: false, offset: 0, continuations: 0, wake: [], touch: () => {}, settle: () => {}, fail: () => {}, done: false };
   }
   private reset(call: Call) {
     call.hash = createHash('sha256'); call.size = 0; call.kept = []; call.keptBytes = 0; call.end = undefined; call.offset = 0; call.sink?.reset();
@@ -350,7 +360,7 @@ export class RelayClient {
   }
 
   /** Send a call in the current session and wait for its last message, through any recovery. */
-  private dispatch(call: Call, options: Pick<CallOptions, 'signal' | 'timeoutMs'>): Promise<{ result?: { replayed: boolean; outcome: Outcome }; state?: ExecutionState }> {
+  private dispatch(call: Call, options: Pick<CallOptions, 'signal' | 'timeoutMs' | 'idle'>): Promise<{ result?: { replayed: boolean; outcome: Outcome }; state?: ExecutionState }> {
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = () => { call.done = true; clearTimeout(timer); options.signal?.removeEventListener('abort', abort); };
@@ -363,9 +373,15 @@ export class RelayClient {
         call.fail(reason instanceof Error ? reason : new Error(String(reason)));
       };
       options.signal?.addEventListener('abort', abort, { once: true });
-      if (options.timeoutMs) timer = setTimeout(() => call.fail(call.kind === 'query' || reads(call.kind) || call.kind === 'status'
-        ? new Error(`relay: no answer for execution ${call.executionId} within ${options.timeoutMs} ms`)
-        : new RelayUncertainError(call.executionId, `no outcome within ${options.timeoutMs} ms; it may still run, and query tells it later`)), options.timeoutMs);
+      const limit = options.idle ? `without progress for ${options.timeoutMs} ms` : `within ${options.timeoutMs} ms`;
+      const expire = () => call.fail(call.kind === 'query' || reads(call.kind) || call.kind === 'status'
+        ? new Error(`relay: no answer for execution ${call.executionId} ${limit}`)
+        : new RelayUncertainError(call.executionId, `no outcome ${limit}; it may still run, and query tells it later`));
+      if (options.timeoutMs) {
+        timer = setTimeout(expire, options.timeoutMs);
+        // Only progress restarts an idle timeout; a lost session and its recovery do not, so a link that never moves a byte still ends.
+        if (options.idle) call.touch = () => { if (call.done) return; clearTimeout(timer); timer = setTimeout(expire, options.timeoutMs); };
+      }
       this.send(call).catch(error => call.fail(error));
     });
   }
@@ -449,6 +465,7 @@ export class RelayClient {
       const data = await upload.read(at, length);
       if (stale()) return;
       session.send(encodeChunk(number, data));
+      call.touch();
       at += length;
     }
     if (stale()) return;
@@ -465,6 +482,7 @@ export class RelayClient {
       if (!call || call.done) return;
       const data = Buffer.from(message.chunk.data);
       call.hash.update(data); call.size += data.length;
+      call.touch();
       if (call.sink) { call.sink.write(data); return; }
       call.kept.push(data); call.keptBytes += data.length;
       while (call.keptBytes > OUTPUT_KEPT && call.kept.length > 1) call.keptBytes -= call.kept.shift()!.length;
@@ -474,10 +492,12 @@ export class RelayClient {
     const call = typeof value?.call === 'number' ? handle.calls.get(value.call) : undefined;
     switch (name) {
       case 'ready': handle.readyInfo = value; readyResolve(value); return;
-      case 'pending': this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`); return;
-      case 'end': if (call && value.execution === call.executionId) call.end = { size: value.size, sha256: value.sha256 }; return;
+      // The broker holds the call while the relay agent is away, within its own grace: an idle transfer waits with it.
+      case 'pending': if (call && value.execution === call.executionId) call.touch(); this.options.log?.(`relay: execution ${value?.execution} waits: ${value?.code}: ${value?.message} (up to ${value?.wait_ms} ms)`); return;
+      case 'end': if (call && value.execution === call.executionId) { call.end = { size: value.size, sha256: value.sha256 }; call.touch(); } return;
       case 'progress':
         if (!call || value.execution !== call.executionId || typeof value.committed !== 'number') return;
+        if (value.committed > (call.committed ?? -1)) call.touch();
         call.committed = Math.max(call.committed ?? 0, value.committed);
         this.wakeAll(call);
         return;

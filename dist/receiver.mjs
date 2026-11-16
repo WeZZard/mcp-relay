@@ -1121,7 +1121,27 @@ async function answer(input, options) {
   const operationPids = [];
   let pendingSpawn = false;
   let capturePath;
-  const markLock = (active, settled = false) => durableJson(ownerPath, { pid: process.pid, executionId, active, operationPids, pendingSpawn, ...pendingSpawn === "capture" && capturePath ? { capturePath } : {}, settled });
+  const ownerRecord = (active, settled = false) => ({ pid: process.pid, executionId, active, operationPids, pendingSpawn, ...pendingSpawn === "capture" && capturePath ? { capturePath } : {}, settled });
+  const markLock = (active, settled = false) => durableJson(ownerPath, ownerRecord(active, settled));
+  const takeLock = async () => {
+    const staged = join3(root, `.receiver-lock-new-${randomUUID()}`);
+    await mkdir3(staged);
+    try {
+      await durableJson(join3(staged, "owner.json"), ownerRecord(false));
+      await rename3(staged, lock);
+      return true;
+    } catch (error) {
+      await rm2(staged, { recursive: true, force: true }).catch(() => {
+      });
+      if (["EEXIST", "ENOTEMPTY"].includes(error.code ?? "")) return false;
+      throw error;
+    }
+  };
+  const dropLock = async () => {
+    const retired = join3(root, `.receiver-lock-retired-${randomUUID()}`);
+    await rename3(lock, retired);
+    await rm2(retired, { recursive: true, force: true });
+  };
   const owned = (kind) => async (argv2, dispatchOptions) => {
     pendingSpawn = kind;
     await markLock(true);
@@ -1145,19 +1165,16 @@ async function answer(input, options) {
     const receipt = await optionalJson(receiptPath);
     if (receipt) return receipt;
     if (await optionalJson(startedPath)) return response("uncertain", "execution was already started; it will not be replayed");
-    try {
-      await mkdir3(lock);
-      ownsLock = true;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
+    ownsLock = await takeLock();
+    if (!ownsLock) {
       const owner = await optionalJson(ownerPath);
       const absent = (pid, group2 = false) => {
         if (!Number.isInteger(pid) || !pid || pid < 1) return false;
         try {
           process.kill(group2 ? -pid : pid, 0);
           return false;
-        } catch (error2) {
-          return error2.code === "ESRCH";
+        } catch (error) {
+          return error.code === "ESRCH";
         }
       };
       const notStarted = "so nothing of this execution started; it is not queued or replayed";
@@ -1178,14 +1195,9 @@ async function answer(input, options) {
       if (JSON.stringify(await optionalJson(ownerPath)) !== JSON.stringify(owner)) return response("refused", `receiver lock changed during reconciliation, ${notStarted}`);
       if (captureOnly) await stopCapture(owner.capturePath);
       await rename3(lock, join3(root, `.receiver-lock-retired-${randomUUID()}`));
-      try {
-        await mkdir3(lock);
-        ownsLock = true;
-      } catch {
-        return response("refused", `receiver acquired by another operation during reconciliation, ${notStarted}`);
-      }
+      ownsLock = await takeLock().catch(() => false);
+      if (!ownsLock) return response("refused", `receiver acquired by another operation during reconciliation, ${notStarted}`);
     }
-    await markLock(false);
     const recovered = await optionalJson(receiptPath);
     if (recovered) return recovered;
     if (await optionalJson(startedPath)) return response("uncertain", "execution was already started; it will not be replayed");
@@ -1358,7 +1370,7 @@ async function answer(input, options) {
     } catch {
       keepLock = true;
     }
-    if (ownsLock && !keepLock) await rm2(lock, { recursive: true, force: true }).catch(() => {
+    if (ownsLock && !keepLock) await dropLock().catch(() => {
     });
     else if (ownsLock) await markLock(true, true).catch(() => {
     });

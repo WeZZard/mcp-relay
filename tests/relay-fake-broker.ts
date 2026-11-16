@@ -163,6 +163,16 @@ export class FakeRelay {
   readonly files = new Map<string, Buffer>();
   /** Send only this many bytes of the next read, then forget every session, as a broker restart does. */
   cutReadAt?: number;
+  /**
+   * Stream reads and the `drip` exec's output `chunk` bytes at a time, one
+   * every `gapMs`, as a slow link does; with `stallAfter`, stop after that
+   * many bytes and send nothing more, as a link that stops moving does.
+   */
+  pace?: { chunk: number; gapMs: number; stallAfter?: number };
+  /** Hold the next read or exec for an absent relay agent: send `pending` this many times, one every `gapMs`, then run it, as the broker does (RP-8). */
+  pendingFor?: { count: number; gapMs: number };
+  /** Send each upload `progress` this long after its bytes arrive, as a slow link acknowledges. */
+  progressDelayMs = 0;
   private report?: () => void;
   constructor(readonly broker: FakeBroker) {
     broker.onOpen = session => broker.send(session, encodeControl('ready', { protocol: this.protocol, lease: 'fake-lease', agent: { os: 'macos', arch: 'aarch64', build: 'f'.repeat(64), protocol: this.protocol } }));
@@ -181,7 +191,11 @@ export class FakeRelay {
           this.cutUploadAt = undefined; held.owner = undefined;
           return reply('result', { call: message.chunk.call, execution, replayed: false, outcome: { failed: { code: 'upload_incomplete', message: 'the relay agent\'s session ended', committed: false } } });
         }
-        const progress = () => { held.reported = held.size; reply('progress', { call: message.chunk.call, execution, committed: held.size }); };
+        const progress = () => {
+          held.reported = held.size;
+          const committed = held.size, send = () => reply('progress', { call: message.chunk.call, execution, committed });
+          if (this.progressDelayMs) setTimeout(send, this.progressDelayMs); else send();
+        };
         if (this.protocol >= 2 && held.size >= held.reported + PROGRESS_STEP) {
           if (this.stallProgress) this.report = progress; else progress();
         }
@@ -205,6 +219,16 @@ export class FakeRelay {
           this.calls.push({ execution: value.execution, op: value.op, size: -1, resume: !!value.resume });
           if (this.protocol >= 2) reply('progress', { call: value.call, execution: value.execution, committed: held.size });
           return;
+        }
+        if (this.pendingFor) {
+          const { count, gapMs } = this.pendingFor; this.pendingFor = undefined;
+          let sent = 0;
+          const hold = () => {
+            if (sent++ === count) return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, value.offset ?? 0);
+            reply('pending', { call: value.call, execution: value.execution, code: 'agent_not_connected', message: 'the relay agent has no session', wait_ms: (count - sent) * gapMs });
+            setTimeout(hold, gapMs);
+          };
+          return hold();
         }
         return this.start(session, value.call, value.execution, value.op, Buffer.alloc(0), reply, value.offset ?? 0);
       }
@@ -233,6 +257,18 @@ export class FakeRelay {
   private start(session: any, call: number, execution: string, op: Op, upload: Buffer, reply: (name: string, value: unknown) => void, offset: number) {
     this.calls.push({ execution, op, size: upload.length, offset });
     const stream = (data: Buffer) => { for (let at = 0; at < data.length; at += MAX_CHUNK) this.broker.send(session, encodeChunk(call, data.subarray(at, at + MAX_CHUNK))); };
+    // A paced stream: one piece every gapMs, then `then`; a stalled one never ends.
+    const paced = (data: Buffer, then: () => void) => {
+      const { chunk, gapMs, stallAfter } = this.pace!;
+      let at = 0;
+      const next = () => {
+        if (stallAfter !== undefined && at >= stallAfter) return;
+        if (at >= data.length) return then();
+        this.broker.send(session, encodeChunk(call, data.subarray(at, at + chunk))); at += chunk;
+        setTimeout(next, gapMs);
+      };
+      next();
+    };
     const digest = (data: Buffer) => ({ size: data.length, sha256: createHash('sha256').update(data).digest('hex') });
     const answer = (record: Execution, replayed: boolean) => {
       if (typeof record.op === 'object' && ('exec' in record.op || 'script' in record.op)) { stream(record.output); reply('end', { call, execution, ...digest(record.output) }); }
@@ -249,6 +285,11 @@ export class FakeRelay {
     if (typeof op === 'object' && 'exec' in op) {
       const command = op.exec.command;
       const done = () => { record.outcome = { exit: { rc: 0, signal: null, timed_out: false, cancelled: false, output: digest(record.output) } }; };
+      if (command === 'drip' && this.pace) {
+        record.output = Buffer.alloc(this.pace.chunk * 20, 'd');
+        done();
+        return paced(record.output, () => { reply('end', { call, execution, ...digest(record.output) }); reply('result', { call, execution, replayed: false, outcome: record.outcome }); });
+      }
       if (command === 'hold') {
         const waiting = this.holds.get(execution) ?? [];
         waiting.unshift(() => { record.output = Buffer.from('held\n'); done(); answer(record, false); });
@@ -274,6 +315,7 @@ export class FakeRelay {
         setTimeout(() => this.broker.forget(), 20);
         return;
       }
+      if (this.pace) return paced(data.subarray(offset), () => { reply('end', { call, execution, ...digest(data) }); reply('result', { call, execution, replayed: false, outcome: record.outcome }); });
       stream(data.subarray(offset)); reply('end', { call, execution, ...digest(data) });
       return reply('result', { call, execution, replayed: false, outcome: record.outcome });
     }
