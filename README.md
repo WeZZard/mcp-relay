@@ -52,14 +52,14 @@ The Claude Code plugin and pi both reach this same server as plain MCP: pi
 through `pi-mcp-adapter` (see "Use with pi" below), Claude Code by starting it
 directly. Every tool's identity, schema and contract are shared; the plugin
 adds nothing Claude-Code-specific beyond the marketplace packaging and the
-`vm-relay-operator` agent definition.
+`relay-operator` agent definition.
 
 | In pi-vm-relay (retired, native pi extension) | Here (MCP server) |
 |---|---|
 | a registered `relay` tool with thirteen actions | fourteen `relay_*` MCP tools from the server `relay`, each with its own schema, title and annotations |
 | doctrine injected before each agent turn | the server's MCP `instructions`, plus a compact version in the `relay_probe` and `relay_acquire` descriptions for clients that do not surface `instructions` |
 | `/relay-status` command | `/mcp-relay-status` in pi, `/mcp-relay:status` in Claude Code; it asks the assistant to call `relay_status` |
-| prompt-composed guest operator | the `vm-relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
+| prompt-composed guest operator | the `relay-operator` agent definition (Claude Code only), limited to the relay's tools and read-only file tools |
 | typed image blocks in a run result, with pi's `tool_result` hook keeping the error flag | MCP image content blocks in the tool result, with the MCP `isError` flag set beside them |
 | session shutdown pauses lease renewal | the same when the server's stdio closes or it is signalled: renewal pauses after one final renewal for the rest of the lease's TTL, the recording detaches, the VM is retained until that TTL for an explicit `relay_finish` or `relay_release`, and the machine-service TTL is the backstop |
 | the settled agent pauses renewal | none: MCP has no such hook, so the instructions and each run tool's description say "finish or release before you return" |
@@ -85,7 +85,7 @@ Once loaded, the model sees the fourteen tools as
 `mcp__plugin_mcp-relay_relay__relay_search`,
 `mcp__plugin_mcp-relay_relay__relay_probe`, and so on through
 `mcp__plugin_mcp-relay_relay__relay_status` (see "The tools" below for
-the full table). The `vm-relay-operator` agent definition allows them by those
+the full table). The `relay-operator` agent definition allows them by those
 names. The server can also be configured directly in a project's `.mcp.json`
 with `node /path/to/mcp-relay/dist/server.mjs`, in which case the tools are
 `mcp__relay__relay_search` and so on.

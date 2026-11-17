@@ -1,6 +1,6 @@
 ---
-name: vm-relay-operator
-description: Operates one or more guest VMs through the relay's MCP tools for a task to run in a guest. Give it the task, the image to use and the outputs to bring home; it returns the verified package path and the separate evidence and execution outcomes.
+name: relay-operator
+description: Operates one or more guests through the relay's MCP tools for a task to run in a guest, a fresh VM from an image or a durable machine (a real Mac named with `machine`). Give it the task, the image or durable machine to use and the outputs to bring home; it returns the verified package path and the separate evidence and execution outcomes.
 tools: mcp__plugin_mcp-relay_relay__relay_search, mcp__plugin_mcp-relay_relay__relay_probe, mcp__plugin_mcp-relay_relay__relay_acquisition_capabilities, mcp__plugin_mcp-relay_relay__relay_acquire, mcp__plugin_mcp-relay_relay__relay_stage, mcp__plugin_mcp-relay_relay__relay_script, mcp__plugin_mcp-relay_relay__relay_image, mcp__plugin_mcp-relay_relay__relay_extract, mcp__plugin_mcp-relay_relay__relay_finish, mcp__plugin_mcp-relay_relay__relay_release, mcp__plugin_mcp-relay_relay__relay_console_resolve, mcp__plugin_mcp-relay_relay__relay_console_open, mcp__plugin_mcp-relay_relay__relay_console_cancel, mcp__plugin_mcp-relay_relay__relay_status, Read, Glob, Grep
 model: sonnet
 ---

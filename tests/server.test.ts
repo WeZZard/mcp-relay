@@ -70,7 +70,7 @@ test('no text tells the agent to relay only interruptive work (DC-14)', async ()
   const rule = /interrupt|non-disruptive|headless work|stays with local tools|unknown is not idle/i;
   assert.doesNotMatch(instructions, rule);
   assert.doesNotMatch(relayTools.find(tool => tool.name === 'relay_probe')!.description, rule);
-  assert.doesNotMatch(await readFile('agents/vm-relay-operator.md', 'utf8'), rule);
+  assert.doesNotMatch(await readFile('agents/relay-operator.md', 'utf8'), rule);
   assert.doesNotMatch((await readFile('README.md', 'utf8')).split('## How it is built')[0]!, rule);
 });
 
@@ -260,7 +260,7 @@ test('the plugin files name the server the tests spoke to and ship the built bun
   assert.equal(plugin.repository, 'https://github.com/WeZZard/mcp-relay');
   assert.deepEqual(mcp.mcpServers['relay'].env, { MCP_RELAY_PROJECT: '${CLAUDE_PROJECT_DIR}' });
   assert.equal(PLUGIN_TOOL_PREFIX, `mcp__plugin_${plugin.name}_relay__`);
-  const agent = await readFile('agents/vm-relay-operator.md', 'utf8');
+  const agent = await readFile('agents/relay-operator.md', 'utf8');
   for (const tool of relayTools) assert.match(agent, new RegExp(`${PLUGIN_TOOL_PREFIX}${tool.name}(?![A-Za-z0-9_])`), tool.name);
   assert.match(agent, new RegExp(`${PLUGIN_TOOL_PREFIX}${STATUS_TOOL}(?![A-Za-z0-9_])`));
   for (const name of ['server.mjs', 'receiver.mjs', 'doctor.mjs', 'integrity.json', 'build-info.json', 'NOTICE.txt']) assert.ok((await stat(join('dist', name))).isFile(), name);
